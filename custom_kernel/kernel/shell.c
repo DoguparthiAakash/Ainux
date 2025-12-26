@@ -849,10 +849,7 @@ void shell_run(void) {
                     else term_erase_cursor();
                     loop_cycles = 0;
                 }
-                /* Wait a bit to prevent aggressive polling if that's the issue, 
-                   though strict ring buffer logic should handle it. 
-                   If IRQ + Poll both add to buffer, we get duplicates.
-                   We will depend on the user report. */
+                /* Polling Mode: Do not sleep! Busy wait slightly to handle blink timing */
                 for (volatile int i=0; i<10000; i++);
             }
         }
@@ -894,6 +891,8 @@ void shell_run(void) {
             cmd_mouseinfo();
         } else if (str_cmp(cmd_buffer, "gfxtest") == 0) {
             cmd_gfxtest();
+        } else if (str_cmp(cmd_buffer, "jittest") == 0) {
+            cmd_jittest();
         } else if (str_cmp(cmd_buffer, "startwm") == 0) {
             cmd_startwm();
         } else {

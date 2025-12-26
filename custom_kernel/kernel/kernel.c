@@ -70,8 +70,26 @@ void kprint(const char *msg) {
             cursor_x = 0;
             cursor_y++;
             if (cursor_y >= (int)(fb->height / 12)) {
-                /* Scroll by clearing screen (basic) */
-                cursor_y = 0;
+                /* Scrolling Logic */
+                uint32_t *fb_ptr = (uint32_t *)fb->address;
+                uint64_t pitch_u32 = fb->pitch / 4;
+                uint64_t total_lines = fb->height;
+                
+                /* Shift copy */
+                for (uint64_t y = 0; y < total_lines - 12; y++) {
+                    for (uint64_t x = 0; x < fb->width; x++) {
+                            fb_ptr[y * pitch_u32 + x] = fb_ptr[(y + 12) * pitch_u32 + x];
+                    }
+                }
+                
+                /* Clear the bottom 12 lines */
+                for (uint64_t y = total_lines - 12; y < total_lines; y++) {
+                    for (uint64_t x = 0; x < fb->width; x++) {
+                        fb_ptr[y * pitch_u32 + x] = 0;
+                    }
+                }
+                
+                cursor_y--;
             }
         } else if (*msg == '\b') {
             /* Backspace */
@@ -86,7 +104,29 @@ void kprint(const char *msg) {
                 cursor_x = 0;
                 cursor_y++;
                 if (cursor_y >= (int)(fb->height / 12)) {
-                    cursor_y = 0;
+                    /* Scrolling Logic */
+                    
+                    /* 1. Move everything UP by 12 pixels */
+                    uint32_t *fb_ptr = (uint32_t *)fb->address;
+                    uint64_t pitch_u32 = fb->pitch / 4;
+                    uint64_t total_lines = fb->height;
+                    
+                    /* Shift copy */
+                    for (uint64_t y = 0; y < total_lines - 12; y++) {
+                        /* Optimize this with a larger memcpy if we had libc, but loop is fine for now */
+                        for (uint64_t x = 0; x < fb->width; x++) {
+                             fb_ptr[y * pitch_u32 + x] = fb_ptr[(y + 12) * pitch_u32 + x];
+                        }
+                    }
+                    
+                    /* 2. Clear the bottom 12 lines */
+                    for (uint64_t y = total_lines - 12; y < total_lines; y++) {
+                        for (uint64_t x = 0; x < fb->width; x++) {
+                            fb_ptr[y * pitch_u32 + x] = 0;
+                        }
+                    }
+                    
+                    cursor_y--; /* Keep cursor on the last line */
                 }
             }
         }

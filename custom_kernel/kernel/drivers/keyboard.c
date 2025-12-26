@@ -60,88 +60,14 @@ static inline uint8_t inb(uint16_t port) {
 }
 
 void keyboard_handler(void) {
-    uint8_t status = inb(KEYBOARD_STATUS_PORT);
-    
-    /* If bit 5 (0x20) is set, data is for Mouse - Ignore it! */
-    if (status & 0x20) {
-        return; 
-    }
-
-    uint8_t scancode = inb(KEYBOARD_DATA_PORT);
-    static int e0_prefix = 0;
-
-    if (scancode == 0xE0) {
-        e0_prefix = 1;
-        return;
-    }
-
-    if (e0_prefix) {
-        e0_prefix = 0; /* Reset prefix immediately */
-        
-        /* Ignore release codes for extended keys (scancode & 0x80) */
-        if (scancode & 0x80) return;
-        
-        char c = 0;
-        switch (scancode) {
-            case 0x48: c = KEY_UP; break;
-            case 0x50: c = KEY_DOWN; break;
-            case 0x4B: c = KEY_LEFT; break;
-            case 0x4D: c = KEY_RIGHT; break;
-        }
-        if (c != 0) {
-            kb_buffer[kb_write_pos] = c;
-            kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
-        }
-        return;
-    }
-
-    /* Handle Modifiers */
-    if (scancode == KEY_LSHIFT_PRESS || scancode == KEY_RSHIFT_PRESS) {
-        shift_pressed = 1;
-        return;
-    }
-    if (scancode == KEY_LSHIFT_RELEASE || scancode == KEY_RSHIFT_RELEASE) {
-        shift_pressed = 0;
-        return;
-    }
-    if (scancode == KEY_LCTRL_PRESS) {
-        ctrl_pressed = 1;
-        return;
-    }
-    if (scancode == KEY_LCTRL_RELEASE) {
-        ctrl_pressed = 0;
-        return;
-    }
-    if (scancode == KEY_CAPSLOCK) {
-        capslock_active = !capslock_active;
-        return;
-    }
-
-    /* Check for Key Release (except modifiers above) */
-    if (scancode & 0x80) {
-        return;
-    }
-
-    /* Determine character */
-    char c = 0;
-    if (scancode < sizeof(scancode_map_lower)) {
-        if (shift_pressed) {
-            c = scancode_map_upper[scancode];
-            if (capslock_active && c >= 'A' && c <= 'Z') {
-                c = scancode_map_lower[scancode]; 
-            }
-        } else {
-            c = scancode_map_lower[scancode];
-            if (capslock_active && c >= 'a' && c <= 'z') {
-                c = scancode_map_upper[scancode]; /* Letters become upper */
-            }
-        }
-
-        if (c != 0) {
-            kb_buffer[kb_write_pos] = c;
-            kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
-        }
-    }
+    /* 
+     * Disable ISR logic to prevent race condition with Polling.
+     * We suspect interrupts are firing but maybe not clearing correctly,
+     * or conflicting with the aggressive polling loop.
+     * Since we are relying on polling, we ignore interrupts here.
+     * The End of Interrupt (EOI) should be handled by the IDT stub.
+     */
+    return;
 }
 
 void keyboard_poll(void) {
@@ -150,7 +76,17 @@ void keyboard_poll(void) {
         if (status & 0x20) return; /* Mouse data */
         
         static int e0_prefix = 0;
+        static uint8_t last_scancode = 0; /* Dedup */
+
         uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+        
+        /* Ignore if identical to last scancode (Fixes double-typing on fast poll) */
+        /* Note: This kills auto-repeat for now, but stability is priority */
+        if (scancode == last_scancode) {
+             /* Read it to clear buffer, but don't process */
+             return; 
+        }
+        last_scancode = scancode;
         
         /* Copy-paste of handler logic to update buffer */
         if (scancode == 0xE0) { e0_prefix = 1; return; }
