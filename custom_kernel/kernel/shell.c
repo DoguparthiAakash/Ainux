@@ -849,7 +849,11 @@ void shell_run(void) {
                     else term_erase_cursor();
                     loop_cycles = 0;
                 }
-                for (volatile int i=0; i<100; i++);
+                /* Wait a bit to prevent aggressive polling if that's the issue, 
+                   though strict ring buffer logic should handle it. 
+                   If IRQ + Poll both add to buffer, we get duplicates.
+                   We will depend on the user report. */
+                for (volatile int i=0; i<10000; i++);
             }
         }
 
