@@ -1,0 +1,126 @@
+
+#
+# Toplevel build file for libxc - Windows version.
+# Ensure that gnuwin32 and a gcc is in the path
+# This Makefile tested on the mingw distribution included with Qt5.4
+#
+
+LIBDIR=lib
+INCDIR=include
+DOCDIR=docs
+DOCS=html latex xml man
+PREREQS=$(LIBDIR) $(INCDIR) $(DOCDIR)
+
+PLATFORM=Windows
+OSTYPE_WINDOWS=$(PLATFORM)
+VERSION=$(shell type VERSION)
+export BINEXT=.exe
+
+ONWINDOWS=yes
+
+OSLIBTYPE=dll
+LD_EXTRAFLAGS=-lws2_32 -LC:\mingw\mingw-w64\x86_64\mingw64\opt\lib -lregex
+CC_EXTRAFLAGS= -D__USE_MINGW_ANSI_STDIO=1 -IC:\mingw\mingw-w64\x86_64\mingw64\opt\include
+OSTYPE=PLATFORM_WINDOWS
+
+LIBNAME=xc
+LIBEXT=$(OSLIBTYPE)
+LIBFILE=$(LIBDIR)\lib$(LIBNAME)-$(VERSION).$(LIBEXT)
+
+MKDIR=mkdir
+RM=deltree.bat
+DS="\\\\\\\\"
+
+LD=gcc
+LDFLAGS= -shared -o $(LIBFILE)
+
+
+CURDIR=$(shell echo "%CD%")
+
+SUBPROJS=\
+	xcfg\
+   xcrypto\
+   xcob\
+	xdict\
+	xerror\
+	xfile\
+	xmalloc\
+	xmap\
+	xsarray\
+	xshare\
+	xsock\
+	xsparse\
+	xstring\
+	xtree\
+	xlex\
+	xvector
+
+SUBOBS=$(foreach DIR,$(SUBPROJS),$(DIR).o)
+
+.PHONY:	show $(SUBPROJS) $(PREREQS) $(LIBFILE)
+
+all: $(PREREQS) $(SUBPROJS) $(LIBFILE)
+
+show:
+	@echo Using the following variables
+	@echo SHELL=$(SHELL)
+	@echo SHELLFLAGS=$(SHELLFLAGS)
+	@echo .SHELLFLAGS=$(.SHELLFLAGS)
+	@echo CURDIR=$(CURDIR)
+	@echo VERSION=$(VERSION)
+	@echo PLATFORM=$(PLATFORM)
+	@echo CC=$(CC)
+	@echo CFLAGS=$(CFLAGS)
+	@echo OSTYPE=$(OSTYPE)
+	@echo OSLIBTYPE=$(OSLIBTYPE)
+	@echo CC_EXTRAFLAGS=$(CC_EXTRAFLAGS)
+	@echo LD_EXTRAFLAGS=$(LD_EXTRAFLAGS)
+
+$(LIBFILE):	$(SUBPROJS)
+	$(RM) $(LIBDIR)
+	$(MKDIR) $(LIBDIR) 
+	for %%X in ($(SUBPROJS)) DO $(MKDIR) $(INCDIR)\%%X
+	for %%X in ($(SUBPROJS)) DO copy /V %%X\%%X.o $(LIBDIR)
+	for %%X in ($(SUBPROJS)) DO copy /V %%X\%%X.h $(INCDIR)\%%X
+	copy /V xcrypto\sha2.o $(LIBDIR) 
+	$(LD) $(LDFLAGS) $(LIBDIR)/* $(LD_EXTRAFLAGS) 
+	$(RM) $(LIBDIR)\*.o
+	copy /V $(LIBFILE) $(LIBDIR)\lib$(LIBNAME).$(LIBEXT)
+
+check_docprogs:
+	which doxygen || exit -1
+	which doxy2man || echo "Manual pages won't be produced, doxy2man not found"
+
+documentation: $(PREREQS) check_docprogs
+	[ ! -z "`which doxygen`" ] || echo doxygen not installed exit -1
+	[ ! -z "`which doxy2man`" ] || echo doxy2man not installed exit -1
+	doxygen && \
+	   $(MAKE) -C latex && \
+	   cd xml && \
+	   for X in *[1-9]c.xml libxc*.xml; do doxy2man $$X; done && \
+		mv -v out ../man
+	mv html $(DOCDIR)/html
+	mv latex $(DOCDIR)/latex
+	mv man $(DOCDIR)/man
+	mv xml $(DOCDIR)/xml
+	$(MKDIR) $(DOCDIR)/pdf
+	cp $(DOCDIR)/latex/refman.pdf $(DOCDIR)/pdf/libxc.pdf
+	tar -zcvf libxc-`cat VERSION`-doc.tar.gz docs
+
+
+$(SUBPROJS):	$(PREREQS)
+	$(MAKE) -C $@ OSLIBTYPE="$(OSLIBTYPE)" PLATFORM="$(OSTYPE)" \
+          LD_EXTRAFLAGS="$(LD_EXTRAFLAGS)" \
+          DS=$(DS) \
+          CC_EXTRAFLAGS="$(CC_EXTRAFLAGS)" 
+
+$(PREREQS):
+	$(MKDIR) $@
+
+clean:
+	$(RM) $(PREREQS) $(DOCS) 
+	for %%X in ($(SUBPROJS)) DO $(MAKE) \
+      DS=$(DS) RM=..\$(RM) MKDIR=$(MKDIR) OSLIBTYPE=$(OSLIBTYPE) -C %%X clean MAKEFLAGS=" -f Makefile.win" 
+
+package:	VERSION
+	./package_source.sh `cat VERSION`

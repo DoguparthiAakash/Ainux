@@ -1,0 +1,71 @@
+Extended C Library
+==================
+
+A useful library for ANSI C99. Implements a number of data structures to
+ease the development of pure C code (without needing C++, command
+language, etc). Simply include the relevant header and link with the
+relevant library.
+
+On Linux (or other unixes):
+Make should just work as is.
+
+On Msys:
+Once again, make should just work as long as you are running a bash 
+shell (Cygwin has been tested)
+
+On Windows (with bash shell and mingw runtime):
+download and install a bash shell along with binutils for windows.
+Before running mkae set the PLATFORM environment variable to 'Msys'
+
+Implements the following:
+1. xmalloc - A replacement for malloc. Provides, at runtime, a complete
+   account of all the memory that has been malloc'ed with xmalloc. Can
+   also be turned on/off at runtime. When off, xmalloc simply acts as
+   a very thin wrapper around malloc and free. When turned on, xmalloc
+   tracks all the memory allocations made, along with the source filename,
+   the function and the line number of the call. In this mode, xmalloc
+   can also, at callers request, dump all of the memory usage statistics
+   and allocated blocklist to stderr.
+
+   A signal handler is registered on first usage that dumps as much info
+   as possible upon receipt of an access violation.
+
+2. xstring - Common string routines for operations on null-terminated
+   strings.  Provides safe methods to duplicate, concatenate, set, delete,
+   convert (to number, float, etc), search, split, etc...  Works only
+   on strings though, binary data might cause it to choke and crash.
+
+3. xvector - A library providing a vector container service. Iteration
+   can be performed with either a for loop (using the vector_get_size()
+   function) or by calling vector_apply() with the appropriate predicate
+   function. Only pointers should be stored in vectors, or PoDs that are
+   less than a pointer in width. Other container types may utilise this
+   container as their base unit of storage. A vector can grow and shrink 
+   as elements are added to and removed from it.
+
+4. xset - Implements containers of type set. Elements of xset are always
+   unique. Equality is determined by naively comparing items of a set,
+   so should item in a set be a pointer, note that no deep inspection
+   will be performed. All elements of a set have to be less than or equal
+   to a pointer width.
+
+5. xtree - Library to create and traverse multiple-children nodes in a 
+   tree. Each child node points to a single parent, while each parent
+   node maintains an ordered list of all children nodes. The root of the
+   tree has a null parent. Each node only stores a pointer to its payload.
+
+6. xdict - Implementation of a dictionary array. A dictionary array is
+   an array which is indexed not by its position but by a caller-provided
+   name. xdict defaults to using strings (either xstrings or char *) as
+   the lookup elements, but this behaviour can be changed to use almost
+   any other datatype if the caller desires. xdict containers are always
+   maintained in order, so insertion is O(log_n), while retrieval is
+   O(n).
+
+7. xsparse - Implementation of a sparse array (array which is mostly 
+   empty). Base implementation uses xdict with the dictionary lookup
+   element being unsigned integers.
+
+8. xconfig - Library of routines to enable configuration management
+   of options within a program, for example reading c/line args or
+   configuration files, etc.

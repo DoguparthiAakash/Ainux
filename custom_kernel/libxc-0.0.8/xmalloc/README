@@ -1,0 +1,19 @@
+Xmalloc
+
+A set of functions and libraries to wrap around malloc, that will provide
+a log of the memory allocated. Which file, function and line-number that
+allocated and how big each allocation was.
+
+When malloc fails (perhaps due to memory exhaustion), xmalloc will
+dump the entire log to stderr before returning NULL to the caller. 
+
+This is needed because valgrind won't work with the GC in ECL, and therefore 
+I cannot now determine if I am leaking memory when calling functions from
+ECL. The only question is "is it possible to track memory access violations?"
+
+This might be possible if we register a signal handler for access violations,
+but it will be impossible to know if an access violation does not result in a
+signal being raised (going one past the end of an array doesn't generate a
+signal if the access only results in corruption of some other memory block
+that the program can access).
+

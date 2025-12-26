@@ -1,0 +1,10 @@
+Xcrypto
+=======
+
+Cryptography related functions. Note that for strong cryptography the
+caller should rather use an open implementation of any popular 
+crypto methods, such as blowfish, etc.
+
+These functions are suitable for performing simple user identification
+and authorisation, not for performing credit-card transactions or 
+similar.

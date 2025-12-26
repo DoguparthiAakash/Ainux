@@ -1,0 +1,30 @@
+Installation 
+============
+
+1. Download the latest codebase; go to 
+      http://www.lelanthran.com/projects/libxc
+   and follow the download instructions.
+
+2. Install the minimum requirements to compile on your system:
+   Msys (not supported anymore)
+   gcc
+   gnu make
+   bash
+   doxygen (for the documentation)
+   latex (for the documentation)
+   pdflatex (for the documentation)
+   doxy2man (for the documentation)
+
+3. To  build the library do:  
+      make all
+   This will produce the library file in ./lib and all the headers 
+   in ./include.
+
+4. To build the documentation do:
+      make documentation
+   This will produce all the API docs in ./docs
+
+5. FOR WINDOWS:
+   Msys is not supported anymore. Use the Makefile.win file to build
+   using mingw32-make/mingw64-make. The environment that this was tested
+   in is the mingw32/64 environment that installs with Qt5.4.
