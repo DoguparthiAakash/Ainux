@@ -27,7 +27,12 @@ typedef enum {
     OP_GFX_RECT, /* [OP]; Pop x, y, w, h, color; Draw Rect */
     OP_GFX_TEXT,  /* [OP, str_idx]; Pop x, y, color; Draw Text */
     OP_SCANF,    /* [OP]; Pop addr; Read Int to addr */
-    OP_AND, OP_OR, OP_NOT
+    OP_AND, OP_OR, OP_NOT,
+    OP_PEEK,   /* Pop addr; Push val */
+    OP_POKE,   /* Pop val, addr; Store val at addr */
+    OP_MALLOC, /* Pop size; Push addr */
+    OP_FREE,   /* Pop addr; Free */
+    OP_VIDEOBASE /* Push vb_addr */
 } OpCode;
 
 /* Run a C-like script source code */

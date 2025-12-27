@@ -225,6 +225,104 @@ void fat32_list_files(void) {
 }
 
 int fat32_read_file(const char *filename, uint8_t **data, uint32_t *size) {
-    (void)filename; (void)data; (void)size;
-    return -1; /* TODO */
+    /* 1. Find directory entry */
+    uint8_t *buffer = (uint8_t *)kmalloc(512);
+    if (!buffer) return -1;
+
+    ata_read_sectors(root_cluster_lba, 1, buffer);
+    struct fat32_dir_entry *dir = (struct fat32_dir_entry *)buffer;
+    
+    int found_idx = -1;
+    char target[12];
+    /* Normalize input to 8.3 upper */
+    /* Naive match for now: Just match first 8 chars case insensitive */
+    
+    for(int i=0; i<16; i++) {
+        if(dir[i].name[0] != 0x00 && dir[i].name[0] != 0xE5) {
+             /* Check name match */
+             char entry_name[12];
+             memcpy(entry_name, dir[i].name, 11);
+             entry_name[11] = 0;
+             /* Clean comparison TODO */
+             /* For now, just require exact upper match of mapped name */
+             /* Hack: Assume user types "TEST    TXT" format? No. */
+             /* Let's just return first file for testing or fix comparison */
+             /* Fix comparison later. */
+             
+             /* Simple substring match? */
+             /* Comparing normalized input */
+             /* Assume filename is mapped to "NAME    EXT" */
+        }
+    }
+    /* Re-implementing search with cleaner logic */
+    /* Convert filename to FAT format "NAME    " */
+    char fat_name[11];
+    memset(fat_name, ' ', 11);
+    int fn_len = strlen(filename);
+    int dot_pos = -1;
+    for(int j=0; j<fn_len; j++) if(filename[j]=='.') dot_pos=j;
+    
+    int name_len = (dot_pos == -1) ? fn_len : dot_pos;
+    if (name_len > 8) name_len=8;
+    
+    for(int j=0; j<name_len; j++) {
+        char c = filename[j];
+        if(c >= 'a' && c <= 'z') c -= 32;
+        fat_name[j] = c;
+    }
+    
+    // Ext
+    if (dot_pos != -1) {
+        int ext_len = fn_len - dot_pos - 1;
+        if (ext_len > 3) ext_len = 3;
+        for(int j=0; j<ext_len; j++) {
+            char c = filename[dot_pos+1+j];
+            if(c >= 'a' && c <= 'z') c -= 32;
+            fat_name[8+j] = c;
+        }
+    }
+    
+    /* Search */
+    for(int i=0; i<16; i++) {
+        if(dir[i].name[0] != 0x00 && dir[i].name[0] != 0xE5) {
+            if (memcmp(dir[i].name, fat_name, 11) == 0) {
+                found_idx = i;
+                break;
+            }
+        }
+    }
+    
+    if (found_idx == -1) {
+        kfree(buffer);
+        return -1;
+    }
+    
+    /* Found! Read Cluster */
+    struct fat32_dir_entry *entry = &dir[found_idx];
+    uint32_t cluster = (entry->first_cluster_high << 16) | entry->first_cluster_low;
+    uint32_t f_size = entry->file_size;
+    
+    uint32_t lba = cluster_to_lba(cluster);
+    
+    /* Allocate Data Limit 4KB for now (1 cluster8 sectors) */
+    /* Our cluster calc assumes 8 sectors per cluster in format */
+    /* Actually init says bs->sectors_per_cluster */
+    /* Let's safeguard */
+    if (f_size == 0) f_size = 512; /* Empty file? */
+    
+    uint8_t *file_data = (uint8_t *)kmalloc(f_size + 512); /* Align padding */
+    if (!file_data) {
+        kfree(buffer);
+        return -1;
+    }
+    
+    /* Read Sectors */
+    int sectors = (f_size + 511) / 512;
+    ata_read_sectors(lba, sectors, file_data);
+    
+    *data = file_data;
+    *size = f_size;
+    
+    kfree(buffer);
+    return 0;
 }

@@ -14,6 +14,7 @@
 #include "shell.h"
 #include "font.h"
 #include "gfx.h"
+#include "log.h"
 
 /* Set the base revision to 3 */
 __attribute__((used, section(".requests")))
@@ -95,7 +96,14 @@ char serial_read(void) {
     return inb(COM1);
 }
 
+#include "log.h"
+#include "gfx.h"
+
+/* ... existing code ... */
+
 void kprint(const char *msg) {
+    klog_write(msg); /* Hook for dmesg */
+    
     const char *p = msg;
     while (*p) {
         serial_putc(*p);
@@ -103,6 +111,8 @@ void kprint(const char *msg) {
     }
 
     if (!fb) return;
+    
+    /* ... rest of kprint ... */
     
     while (*msg) {
         if (*msg == '\n') {
@@ -268,6 +278,8 @@ void _start(void) {
 
     /* Clear screen */
     term_clear();
+    
+    klog_init();
 
     kprint("=== Ainux Kernel ===\n\n");
     

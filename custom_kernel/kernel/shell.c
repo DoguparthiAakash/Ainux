@@ -9,6 +9,10 @@
 #include "fs/fat32.h"
 #include "fs/mbr.h"
 #include "wm.h"
+#include "nano_asm.h"
+#include "drivers/pci.h"
+#include "log.h"
+#include "fs/fat32.h" /* FAT32 Support */
 
 extern void libc_test_run(void);
 
@@ -476,13 +480,15 @@ static void cmd_help(void) {
     kprint("  cp S D    - Copy file\n");
     kprint("  rm F      - Remove file\n");
     kprint("  write F   - Text Editor\n");
-    kprint("  cc F      - Compile C Script\n");
-    kprint("  cc F      - Compile C Script\n");
+    kprint("  run F     - Run Program (C/ASM/CPP)\n");
+    kprint("  cc F      - Compile C/C++ Script\n");
     kprint("  fdisk [args]- Disk Manager (map, new <MB>, reset)\n");
     kprint("  mkfs      - Format Partition 1 (FAT32)\n");
     kprint("  mount     - Mount Disk\n");
     kprint("  lsdisk    - List Disk Files\n");
     kprint("  save F    - Save InitRD file to Disk\n");
+    kprint("  lspci     - List PCI Devices\n");
+    kprint("  dmesg     - Show Kernel Log\n");
     kprint("  testlibc  - Run libc tests\n");
     kprint("\n");
 }
@@ -757,6 +763,16 @@ static void cmd_gfxtest(void) {
     term_clear();
 }
 
+/* Command: lspci */
+static void cmd_lspci(void) {
+    pci_scan_bus();
+}
+
+/* Command: dmesg */
+static void cmd_dmesg(void) {
+    klog_dump();
+}
+
 static void cmd_startwm(void) {
     kprint("Starting Window Manager...\n");
     
@@ -826,19 +842,159 @@ static void cmd_cc(char *filename) {
     struct initrd_file *file = initrd_find_file(full_path);
     if (!file && full_path[0] == '/') file = initrd_find_file(full_path+1);
     
+    char *raw_data = NULL;
+    uint32_t raw_size = 0;
+    int is_disk = 0;
+    
     if (file) {
-        /* Ensure null-terminated string for compiler */
+        raw_data = (char *)file->data;
+        raw_size = file->size;
+    } else {
+        /* Try Disk */
+        uint8_t *d;
+        if (fat32_read_file(filename, &d, &raw_size) == 0) {
+            raw_data = (char *)d;
+            is_disk = 1;
+        }
+    }
+
+    if (raw_data) {
+        /* Allocate huge buffer for Preprocessor */
+        char *final_src = (char *)kmalloc(1024 * 64); /* 64KB */
+        if (!final_src) {
+             kprint("Out of memory for compilation!\n");
+             if(is_disk) kfree(raw_data);
+             return;
+        }
+        final_src[0] = '\0';
+        
+        char *ptr = raw_data;
+        char *end = ptr + raw_size;
+        
+        /* Line by line scan */
+        while (ptr < end) {
+            char *line_start = ptr;
+            while (ptr < end && *ptr != '\n') ptr++;
+            int line_len = ptr - line_start;
+            
+            /* Check for #include */
+            int is_include = 0;
+            if (line_len > 8 && line_start[0] == '#') {
+                /* Simple check for "include" */
+                /* Skip space */
+                char *s = line_start + 1;
+                while (s < line_start + line_len && *s == ' ') s++;
+                if (s[0]=='i' && s[1]=='n' && s[2]=='c' && s[3]=='l' && s[4]=='u' && s[5]=='d' && s[6]=='e') {
+                    is_include = 1;
+                    /* Extract filename */
+                    char inc_name[64];
+                    int i = 0;
+                    s += 7;
+                    while (s < line_start + line_len && (*s == ' ' || *s == '<' || *s == '"')) s++;
+                    while (s < line_start + line_len && *s != '>' && *s != '"' && i < 63) {
+                        inc_name[i++] = *s++;
+                    }
+                    inc_name[i] = '\0';
+                    
+                    kprint("[PP] Including: "); kprint(inc_name); kprint("\n");
+                    
+                    /* Try to load initrd/libs/NAME */
+                    char lib_path[128];
+                    str_cpy(lib_path, "libs/");
+                    str_cat(lib_path, inc_name);
+                    
+                    struct initrd_file *lib = initrd_find_file(lib_path);
+                    if (!lib) {
+                         /* Try Disk Libs? TODO */
+                         kprint("[PP] Warning: Library not found: "); kprint(lib_path); kprint("\n");
+                    } else {
+                        /* Append lib content */
+                        char *t = final_src;
+                        while(*t) t++;
+                        /* Safety check max len? */
+                        mem_cpy(t, lib->data, lib->size);
+                        t[lib->size] = '\0';
+                        str_cat(final_src, "\n"); 
+                    }
+                }
+            }
+            
+            if (!is_include) {
+                /* Append line */
+                char *t = final_src;
+                while (*t) t++;
+                mem_cpy(t, line_start, line_len);
+                t[line_len] = '\n'; 
+                t[line_len+1] = '\0';
+            }
+            
+            if (ptr < end && *ptr == '\n') ptr++;
+        }
+        
+        nano_c_run(final_src);
+        
+        kfree(final_src);
+        if (is_disk) kfree(raw_data);
+    } else {
+        kprint("File not found: ");
+        kprint(filename);
+        kprint("\n");
+    }
+}
+
+/* Command: as - Nano-Assembler */
+static void cmd_as(char *filename) {
+    if (!filename || filename[0] == '\0') {
+        kprint("Usage: as <filename>\n");
+        return;
+    }
+    
+    char full_path[256];
+    if (filename[0] == '/') str_cpy(full_path, filename);
+    else {
+        str_cpy(full_path, cwd);
+        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
+        str_cat(full_path, filename);
+    }
+    
+    struct initrd_file *file = initrd_find_file(full_path);
+    if (!file && full_path[0] == '/') file = initrd_find_file(full_path+1);
+    
+    if (file) {
+        /* Ensure null-terminated string */
         char *src = (char *)kmalloc(file->size + 1);
         mem_cpy(src, file->data, file->size);
         src[file->size] = '\0';
         
-        nano_c_run(src);
+        asm_run(src);
         
         kfree(src);
     } else {
         kprint("File not found: ");
         kprint(filename);
         kprint("\n");
+    }
+}
+
+/* Command: run - Universal Runner */
+static void cmd_run(char *filename) {
+    if (!filename || filename[0] == '\0') {
+        kprint("Usage: run <filename>\n");
+        return;
+    }
+    
+    size_t len = str_len(filename);
+    if (len > 2 && filename[len-1] == 'c' && filename[len-2] == '.') {
+        /* .c file */
+        cmd_cc(filename);
+    } else if (len > 4 && filename[len-1] == 'p' && filename[len-2] == 'p' && filename[len-3] == 'c' && filename[len-4] == '.') {
+        /* .cpp file */
+        cmd_cc(filename);
+    } else if (len > 4 && filename[len-1] == 'm' && filename[len-2] == 's' && filename[len-3] == 'a' && filename[len-4] == '.') {
+        /* .asm file */
+        cmd_as(filename);
+    } else {
+        kprint("Unknown file type. Supported: .c, .asm\n");
     }
 }
 
@@ -1041,11 +1197,19 @@ void shell_run(void) {
             cmd_cd(arg);
         } else if (str_cmp(cmd_buffer, "cc") == 0) {
             cmd_cc(arg);
+        } else if (str_cmp(cmd_buffer, "as") == 0) {
+            cmd_as(arg);
+        } else if (str_cmp(cmd_buffer, "run") == 0) {
+            cmd_run(arg);
         } else if (str_cmp(cmd_buffer, "testlibc") == 0) {
             libc_test_run();
         } else if (str_cmp(cmd_buffer, "cat") == 0) {
             if (arg) cmd_cat(arg);
             else kprint("\nUsage: cat <filename>\n\n");
+        } else if (str_cmp(cmd_buffer, "lspci") == 0) {
+            cmd_lspci();
+        } else if (str_cmp(cmd_buffer, "dmesg") == 0) {
+            cmd_dmesg();
         } else if (str_cmp(cmd_buffer, "touch") == 0) {
             cmd_touch(arg);
         } else if (str_cmp(cmd_buffer, "mkdir") == 0) {

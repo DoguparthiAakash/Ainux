@@ -58,7 +58,11 @@ typedef enum {
     TOK_COMMA, TOK_MOD,
     TOK_RAND, TOK_EXIT,
     TOK_RECT, TOK_TEXT,
-    TOK_SCANF, TOK_AND, TOK_OR, TOK_NOT, TOK_AMP
+    TOK_SCANF, TOK_AND, TOK_OR, TOK_NOT, TOK_AMP,
+    TOK_CPP_USING, TOK_CPP_NAMESPACE, TOK_CPP_COUT, TOK_CPP_CIN, TOK_CPP_ENDL,
+    TOK_LSHIFT, TOK_RSHIFT, TOK_GE, TOK_LE,
+    TOK_PEEK, TOK_POKE, TOK_MALLOC, TOK_FREE,
+    TOK_VIDEOBASE
 } TokenType;
 
 typedef struct {
@@ -153,6 +157,16 @@ static void next_token() {
         else if (len==4 && curr_tok.str_val[0]=='r' && curr_tok.str_val[1]=='e' && curr_tok.str_val[2]=='c' && curr_tok.str_val[3]=='t') curr_tok.type = TOK_RECT;
         else if (len==4 && curr_tok.str_val[0]=='t' && curr_tok.str_val[1]=='e' && curr_tok.str_val[2]=='x' && curr_tok.str_val[3]=='t') curr_tok.type = TOK_TEXT;
         else if (len==5 && curr_tok.str_val[0]=='s' && curr_tok.str_val[1]=='c' && curr_tok.str_val[2]=='a' && curr_tok.str_val[3]=='n' && curr_tok.str_val[4]=='f') curr_tok.type = TOK_SCANF;
+        else if (len==5 && curr_tok.str_val[0]=='u' && curr_tok.str_val[1]=='s' && curr_tok.str_val[2]=='i' && curr_tok.str_val[3]=='n' && curr_tok.str_val[4]=='g') curr_tok.type = TOK_CPP_USING;
+        else if (len==9 && curr_tok.str_val[0]=='n' && curr_tok.str_val[1]=='a' && curr_tok.str_val[2]=='m' && curr_tok.str_val[3]=='e' && curr_tok.str_val[4]=='s' && curr_tok.str_val[5]=='p' && curr_tok.str_val[6]=='a' && curr_tok.str_val[7]=='c' && curr_tok.str_val[8]=='e') curr_tok.type = TOK_CPP_NAMESPACE;
+        else if (len==4 && curr_tok.str_val[0]=='c' && curr_tok.str_val[1]=='o' && curr_tok.str_val[2]=='u' && curr_tok.str_val[3]=='t') curr_tok.type = TOK_CPP_COUT;
+        else if (len==3 && curr_tok.str_val[0]=='c' && curr_tok.str_val[1]=='i' && curr_tok.str_val[2]=='n') curr_tok.type = TOK_CPP_CIN;
+        else if (len==4 && curr_tok.str_val[0]=='e' && curr_tok.str_val[1]=='n' && curr_tok.str_val[2]=='d' && curr_tok.str_val[3]=='l') curr_tok.type = TOK_CPP_ENDL;
+        else if (len==4 && curr_tok.str_val[0]=='p' && curr_tok.str_val[1]=='e' && curr_tok.str_val[2]=='e' && curr_tok.str_val[3]=='k') curr_tok.type = TOK_PEEK;
+        else if (len==4 && curr_tok.str_val[0]=='p' && curr_tok.str_val[1]=='o' && curr_tok.str_val[2]=='k' && curr_tok.str_val[3]=='e') curr_tok.type = TOK_POKE;
+        else if (len==6 && curr_tok.str_val[0]=='m' && curr_tok.str_val[1]=='a' && curr_tok.str_val[2]=='l' && curr_tok.str_val[3]=='l' && curr_tok.str_val[4]=='o' && curr_tok.str_val[5]=='c') curr_tok.type = TOK_MALLOC;
+        else if (len==4 && curr_tok.str_val[0]=='f' && curr_tok.str_val[1]=='r' && curr_tok.str_val[2]=='e' && curr_tok.str_val[3]=='e') curr_tok.type = TOK_FREE;
+        else if (len==9 && curr_tok.str_val[0]=='v' && curr_tok.str_val[1]=='i' && curr_tok.str_val[2]=='d' && curr_tok.str_val[3]=='e' && curr_tok.str_val[4]=='o' && curr_tok.str_val[5]=='b' && curr_tok.str_val[6]=='a' && curr_tok.str_val[7]=='s' && curr_tok.str_val[8]=='e') curr_tok.type = TOK_VIDEOBASE;
         else curr_tok.type = TOK_ID;
         return;
     }
@@ -176,6 +190,17 @@ static void next_token() {
                 /* Comment // */
                 while (*src_ptr && *src_ptr != '\n') src_ptr++;
                 next_token();
+            } else if (*src_ptr == '*') {
+                /* Block Comment */
+                src_ptr++;
+                while (*src_ptr) {
+                    if (*src_ptr == '*' && *(src_ptr+1) == '/') {
+                        src_ptr += 2;
+                        break;
+                    }
+                    src_ptr++;
+                }
+                next_token();
             } else {
                 curr_tok.type = TOK_DIV;
             }
@@ -198,6 +223,16 @@ static void next_token() {
             if (*src_ptr == '=') { src_ptr++; curr_tok.type = TOK_NEQ; }
             else curr_tok.type = TOK_NOT;
             break;
+        case '>':
+            if (*src_ptr == '=') { src_ptr++; curr_tok.type = TOK_GE; }
+            else if (*src_ptr == '>') { src_ptr++; curr_tok.type = TOK_RSHIFT; } /* >> */
+            else curr_tok.type = TOK_GT;
+            break;
+        case '<':
+            if (*src_ptr == '=') { src_ptr++; curr_tok.type = TOK_LE; }
+            else if (*src_ptr == '<') { src_ptr++; curr_tok.type = TOK_LSHIFT; } /* << */
+            else curr_tok.type = TOK_LT;
+            break;
         default: kprint("Err: Unknown token\n"); break;
     }
 }
@@ -209,7 +244,6 @@ static int code[MAX_CODE];
 static int pc = 0;
 
 /* Symbol Table */
-static int globals[MAX_VARS];
 static char var_names[MAX_VARS][32];
 static int var_count = 0;
 
@@ -347,6 +381,30 @@ static void parse_stmt() {
             }
             if (curr_tok.type == TOK_SEMI) next_token();
         }
+        if (curr_tok.type == TOK_SEMI) next_token();
+    } else if (curr_tok.type == TOK_CPP_USING) {
+        /* using namespace std; - Just ignore until semicolon */
+        next_token();
+        while (curr_tok.type != TOK_SEMI && curr_tok.type != TOK_EOF) next_token();
+        if (curr_tok.type == TOK_SEMI) next_token();
+    } else if (curr_tok.type == TOK_CPP_COUT) {
+        next_token();
+        /* cout << expr << expr ... ; */
+        while (curr_tok.type == TOK_LSHIFT) {
+            next_token();
+            if (curr_tok.type == TOK_CPP_ENDL) {
+                 emit(OP_PRINT_STR); emit(add_string("\n")); /* Primitive newline */
+                 next_token();
+            } else if (curr_tok.type == TOK_STRING) {
+                emit(OP_PRINT_STR);
+                emit(add_string(curr_tok.str_val));
+                next_token();
+            } else {
+                parse_expr(); /* Pushes value on stack (int) */
+                emit(OP_PRINT); /* Prints int */
+            }
+        }
+        if (curr_tok.type == TOK_SEMI) next_token();
     } else if (curr_tok.type == TOK_ID) {
         int var_idx = get_var_index(curr_tok.str_val);
         next_token();
@@ -393,6 +451,19 @@ static void parse_stmt() {
             if (curr_tok.type == TOK_RPAREN) next_token();
             if (curr_tok.type == TOK_SEMI) next_token();
         }
+    } else if (curr_tok.type == TOK_PRINT) {
+        next_token();
+        if (curr_tok.type == TOK_LPAREN) next_token();
+        if (curr_tok.type == TOK_STRING) {
+            emit(OP_PRINT_STR);
+            emit(add_string(curr_tok.str_val));
+            next_token();
+        } else {
+            parse_expr();
+            emit(OP_PRINT);
+        }
+        if (curr_tok.type == TOK_RPAREN) next_token();
+        if (curr_tok.type == TOK_SEMI) next_token();
     } else if (curr_tok.type == TOK_IF) {
         next_token();
         if (curr_tok.type == TOK_LPAREN) next_token();
@@ -443,6 +514,22 @@ static void parse_stmt() {
         /* Ignore return value for now */
         while(curr_tok.type != TOK_SEMI && curr_tok.type != TOK_EOF) next_token();
         if (curr_tok.type == TOK_SEMI) next_token();
+        if (curr_tok.type == TOK_RPAREN) next_token();
+        emit(OP_MALLOC);
+    } else if (curr_tok.type == TOK_VIDEOBASE) {
+        next_token();
+        if (curr_tok.type == TOK_LPAREN) {
+             next_token();
+             if (curr_tok.type == TOK_RPAREN) next_token();
+        }
+        emit(OP_VIDEOBASE);
+    } else if (curr_tok.type == TOK_NUM) {
+        next_token();
+        if (curr_tok.type == TOK_LPAREN) { /* exit(0) */
+            next_token();
+            parse_expr(); /* consume arg but ignore for now */
+            if (curr_tok.type == TOK_RPAREN) next_token();
+        }
         if (curr_tok.type == TOK_SEMI) next_token();
         emit(OP_EXIT);
     } else if (curr_tok.type == TOK_EXIT) {
@@ -510,6 +597,23 @@ static void parse_stmt() {
         
         if (curr_tok.type == TOK_RPAREN) next_token();
         if (curr_tok.type == TOK_SEMI) next_token();
+        if (curr_tok.type == TOK_SEMI) next_token();
+    } else if (curr_tok.type == TOK_POKE) {
+        next_token();
+        if (curr_tok.type == TOK_LPAREN) next_token();
+        parse_expr(); /* Address */
+        if (curr_tok.type == TOK_COMMA) next_token();
+        parse_expr(); /* Value */
+        if (curr_tok.type == TOK_RPAREN) next_token();
+        if (curr_tok.type == TOK_SEMI) next_token();
+        emit(OP_POKE);
+    } else if (curr_tok.type == TOK_FREE) {
+        next_token();
+        if (curr_tok.type == TOK_LPAREN) next_token();
+        parse_expr(); /* Address */
+        if (curr_tok.type == TOK_RPAREN) next_token();
+        if (curr_tok.type == TOK_SEMI) next_token();
+        emit(OP_FREE);
     } else {
         /* Empty or unknown */
         if (curr_tok.type != TOK_RBRACE && curr_tok.type != TOK_EOF) next_token();
@@ -518,9 +622,10 @@ static void parse_stmt() {
 
 /* ================= VM EXECUTION ================= */
 
-static int stack[1024];
+static int64_t stack[1024];
 static int sp = 0;
 /* globals moved to top */
+static int64_t globals[MAX_VARS];
 
 void nano_c_run(const char *source) {
     if (!source) return;
@@ -533,21 +638,34 @@ void nano_c_run(const char *source) {
     var_count = 0;
     for(int i=0; i<MAX_VARS; i++) globals[i]=0;
     
+    /* Debug: Print Source start */
+    kprint("[Compiler] Source start: ");
+    for(int i=0; i<50 && source[i]; i++) {
+        char c[2] = {source[i], 0};
+        if (source[i] == '\n') kprint("\\n"); 
+        else kprint(c);
+    }
+    kprint("\n");
+
     kprint("[Compiler] Compiling...\n");
     next_token(); /* Prime lexer */
     
     /* Parse until EOF */
-    /* If 'int main() {' skip it for simplicity? Or just treat top-level as main */
+    /* ... (logic) ... */
     if (curr_tok.type == TOK_INT) {
+        /* Check if it is main() */
+        /* ... */
+        /* Since parsing logic is fragile, let's just loop and let parse_stmt handle it or skip top level structs */
+        /* But wait, if main is skipped, we need to ensure we don't skip the BODY content if we treat it as global */
+        /* The previous logic was: */
         next_token();
-        if (curr_tok.type == TOK_ID) { /* main? */
-            next_token();
-            if (curr_tok.type == TOK_LPAREN) {
-                next_token(); 
-                if (curr_tok.type == TOK_RPAREN) next_token(); /* ) */
-                /* Handle args? No */
-                if (curr_tok.type == TOK_LBRACE) next_token(); /* { */
-            }
+        if (curr_tok.type == TOK_ID) { 
+             next_token();
+             if (curr_tok.type == TOK_LPAREN) {
+                 next_token();
+                 if (curr_tok.type == TOK_RPAREN) next_token();
+                 if (curr_tok.type == TOK_LBRACE) next_token();
+             }
         }
     }
 
@@ -556,6 +674,7 @@ void nano_c_run(const char *source) {
     }
     emit(OP_EXIT);
     
+    kprint("[VM] Compiled instructions: "); print_n(pc);
     kprint("[VM] Running...\n");
     
     /* VM Loop */
@@ -588,6 +707,46 @@ void nano_c_run(const char *source) {
             case OP_CMP_LT: sp--; stack[sp-1] = (stack[sp-1] < stack[sp]); break;
             case OP_CMP_GT: sp--; stack[sp-1] = (stack[sp-1] > stack[sp]); break;
             case OP_CMP_EQ: sp--; stack[sp-1] = (stack[sp-1] == stack[sp]); break;
+            
+            /* PEEK: Pop addr, Push val */
+            case OP_PEEK: {
+                uint64_t addr = (uint64_t)stack[sp-1];
+                /* Safety Check? Nah, live dangerously for "Power" */
+                /* Actually we can map "Globals" or direct memory. */
+                /* cast to int* and read */
+                int *ptr = (int*)addr;
+                stack[sp-1] = *ptr;
+                break;
+            }
+            /* POKE: Pop val, Pop addr */
+            case OP_POKE: {
+                int val = stack[--sp];
+                uint64_t addr = (uint64_t)stack[--sp];
+                int *ptr = (int*)addr;
+                *ptr = val;
+                break;
+            }
+            /* MALLOC: Pop size, Push addr */
+            case OP_MALLOC: {
+                int size = stack[sp-1];
+                void *ptr = kmalloc(size);
+                stack[sp-1] = (uint64_t)ptr; /* Return address as int */
+                break;
+            }
+            /* FREE: Pop addr */
+            case OP_FREE: {
+                uint64_t addr = (uint64_t)stack[--sp];
+                kfree((void*)addr);
+                break;
+            }
+            case OP_VIDEOBASE: {
+                /* Expose Framebuffer Address */
+                uint64_t w, h, p;
+                void *addr;
+                gfx_get_info(&w, &h, &p, &addr);
+                stack[sp++] = (uint64_t)addr;
+                break;
+            }
             case OP_PRINT: sp--; print_n(stack[sp]); break;
             case OP_PRINT_STR: {
                 int str_idx = code[ip++];
