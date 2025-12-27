@@ -1,4 +1,5 @@
 #include "string.h"
+#include "stdlib.h"
 
 void *memset(void *dest, int val, size_t len) {
     unsigned char *ptr = (unsigned char *)dest;
@@ -88,6 +89,15 @@ char *strcat(char *dest, const char *src) {
     return dest;
 }
 
+char *strncat(char *dest, const char *src, size_t n) {
+    char *ptr = dest + strlen(dest);
+    while (n-- && *src) {
+        *ptr++ = *src++;
+    }
+    *ptr = '\0';
+    return dest;
+}
+
 char *strchr(const char *s, int c) {
     while (*s != (char)c) {
         if (!*s++)
@@ -103,4 +113,79 @@ char *strrchr(const char *s, int c) {
             last = s;
     } while (*s++);
     return (char *)last;
+}
+
+char *strdup(const char *s) {
+    size_t len = strlen(s) + 1;
+    char *new = malloc(len);
+    if (!new) return NULL;
+    return memcpy(new, s, len);
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    if (!*needle) return (char *)haystack;
+    for (; *haystack; haystack++) {
+        if (*haystack == *needle) {
+             const char *h = haystack;
+             const char *n = needle;
+             while (*h && *n && *h == *n) {
+                 h++; n++;
+             }
+             if (!*n) return (char *)haystack;
+        }
+    }
+    return NULL;
+}
+
+size_t strspn(const char *s, const char *accept) {
+    const char *p;
+    const char *a;
+    size_t count = 0;
+    for (p = s; *p != '\0'; ++p) {
+        for (a = accept; *a != '\0'; ++a) {
+            if (*p == *a)
+                break;
+        }
+        if (*a == '\0')
+            return count;
+        ++count;
+    }
+    return count;
+}
+
+size_t strcspn(const char *s, const char *reject) {
+    const char *p;
+    const char *r;
+    size_t count = 0;
+    for (p = s; *p != '\0'; ++p) {
+        for (r = reject; *r != '\0'; ++r) {
+            if (*p == *r)
+                return count;
+        }
+        ++count;
+    }
+    return count;
+}
+
+char *strtok(char *str, const char *delim) {
+    static char *saveptr;
+    if (str != NULL) {
+        saveptr = str;
+    }
+    if (saveptr == NULL || *saveptr == '\0') {
+        return NULL;
+    }
+    char *token_start = saveptr + strspn(saveptr, delim);
+    if (*token_start == '\0') {
+        saveptr = NULL;
+        return NULL;
+    }
+    char *token_end = token_start + strcspn(token_start, delim);
+    if (*token_end != '\0') {
+        *token_end = '\0';
+        saveptr = token_end + 1;
+    } else {
+        saveptr = token_end;
+    }
+    return token_start;
 }

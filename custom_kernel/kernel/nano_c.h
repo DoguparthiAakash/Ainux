@@ -19,7 +19,15 @@ typedef enum {
     OP_CMP_GT,  /* Pop a, b; Push (b > a) */
     OP_CMP_EQ,  /* Pop a, b; Push (b == a) */
     OP_JZ,      /* Jump if Zero: [OP, addr]; Pop cond */
-    OP_JMP      /* Jump: [OP, addr] */
+    OP_JMP,     /* Jump: [OP, addr] */
+    OP_INPUT,   /* Push Input char: [OP]; Push char */
+    OP_MOD,     /* Pop a, b; Push a%b */
+    OP_PRINT_FMT, /* [OP, str_idx, num_args]; Pop num_args values; format print */
+    OP_RAND,     /* Push Random int */
+    OP_GFX_RECT, /* [OP]; Pop x, y, w, h, color; Draw Rect */
+    OP_GFX_TEXT,  /* [OP, str_idx]; Pop x, y, color; Draw Text */
+    OP_SCANF,    /* [OP]; Pop addr; Read Int to addr */
+    OP_AND, OP_OR, OP_NOT
 } OpCode;
 
 /* Run a C-like script source code */

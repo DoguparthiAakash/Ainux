@@ -6,6 +6,8 @@
 #include "mm/heap.h"
 #include "nano_c.h"
 #include "gfx.h"
+#include "fs/fat32.h"
+#include "fs/mbr.h"
 #include "wm.h"
 
 extern void libc_test_run(void);
@@ -20,6 +22,13 @@ extern void term_erase_cursor(void);
 /* Current Working Directory */
 static char cwd[256] = "/";
 static char prev_cwd[256] = "/";
+
+/* Command History */
+#define HISTORY_MAX 16
+#define CMD_MAX_LEN 256
+static char cmd_history[HISTORY_MAX][CMD_MAX_LEN];
+static int history_count = 0;
+static int history_view_index = 0;
 
 /* Editor Constants */
 #define EDITOR_BUF_SIZE 16384
@@ -406,7 +415,55 @@ static void cmd_write(char *filename) {
     kprint("Exited Editor.\n");
 }
 
-/* Command: help */
+/* Command: mkfs */
+static void cmd_mkfs(void) {
+    kprint("Partitioning Disk (MBR)...\\n");
+    mbr_write_default();
+    
+    kprint("Formatting Partition 1 (FAT32)...\\n");
+    fat32_format();
+    
+    kprint("Done.\\n");
+}
+
+/* Command: mount */
+static void cmd_mount(void) {
+    if (fat32_init() == 0) {
+        kprint("Disk Mounted.\\n");
+    } else {
+        kprint("Mount failed.\\n");
+    }
+}
+
+/* Command: lsdisk */
+static void cmd_lsdisk(void) {
+    fat32_list_files();
+}
+
+/* Command: save */
+static void cmd_save(char *filename) {
+    if (!filename || filename[0] == '\0') {
+        kprint("Usage: save <filename>\\n");
+        return;
+    }
+    
+    /* Find file in InitRD */
+    /* This assumes filename is relative to CWD or absolute InitRD path */
+    /* We reuse resolving logic or just search simple */
+    struct initrd_file *file = initrd_find_file(filename);
+    if (!file && filename[0] == '/') file = initrd_find_file(filename+1);
+    
+    if (file) {
+        if (fat32_write_file(filename, file->data, file->size) == 0) {
+            kprint("Saved to Disk.\\n");
+        } else {
+            kprint("Save failed.\\n");
+        }
+    } else {
+        kprint("File not found in InitRD.\\n");
+    }
+}
+
 static void cmd_help(void) {
     kprint("\nAvailable commands:\n");
     kprint("  help      - Show this help\n");
@@ -420,14 +477,44 @@ static void cmd_help(void) {
     kprint("  rm F      - Remove file\n");
     kprint("  write F   - Text Editor\n");
     kprint("  cc F      - Compile C Script\n");
+    kprint("  cc F      - Compile C Script\n");
+    kprint("  fdisk [args]- Disk Manager (map, new <MB>, reset)\n");
+    kprint("  mkfs      - Format Partition 1 (FAT32)\n");
+    kprint("  mount     - Mount Disk\n");
+    kprint("  lsdisk    - List Disk Files\n");
+    kprint("  save F    - Save InitRD file to Disk\n");
     kprint("  testlibc  - Run libc tests\n");
-    kprint("  mouseinfo - Show mouse info\n");
-    kprint("  gfxtest   - Test graphics\n");
-    kprint("  jittest   - Test JIT execution\n");
-    kprint("  startwm   - Start Window Manager\n");
-    kprint("  clear     - Clear screen\n");
-    kprint("  meminfo   - Memory stats\n");
     kprint("\n");
+}
+
+/* Command: fdisk */
+static void cmd_fdisk(char *arg) {
+    if (!arg || arg[0] == '\0' || str_cmp(arg, "map") == 0) {
+        mbr_print_map();
+    } else if (str_starts_with(arg, "new")) {
+        /* Parse Size */
+        char *s = arg;
+        while (*s && *s != ' ') s++; /* Skip 'new' */
+        while (*s == ' ') s++; /* Skip spaces */
+        
+        /* Simple atoi */
+        int size = 0;
+        int found = 0;
+        while (*s >= '0' && *s <= '9') {
+             size = size * 10 + (*s - '0');
+             s++;
+             found = 1;
+        }
+        if (found && size > 0) {
+             mbr_new_partition(size);
+        } else {
+            kprint("Invalid size. Usage: fdisk new <MB>\n");
+        }
+    } else if (str_cmp(arg, "reset") == 0) {
+        mbr_write_default();
+    } else {
+        kprint("Usage:\n  fdisk map\n  fdisk new <MB>\n  fdisk reset\n");
+    }
 }
 
 /* Command: pwd */
@@ -787,6 +874,41 @@ static void cmd_jittest(void) {
     kfree(code);
 }
 
+static void cmd_alloc_test(void) {
+    kprint("[ALLOC] Allocating 100 bytes...\n");
+    char *ptr = (char *)kmalloc(100);
+    if (!ptr) {
+        kprint("[ALLOC] Failed to allocate!\n");
+        return;
+    }
+    
+    kprint("[ALLOC] Writing pattern...\n");
+    for (int i = 0; i < 100; i++) {
+        ptr[i] = (char)(i & 0xFF);
+    }
+    
+    kprint("[ALLOC] Verifying pattern...\n");
+    int fail = 0;
+    for (int i = 0; i < 100; i++) {
+        if (ptr[i] != (char)(i & 0xFF)) {
+             kprint("[ALLOC] Mismatch at index ");
+             print_num(i);
+             kprint("\n");
+             fail = 1;
+             break;
+        }
+    }
+    
+    if (!fail) kprint("[ALLOC] Verification Passed.\n");
+    
+    kprint("[ALLOC] Freeing...\n");
+    kfree(ptr);
+    kprint("[ALLOC] Done.\n");
+}
+
+extern int serial_received(void);
+extern char serial_read(void);
+
 void shell_run(void) {
     char *cmd_buffer = (char *)kmalloc(256);
     if (!cmd_buffer) {
@@ -802,15 +924,28 @@ void shell_run(void) {
         kprint(" $ ");
         
         int pos = 0;
+        /* Reset view index to end (new command) */
+        history_view_index = history_count;
+        
         /* Simple Shell Input Loop (Non-blocking for Blink) */
         int blink_visible = 1;
         uint64_t loop_cycles = 0;
         term_draw_cursor();
 
         while (1) {
+            unsigned char c = 0;
+            int has_input = 0;
+            
             keyboard_poll(); /* Poll HW in case IRQs fail */
             if (keyboard_available()) {
-                char c = keyboard_getchar();
+                c = keyboard_getchar();
+                has_input = 1;
+            } else if (serial_received()) {
+                c = serial_read();
+                has_input = 1;
+            }
+            
+            if (has_input) {
                 
                 /* Reset Blink on Input */
                 if (!blink_visible) {
@@ -819,11 +954,49 @@ void shell_run(void) {
                 }
                 loop_cycles = 0;
 
-                if (c == '\n') {
+                if (c == '\n' || c == '\r') {
                     term_erase_cursor(); /* Erase before moving */
                     cmd_buffer[pos] = '\0';
                     kprint("\n");
+                    
+                    /* Save to History */
+                    if (pos > 0) {
+                        if (history_count < HISTORY_MAX) {
+                            str_cpy(cmd_history[history_count], cmd_buffer);
+                            history_count++;
+                        } else {
+                            /* Shift */
+                            for (int i=1; i<HISTORY_MAX; i++) str_cpy(cmd_history[i-1], cmd_history[i]);
+                            str_cpy(cmd_history[HISTORY_MAX-1], cmd_buffer);
+                        }
+                    }
+                    blink_visible = 0;
                     break;
+                } else if (c == KEY_UP || c == KEY_DOWN) {
+                    if (c == KEY_UP) {
+                        if (history_view_index > 0) history_view_index--;
+                    } else {
+                        if (history_view_index < history_count) history_view_index++;
+                    }
+                    
+                    /* Clear current line logic */
+                    term_erase_cursor();
+                    while (pos > 0) {
+                        kprint("\b \b");
+                        pos--;
+                    }
+                    
+                    /* Load history */
+                    if (history_view_index < history_count) {
+                        str_cpy(cmd_buffer, cmd_history[history_view_index]);
+                        kprint(cmd_buffer);
+                        pos = str_len(cmd_buffer);
+                    } else {
+                        /* Back to empty/draft */
+                        cmd_buffer[0] = '\0';
+                        pos = 0;
+                    }
+                    term_draw_cursor();
                 } else if (c == '\b') {
                     if (pos > 0) {
                         term_erase_cursor(); /* Erase current block */
@@ -893,8 +1066,21 @@ void shell_run(void) {
             cmd_gfxtest();
         } else if (str_cmp(cmd_buffer, "jittest") == 0) {
             cmd_jittest();
+        } else if (str_cmp(cmd_buffer, "alloctest") == 0) {
+            cmd_alloc_test();
         } else if (str_cmp(cmd_buffer, "startwm") == 0) {
             cmd_startwm();
+        } else if (str_cmp(cmd_buffer, "mkfs") == 0) {
+            cmd_mkfs();
+        } else if (str_starts_with(cmd_buffer, "fdisk")) {
+            char *arg = get_arg(cmd_buffer);
+            cmd_fdisk(arg);
+        } else if (str_cmp(cmd_buffer, "mount") == 0) {
+            cmd_mount();
+        } else if (str_cmp(cmd_buffer, "lsdisk") == 0) {
+            cmd_lsdisk();
+        } else if (str_cmp(cmd_buffer, "save") == 0) {
+            cmd_save(arg);
         } else {
             kprint("Unknown command: ");
             kprint(cmd_buffer);

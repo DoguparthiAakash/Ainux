@@ -14,4 +14,9 @@ int atoi(const char *nptr);
 long atol(const char *nptr);
 void exit(int status);
 
+/* Random Number Generation */
+#define RAND_MAX 32767
+int rand(void);
+void srand(unsigned int seed);
+
 #endif

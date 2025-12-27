@@ -65,13 +65,19 @@ struct fat32_dir_entry {
 #define FAT32_EOC           0x0FFFFFF8  /* End of chain */
 #define FAT32_BAD_CLUSTER   0x0FFFFFF7
 
-/* Initialize FAT32 filesystem */
+/* Initialize FAT32 filesystem (Mount) */
 int fat32_init(void);
+
+/* Format Partition 1 */
+int fat32_format(void);
 
 /* List files in root directory */
 void fat32_list_files(void);
 
 /* Read a file by name */
 int fat32_read_file(const char *filename, uint8_t **data, uint32_t *size);
+
+/* Write/Create a file in root directory */
+int fat32_write_file(const char *filename, const uint8_t *data, uint32_t size);
 
 #endif

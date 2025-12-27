@@ -1,4 +1,7 @@
 #include "heap.h"
+
+// Replaced by Rust implementation in memory_rs
+#if 0
 #include "pmm.h"
 
 extern void kprint(const char *msg);
@@ -51,3 +54,4 @@ void kfree(void *ptr) {
     /* Bump allocator doesn't support free */
     (void)ptr;
 }
+#endif

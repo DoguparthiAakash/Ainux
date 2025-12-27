@@ -9,6 +9,7 @@
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
 #include "drivers/ps2.h"
+#include "drivers/ata.h"
 #include "wm.h"
 #include "shell.h"
 #include "font.h"
@@ -62,7 +63,45 @@ static void draw_char(char c, int x, int y, uint32_t color) {
     }
 }
 
+#include "io.h"
+
+#define COM1 0x3F8
+
+static void serial_init(void) {
+    outb(COM1 + 1, 0x00);    // Disable all interrupts
+    outb(COM1 + 3, 0x80);    // Enable DLAB (set baud rate divisor)
+    outb(COM1 + 0, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
+    outb(COM1 + 1, 0x00);    //                  (hi byte)
+    outb(COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
+    outb(COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
+    outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+}
+
+static int is_transmit_empty(void) {
+    return inb(COM1 + 5) & 0x20;
+}
+
+static void serial_putc(char c) {
+    while (is_transmit_empty() == 0);
+    outb(COM1, c);
+}
+
+int serial_received(void) {
+    return inb(COM1 + 5) & 1;
+}
+
+char serial_read(void) {
+    while (serial_received() == 0);
+    return inb(COM1);
+}
+
 void kprint(const char *msg) {
+    const char *p = msg;
+    while (*p) {
+        serial_putc(*p);
+        p++;
+    }
+
     if (!fb) return;
     
     while (*msg) {
@@ -225,6 +264,8 @@ void _start(void) {
     /* Initialize Graphics Subsystem */
     gfx_init(fb->address, fb->width, fb->height, fb->pitch);
     
+    serial_init();
+
     /* Clear screen */
     term_clear();
 
@@ -252,6 +293,9 @@ void _start(void) {
 
     kprint("Initializing Mouse...\n");
     mouse_init();
+
+    kprint("Initializing ATA Disk...\n");
+    ata_init();
 
     kprint("\nBoot complete!\n");
 

@@ -1,6 +1,7 @@
 /* PS/2 Controller Driver */
 #include "ps2.h"
 #include <stdint.h>
+#include "../io.h"
 
 #define PS2_DATA_PORT 0x60
 #define PS2_STATUS_PORT 0x64
@@ -22,16 +23,6 @@
 #define PS2_CMD_PORT2_TEST          0xA9
 
 extern void kprint(const char *msg);
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ( "inb %1, %0" : "=a"(ret) : "Nd"(port) );
-    return ret;
-}
-
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
-}
 
 static void ps2_wait_write(void) {
     while (inb(PS2_STATUS_PORT) & PS2_STATUS_INPUT_BUFFER);
