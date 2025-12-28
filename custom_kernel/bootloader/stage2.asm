@@ -441,9 +441,8 @@ long_mode_entry:
     mov ax, [0x8000]
     mov [rdi+48], rax          ; Count
     
-    ; InitRD (TODO: Actually load it)
-    mov qword [rdi+56], 0
-    mov qword [rdi+64], 0
+    ; Disable interrupts before jumping to kernel (Kernel will enable them after IDT setup)
+    cli
     
     ; Call Kernel
     mov rax, 0xffffffff80100000

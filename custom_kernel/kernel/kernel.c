@@ -256,6 +256,7 @@ static void hcf(void) {
 
 __attribute__((section(".text.entry")))
 void _start(boot_info_t *boot_info) {
+    __asm__ volatile("cli");
     __asm__ volatile ("mov $0x3f8, %%dx; mov $'K', %%al; out %%al, %%dx" ::: "ax", "dx");
     
     /* Capture boot info */
@@ -263,7 +264,7 @@ void _start(boot_info_t *boot_info) {
     
     serial_init();
     kprint("[KERNEL] We have liftoff!\n");
-    for(;;) { __asm__ volatile("hlt"); }
+    while(1) {}
     
     /* Initialize Graphics Subsystem */
     if (g_boot_info) {
