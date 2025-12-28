@@ -94,36 +94,41 @@ void ata_init(void) {
 }
 
 int ata_read_sectors(uint32_t lba, uint8_t count, uint8_t *buffer) {
-    outb(ATA_LBA_LOW, (uint8_t)lba);
-    outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
-    outb(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
-    outb(ATA_COMMAND, ATA_CMD_READ_PIO);
+    /* Select Drive (Master/Slave) + LBA High bits */
+    outb(active_port + ATA_REG_DRIVE_HEAD,  0xE0 | (active_drive == 0xA0 ? 0 : 0x10) | ((lba >> 24) & 0x0F));
+    /* Wait for selection? */
+    
+    outb(active_port + ATA_REG_SECTOR_COUNT, count);
+    outb(active_port + ATA_REG_LBA_LOW, (uint8_t)lba);
+    outb(active_port + ATA_REG_LBA_MID, (uint8_t)(lba >> 8));
+    outb(active_port + ATA_REG_LBA_HIGH, (uint8_t)(lba >> 16));
+    outb(active_port + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
     
     for (int i = 0; i < count; i++) {
         ata_wait_bsy();
         ata_wait_drq();
-        insw(ATA_DATA, buffer + (i * 512), 256); /* 256 words = 512 bytes */
+        insw(active_port + ATA_REG_DATA, buffer + (i * 512), 256); /* 256 words = 512 bytes */
     }
     return 0;
 }
 
 int ata_write_sectors(uint32_t lba, uint8_t count, const uint8_t *buffer) {
     ata_wait_bsy();
-    outb(ATA_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F));
-    outb(ATA_SECTOR_CNT, count);
-    outb(ATA_LBA_LOW, (uint8_t)lba);
-    outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
-    outb(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
-    outb(ATA_COMMAND, ATA_CMD_WRITE_PIO);
+    outb(active_port + ATA_REG_DRIVE_HEAD, 0xE0 | (active_drive == 0xA0 ? 0 : 0x10) | ((lba >> 24) & 0x0F));
+    outb(active_port + ATA_REG_SECTOR_COUNT, count);
+    outb(active_port + ATA_REG_LBA_LOW, (uint8_t)lba);
+    outb(active_port + ATA_REG_LBA_MID, (uint8_t)(lba >> 8));
+    outb(active_port + ATA_REG_LBA_HIGH, (uint8_t)(lba >> 16));
+    outb(active_port + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
     
     for (int i = 0; i < count; i++) {
         ata_wait_bsy();
         ata_wait_drq();
-        outsw(ATA_DATA, buffer + (i * 512), 256);
+        outsw(active_port + ATA_REG_DATA, buffer + (i * 512), 256);
     }
     
     /* Flush Cache? */
-    outb(ATA_COMMAND, 0xE7); /* Cache Flush */
+    outb(active_port + ATA_REG_COMMAND, 0xE7); /* Cache Flush */
     ata_wait_bsy();
 
     return 0;

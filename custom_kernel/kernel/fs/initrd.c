@@ -1,15 +1,8 @@
 #include "initrd.h"
-#include <limine.h>
+#include "boot_info.h"
 #include "../mm/heap.h"
 
 extern void kprint(const char *msg);
-
-/* Limine module request */
-__attribute__((used, section(".requests")))
-static volatile struct limine_module_request module_request = {
-    .id = LIMINE_MODULE_REQUEST,
-    .revision = 0
-};
 
 static uint8_t *initrd_start = NULL;
 static uint64_t initrd_size = 0;
@@ -90,47 +83,49 @@ static const char *normalize_name(const char *name) {
 }
 
 int initrd_init(void) {
-    if (module_request.response == NULL || module_request.response->module_count == 0) {
-        kprint("[InitRD] No modules found!\n");
+    if (!g_boot_info || !g_boot_info->initrd_addr) {
+        kprint("[InitRD] No initrd found in boot info!\n");
         return -1;
     }
-    struct limine_file *module = module_request.response->modules[0];
+    
+    uint64_t addr = (uint64_t)g_boot_info->initrd_addr;
+    uint64_t size = g_boot_info->initrd_size;
     
     initrd_capacity = 1024 * 1024;
     initrd_start = (uint8_t *)kmalloc(initrd_capacity);
     
     if (!initrd_start) {
         kprint("[InitRD] Failed to allocate RAM buffer!\n");
-        initrd_start = (uint8_t *)module->address;
-        initrd_size = module->size;
-        initrd_capacity = module->size;
+        /* Fallback to direct access if possible (read only) */
+        /* Currently we can't easily access > 2MB if initrd is there unless mapped */
+        /* But let's assume it is accessible */
+        initrd_start = (uint8_t *)addr; /* Warning: Might be physical, need mapping if > 2MB and not identity mapped */
+        initrd_size = size;
+        initrd_capacity = size;
         is_writable = 0;
-        kprint("[InitRD] Fallback to Read-Only mode\n");
+        kprint("[InitRD] Fallback to Read-Only mode (Unsafe if unmapped)\n");
     } else {
-        uint64_t copy_size = (module->size > initrd_capacity) ? initrd_capacity : module->size;
-        mem_cpy(initrd_start, module->address, copy_size);
+        uint64_t copy_size = (size > initrd_capacity) ? initrd_capacity : size;
+        
+        /* If addr is physical > 2MB, we might crash here if not mapped. 
+           But since we haven't loaded initrd in stage2 yet, this path is hypothetical. 
+           If loaded, we'd need to map it or load it to < 2MB.
+        */
+        
+        mem_cpy(initrd_start, (void *)addr, copy_size);
         
         /* Trim EOF zero blocks to determine real logical size */
-        /* Scan headers until we find end */
+        /* ... same logic ... */
         uint8_t *ptr = initrd_start;
         uint64_t real_size = 0;
         
         while (ptr < initrd_start + copy_size) {
             struct tar_header *header = (struct tar_header *)ptr;
-            /* Check if zero block */
-            if (header->filename[0] == '\0') {
-                /* End of data found */
-                break;
-            }
-            
-            /* Basic validity check */
-            if (header->magic[0] != 'u') {
-                /* Not ustar, assume end or garbage */
-                break;
-            }
+            if (header->filename[0] == '\0') break;
+            if (header->magic[0] != 'u') break;
 
-            uint64_t size = octal_to_int(header->size, 11);
-            uint64_t block_size = 512 + ((size + 511) / 512) * 512;
+            uint64_t fsize = octal_to_int(header->size, 11);
+            uint64_t block_size = 512 + ((fsize + 511) / 512) * 512;
             
             ptr += block_size;
             real_size += block_size;
@@ -139,7 +134,6 @@ int initrd_init(void) {
         initrd_size = real_size;
         is_writable = 1;
         
-        /* Ensure we have EOF blocks after our trimmed size in the buffer */
         if (initrd_size + 1024 <= initrd_capacity) {
             mem_set(initrd_start + initrd_size, 0, 1024);
         }

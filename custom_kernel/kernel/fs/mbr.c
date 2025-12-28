@@ -1,27 +1,10 @@
 #include <stdint.h>
 #include <string.h>
 #include "../drivers/ata.h"
-#include "../libc/stdio.h" /* For kprint wrapper mostly */
+#include "../libc/stdio.h"
+#include "mbr.h"
 
-/* MBR Partition Entry */
-struct mbr_entry {
-    uint8_t  status; /* 0x80 = bootable */
-    uint8_t  start_head;
-    uint8_t  start_sector;
-    uint8_t  start_cylinder;
-    uint8_t  type; /* 0x0B or 0x0C for FAT32 */
-    uint8_t  end_head;
-    uint8_t  end_sector;
-    uint8_t  end_cylinder;
-    uint32_t lba_start;
-    uint32_t lba_length;
-} __attribute__((packed));
-
-struct mbr {
-    uint8_t  bootstrap[446];
-    struct mbr_entry partitions[4];
-    uint16_t signature; /* 0xAA55 */
-} __attribute__((packed));
+/* Structs moved to mbr.h */
 
 void mbr_read(struct mbr *buffer) {
     ata_read_sectors(0, 1, (uint8_t *)buffer);

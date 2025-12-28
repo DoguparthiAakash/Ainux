@@ -328,9 +328,17 @@ static void cmd_write(char *filename) {
                     editor_running = 0;
                     break;
                 } else if (c == 's' - 'a' + 1 || c == 's') { /* Ctrl+S */
-                    initrd_delete_file(editor_filename);
-                    initrd_create_file(editor_filename, editor_buffer, editor_buf_len);
-                    term_set_cursor(0, 47); kprint("Saved!       ");
+                    /* Try to save to Disk (FAT32) first */
+                    // initrd_delete_file(editor_filename); // Don't delete from InitRD if we want persistence on disk
+                    // initrd_create_file(editor_filename, editor_buffer, editor_buf_len);
+                    
+                    if (fat32_write_file(editor_filename, (uint8_t*)editor_buffer, editor_buf_len) == 0) {
+                        term_set_cursor(0, 47); kprint("Saved to Disk! ");
+                    } else {
+                        /* Fallback or just error */
+                        term_set_cursor(0, 47); kprint("Save Failed!   ");
+                    }
+                    
                     int x,y; get_cursor_screen_pos(editor_cursor_idx, &x, &y);
                     term_set_cursor(x, y);
                 }
@@ -553,17 +561,31 @@ static void cmd_cd(char *path) {
     if (initrd_is_dir(target)) {
         str_cpy(prev_cwd, cwd); /* Save current as previous */
         str_cpy(cwd, target);
-        kprint("\n");
+        fat32_change_dir("/"); /* Reset FAT32 context if moving to known InitRD path */
     } else {
-        kprint("\nDirectory not found: ");
-        kprint(target);
-        kprint("\n\n");
+        /* Check FAT32 */
+        /* Currently our path logic splits InitRD and FAT32.
+           If user types 'cd EFI', target becomes '/EFI'. 
+           We pass 'EFI' to fat32_change_dir. */
+             
+        char *fat_path = target;
+        if (fat_path[0] == '/') fat_path++; /* Skip leading slash */
+        
+        if (fat32_change_dir(fat_path) == 0) {
+             /* Success! */
+             str_cpy(prev_cwd, cwd);
+             str_cpy(cwd, target);
+        } else {
+             kprint("\nDirectory not found: ");
+             kprint(target);
+             kprint("\n\n");
+        }
     }
 }
 
 /* Command: ls */
 static void cmd_ls(char *arg) {
-    kprint("\n");
+    kprint("\n[InitRD]\n");
     char target[256];
     
     if (arg && arg[0] != '\0') {
@@ -579,11 +601,15 @@ static void cmd_ls(char *arg) {
     }
     
     initrd_list_files(target);
+    
+    kprint("\n[Disk (FAT32)]\n");
+    fat32_list_files();
     kprint("\n");
 }
 
 /* Command: cat */
 static void cmd_cat(const char *filename) {
+    /* Try InitRD first */
     char full_path[256];
     if (filename[0] == '/') {
         str_cpy(full_path, filename);
@@ -602,6 +628,17 @@ static void cmd_cat(const char *filename) {
         kprint("\n");
         kprint_buf((char *)file->data, file->size);
         kprint("\n\n");
+        return;
+    }
+    
+    /* Try FAT32 */
+    uint8_t *data;
+    uint32_t size;
+    if (fat32_read_file(filename, &data, &size) == 0) {
+        kprint("\n");
+        kprint_buf((char *)data, size);
+        kprint("\n\n");
+        kfree(data);
     } else {
         kprint("\nFile not found: ");
         kprint(filename);
@@ -614,18 +651,14 @@ static void cmd_touch(char *name) {
         kprint("Usage: touch <filename>\n");
         return;
     }
-    char full_path[256];
-    if (name[0] == '/') str_cpy(full_path, name);
-    else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, name);
-    }
     
-    if (initrd_create_file(full_path, NULL, 0) == 0) {
-        kprint("File created.\n");
+    /* Create empty file on FAT32 */
+    /* Dummy data */
+    uint8_t dummy[1] = {0};
+    if (fat32_write_file(name, dummy, 0) == 0) {
+        kprint("File created on Disk.\n");
     } else {
-        kprint("Failed to create file.\n");
+        kprint("Failed to create file on Disk.\n");
     }
 }
 
@@ -642,13 +675,19 @@ static void cmd_mkdir(char *name) {
         str_cat(full_path, name);
     }
     if (initrd_create_dir(full_path) == 0) {
-        kprint("Directory created.\n");
+        kprint("Directory created in InitRD (Ramdisk).\n");
     } else {
-        kprint("Failed to create dir.\n");
+        /* Try FAT32 */
+        if (fat32_create_dir(name) == 0) {
+             kprint("Directory created on Disk (FAT32).\n");
+        } else {
+             kprint("Failed to create dir.\n");
+        }
     }
 }
 
 static void cmd_cp(char *args) {
+    if (!args) { kprint("Usage: cp <src> <dest>\n"); return; }
     char *src = args;
     char *dest = NULL;
     while (*args && *args != ' ') args++;
@@ -661,32 +700,111 @@ static void cmd_cp(char *args) {
         return;
     }
     
-    char src_path[256];
-    if (src[0] == '/') str_cpy(src_path, src);
-    else {
-        str_cpy(src_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(src_path, "/");
-        str_cat(src_path, src);
-    }
-    struct initrd_file *sfile = initrd_find_file(src_path);
-    if (!sfile && src_path[0]=='/') sfile = initrd_find_file(src_path+1);
+    /* Read Source */
+    uint8_t *data = NULL;
+    uint32_t size = 0;
     
-    if (!sfile) {
-        kprint("Source not found.\n");
-        return;
-    }
-    
-    char dest_path[256];
-    if (dest[0] == '/') str_cpy(dest_path, dest);
-    else {
-        str_cpy(dest_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(dest_path, "/");
-        str_cat(dest_path, dest);
-    }
-    if (initrd_create_file(dest_path, (char*)sfile->data, sfile->size) == 0) {
-        kprint("File copied.\n");
+    /* Try InitRD read */
+    struct initrd_file *sfile = initrd_find_file(src);
+    if (sfile) {
+        data = (uint8_t*)sfile->data;
+        size = sfile->size;
     } else {
-        kprint("Copy failed.\n");
+        /* Try FAT32 read */
+        if (fat32_read_file(src, &data, &size) == 0) {
+            /* Success, data allocated by read */
+        } else {
+            kprint("Source not found.\n");
+            return;
+        }
+    }
+    
+    /* Write Destination */
+    /* Try FAT32 write */
+    if (fat32_write_file(dest, data, size) == 0) {
+        kprint("Copied to Disk.\n");
+    } else {
+        if (initrd_create_file(dest, (char*)data, size) == 0) {
+             kprint("Copied to InitRD.\n");
+        } else {
+             kprint("Copy failed.\n");
+        }
+    }
+    
+    /* Free if allocated from FAT32 read (not initrd) */
+    if (!sfile && data) kfree(data);
+}
+
+/* Command: apt */
+static void cmd_apt(char *args) {
+    if (!args) { kprint("Usage: apt <install|remove|list> [package]\n"); return; }
+    char *cmd = args;
+    char *pkg = NULL;
+    while (*args && *args != ' ') args++;
+    if (*args == ' ') {
+        *args = '\0';
+        pkg = args + 1;
+    }
+    
+    if (!cmd) { kprint("Usage: apt <install|remove|list> [package]\n"); return; }
+    
+    if (str_cmp(cmd, "install") == 0) {
+        if (!pkg) { kprint("Usage: apt install <package>\n"); return; }
+        
+        /* Ensure /bin exists */
+        fat32_create_dir("bin");
+        
+        /* Copy file to /bin/pkg */
+        char dest[64];
+        str_cpy(dest, "bin/");
+        str_cat(dest, pkg);
+        
+        kprint("Installing "); kprint(pkg); kprint("...\n");
+        
+        /* Read Source (Local CWD) */
+        uint8_t *data = NULL;
+        uint32_t size = 0;
+        
+        struct initrd_file *sfile = initrd_find_file(pkg);
+        if (sfile) {
+            data = (uint8_t*)sfile->data;
+            size = sfile->size;
+        } else {
+            /* Try FAT32 read from CWD */
+            if (fat32_read_file(pkg, &data, &size) == 0) {
+                /* Success */
+            } else {
+                kprint("Package not found in current directory.\n");
+                return;
+            }
+        }
+        
+        /* Write to /bin */
+        if (fat32_change_dir("bin") != 0) { kprint("Failed to access /bin\n"); return; }
+        if (fat32_write_file(pkg, data, size) == 0) kprint("Installed.\n");
+        else kprint("Installation failed.\n");
+        fat32_change_dir("/");
+        
+        if (!sfile && data) kfree(data);
+        
+    } else if (str_cmp(cmd, "remove") == 0) {
+        if (!pkg) { kprint("Usage: apt remove <package>\n"); return; }
+        
+        if (fat32_change_dir("bin") != 0) { kprint("/bin not found.\n"); return; }
+        if (fat32_delete_file(pkg) == 0) kprint("Removed.\n");
+        else kprint("Package not found.\n");
+        fat32_change_dir("/");
+        
+    } else if (str_cmp(cmd, "list") == 0) {
+        kprint("Listing packages in /bin:\n");
+        if (fat32_change_dir("bin") == 0) {
+            fat32_list_files(); /* Use existing list function */
+            fat32_change_dir("/");
+        } else {
+            kprint("/bin directory empty or missing.\n");
+        }
+    } else {
+        kprint("Unknown apt command.\n");
     }
 }
 
@@ -695,6 +813,14 @@ static void cmd_rm(char *name) {
         kprint("Usage: rm <filename>\n");
         return;
     }
+    
+    /* Try FAT32 first */
+    if (fat32_delete_file(name) == 0) {
+        kprint("File deleted from Disk.\n");
+        return;
+    }
+    
+    /* Fall back to InitRD */
     char full_path[256];
     if (name[0] == '/') str_cpy(full_path, name);
     else {
@@ -703,9 +829,9 @@ static void cmd_rm(char *name) {
         str_cat(full_path, name);
     }
     if (initrd_delete_file(full_path) == 0) {
-        kprint("File deleted.\n");
+        kprint("File deleted from InitRD.\n");
     } else {
-        kprint("Delete failed (not found?)\n");
+        kprint("Delete failed (not found)\n");
     }
 }
 
@@ -960,15 +1086,32 @@ static void cmd_as(char *filename) {
     struct initrd_file *file = initrd_find_file(full_path);
     if (!file && full_path[0] == '/') file = initrd_find_file(full_path+1);
     
+    char *data = NULL;
+    uint32_t size = 0;
+    int is_disk = 0;
+
     if (file) {
+        data = (char *)file->data;
+        size = file->size;
+    } else {
+         /* Check Disk */
+         uint8_t *d;
+         if (fat32_read_file(filename, &d, &size) == 0) {
+             data = (char *)d;
+             is_disk = 1;
+         }
+    }
+    
+    if (data) {
         /* Ensure null-terminated string */
-        char *src = (char *)kmalloc(file->size + 1);
-        mem_cpy(src, file->data, file->size);
-        src[file->size] = '\0';
+        char *src = (char *)kmalloc(size + 1);
+        mem_cpy(src, data, size);
+        src[size] = '\0';
         
         asm_run(src);
         
         kfree(src);
+        if (is_disk) kfree(data);
     } else {
         kprint("File not found: ");
         kprint(filename);
@@ -1212,12 +1355,16 @@ void shell_run(void) {
             cmd_dmesg();
         } else if (str_cmp(cmd_buffer, "touch") == 0) {
             cmd_touch(arg);
+        } else if (str_cmp(cmd_buffer, "rm") == 0) {
+            cmd_rm(arg);
         } else if (str_cmp(cmd_buffer, "mkdir") == 0) {
             cmd_mkdir(arg);
         } else if (str_cmp(cmd_buffer, "cp") == 0) {
             cmd_cp(arg);
         } else if (str_cmp(cmd_buffer, "rm") == 0) {
             cmd_rm(arg);
+        } else if (str_cmp(cmd_buffer, "apt") == 0) {
+            cmd_apt(arg);
         } else if (str_cmp(cmd_buffer, "write") == 0) {
             cmd_write(arg);
         } else if (str_cmp(cmd_buffer, "clear") == 0) {

@@ -22,6 +22,8 @@ static int is_digit(char c) { return c >= '0' && c <= '9'; }
 static int is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 static int is_space(char c) { return c == ' ' || c == '\t'; }
 
+static int tok_eq(const char *tok, const char *target);
+
 static int parse_reg(const char *s) {
     if (((s[0] == 'r' || s[0] == 'R') && (s[2] == 'x' || s[2] == 'X'))) {
         if (s[1] == 'a' || s[1] == 'A') return REG_RAX;
@@ -29,14 +31,25 @@ static int parse_reg(const char *s) {
         if (s[1] == 'c' || s[1] == 'C') return REG_RCX;
         if (s[1] == 'd' || s[1] == 'D') return REG_RDX;
     }
-    /* Index regs not fully supported naming wise yet/lazy parsing for MV */
-    /* Let's be explicit */
-    if (strcmp(s, "RAX") == 0 || strcmp(s, "rax") == 0) return REG_RAX;
-    if (strcmp(s, "RBX") == 0 || strcmp(s, "rbx") == 0) return REG_RBX;
-    if (strcmp(s, "RCX") == 0 || strcmp(s, "rcx") == 0) return REG_RCX;
-    if (strcmp(s, "RDX") == 0 || strcmp(s, "rdx") == 0) return REG_RDX;
-    if (strcmp(s, "RSI") == 0 || strcmp(s, "rsi") == 0) return REG_RSI;
-    if (strcmp(s, "RDI") == 0 || strcmp(s, "rdi") == 0) return REG_RDI;
+    /* Explicit Checks */
+    if (tok_eq(s, "RAX")) return REG_RAX;
+    if (tok_eq(s, "RCX")) return REG_RCX;
+    if (tok_eq(s, "RDX")) return REG_RDX;
+    if (tok_eq(s, "RBX")) return REG_RBX;
+    if (tok_eq(s, "RSP")) return REG_RSP;
+    if (tok_eq(s, "RBP")) return REG_RBP;
+    if (tok_eq(s, "RSI")) return REG_RSI;
+    if (tok_eq(s, "RDI")) return REG_RDI;
+    
+    if (tok_eq(s, "R8")) return 8;
+    if (tok_eq(s, "R9")) return 9;
+    if (tok_eq(s, "R10")) return 10;
+    if (tok_eq(s, "R11")) return 11;
+    if (tok_eq(s, "R12")) return 12;
+    if (tok_eq(s, "R13")) return 13;
+    if (tok_eq(s, "R14")) return 14;
+    if (tok_eq(s, "R15")) return 15;
+    
     return REG_NONE;
 }
 
@@ -49,23 +62,39 @@ static uint64_t parse_imm(const char *s) {
     return val;
 }
 
-/* Check tokens ignoring case */
-static int tok_eq(const char *tok, const char *target) {
-    /* Simple case insensitive match */
-    int i = 0;
-    while (tok[i] && target[i]) {
-        char a = tok[i];
-        char b = target[i];
+static int str_cmp_nocase(const char *s1, const char *s2) {
+    while (*s1 && *s2) {
+        char a = *s1;
+        char b = *s2;
         if (a >= 'a' && a <= 'z') a -= 32;
         if (b >= 'a' && b <= 'z') b -= 32;
-        if (a != b) return 0;
-        i++;
+        if (a != b) return a - b;
+        s1++; s2++;
     }
-    return tok[i] == target[i];
+    return *s1 - *s2;
+}
+
+/* Check tokens ignoring case */
+static int tok_eq(const char *tok, const char *target) {
+    return str_cmp_nocase(tok, target) == 0;
+}
+
+/* Helper to generate REX prefix */
+/* REX = 0100 W R X B */
+/* W=1 for 64-bit operand size */
+/* R=1 if Reg field extends (reg >= 8) */
+/* X=1 if Index field extends */
+/* B=1 if RM/Base field extends (rm >= 8) */
+static uint8_t rex(int is_64, int reg_r, int reg_b) {
+    uint8_t r = 0x40;
+    if (is_64) r |= 0x08;
+    if (reg_r >= 8) r |= 0x04;
+    if (reg_b >= 8) r |= 0x01;
+    return r;
 }
 
 void asm_run(const char *source) {
-    /* Allocate executable page (Heap is RWX in our kernel) */
+    /* Allocate executable page */
     uint8_t *code = (uint8_t*)kmalloc(4096);
     if (!code) { kprint("ASM: Out of memory\n"); return; }
     
@@ -98,11 +127,10 @@ void asm_run(const char *source) {
         while (is_space(*ptr)) ptr++;
         
         /* Parse Ops */
-        /* Currently expects: REG, IMM  or  REG, REG */
         char op1_str[16];
         char op2_str[16];
-        int op1_reg = -1;
-        int op2_reg = -1;
+        int op1_reg = REG_NONE;
+        int op2_reg = REG_NONE;
         uint64_t op2_imm = 0;
         int has_imm = 0;
         
@@ -134,35 +162,35 @@ void asm_run(const char *source) {
         if (tok_eq(mnemonic, "MOV")) {
             if (op1_reg != REG_NONE) {
                 if (has_imm) {
-                    /* MOV R64, IMM64: 48 B8+reg <64bit> */
-                    code[ip++] = 0x48;
-                    code[ip++] = 0xB8 + op1_reg;
+                    /* MOV R64, IMM64: REX.W+B B8+rd imm64 */
+                    code[ip++] = rex(1, 0, op1_reg);
+                    code[ip++] = 0xB8 + (op1_reg & 7);
                     *(uint64_t*)&code[ip] = op2_imm;
                     ip += 8;
                 } else if (op2_reg != REG_NONE) {
-                    /* MOV R64, R64: 48 89 (11 dst src) -> src is reg, dst is rm? */
-                    /* ModRM: src=reg, dst=rm. 0x89 is MOV r/m, r. */
-                    /* So dst is op1, src is op2. */
-                    /* ModRM(11, op2, op1) */
-                    code[ip++] = 0x48;
+                    /* MOV R64, R64: REX.W+R+B 89 /r */
+                    /* ModRM: src=op2(reg), dst=op1(rm) */
+                    /* MR encoding: 89 mod(11) reg(op2) rm(op1) */
+                    code[ip++] = rex(1, op2_reg, op1_reg);
                     code[ip++] = 0x89;
-                    code[ip++] = 0xC0 | (op2_reg << 3) | op1_reg;
+                    code[ip++] = 0xC0 | ((op2_reg & 7) << 3) | (op1_reg & 7);
                 }
+            } else {
+                 kprint("ASM: Invalid Reg1 in MOV\n");
             }
         } else if (tok_eq(mnemonic, "ADD")) {
             if (op1_reg != REG_NONE && op2_reg != REG_NONE) {
-                 /* ADD R64, R64: 48 01 (11 src dst) */
-                 /* src=op2, dst=op1 */
-                 code[ip++] = 0x48;
+                 /* ADD R64, R64: 48 01 */
+                 code[ip++] = rex(1, op2_reg, op1_reg);
                  code[ip++] = 0x01;
-                 code[ip++] = 0xC0 | (op2_reg << 3) | op1_reg;
+                 code[ip++] = 0xC0 | ((op2_reg & 7) << 3) | (op1_reg & 7);
             }
         } else if (tok_eq(mnemonic, "SUB")) {
             if (op1_reg != REG_NONE && op2_reg != REG_NONE) {
-                 /* SUB R64, R64: 48 29 (11 src dst) */
-                 code[ip++] = 0x48;
+                 /* SUB R64, R64: 48 29 */
+                 code[ip++] = rex(1, op2_reg, op1_reg);
                  code[ip++] = 0x29;
-                 code[ip++] = 0xC0 | (op2_reg << 3) | op1_reg;
+                 code[ip++] = 0xC0 | ((op2_reg & 7) << 3) | (op1_reg & 7);
             }
         } else if (tok_eq(mnemonic, "INT")) {
             /* INT imm8: CD imm8 */

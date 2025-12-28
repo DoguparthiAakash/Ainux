@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
-#include <limine.h>
+#include "boot_info.h"
 #include <gdt.h>
 #include <idt.h>
 #include "fs/initrd.h"
@@ -15,20 +15,14 @@
 #include "font.h"
 #include "gfx.h"
 #include "log.h"
+#include "sched/sched.h"
+#include "drivers/timer.h"
+#include "fs/mbr.h"
+#include "fs/fat32.h"
 
-/* Set the base revision to 3 */
-__attribute__((used, section(".requests")))
-static volatile LIMINE_BASE_REVISION(3);
+/* Global boot info struct */
+boot_info_t *g_boot_info = NULL;
 
-/* Framebuffer request */
-__attribute__((used, section(".requests")))
-static volatile struct limine_framebuffer_request framebuffer_request = {
-    .id = LIMINE_FRAMEBUFFER_REQUEST,
-    .revision = 0
-};
-
-/* Global framebuffer pointer */
-static struct limine_framebuffer *fb = NULL;
 static int cursor_x = 0;
 static int cursor_y = 0;
 
@@ -38,6 +32,8 @@ static void draw_char(char c, int x, int y, uint32_t color) {
         return;
     }
     
+    if (!g_boot_info) return;
+
     /* Get font data */
     int font_index = c - 32;
     if (font_index < 0 || font_index >= 95) {
@@ -52,8 +48,8 @@ static void draw_char(char c, int x, int y, uint32_t color) {
         for (int dx = 0; dx < 8; dx++) {
             int px = x * 8 + dx;
             int py = y * 12 + dy;
-            if (px < (int)fb->width && py < (int)fb->height) {
-                uint32_t *pixel = &((uint32_t *)fb->address)[py * (fb->pitch / 4) + px];
+            if (px < (int)g_boot_info->framebuffer_width && py < (int)g_boot_info->framebuffer_height) {
+                uint32_t *pixel = &((uint32_t *)g_boot_info->framebuffer_addr)[py * (g_boot_info->framebuffer_pitch / 4) + px];
                 if (row & (1 << dx)) {
                     *pixel = color;
                 } else {
@@ -96,10 +92,13 @@ char serial_read(void) {
     return inb(COM1);
 }
 
-#include "log.h"
-#include "gfx.h"
-
-/* ... existing code ... */
+void background_task(void) {
+    while (1) {
+        /* Busy wait */
+        for (volatile int i = 0; i < 100000000; i++);
+        // kprint("."); /* Silenced for usability */
+    }
+}
 
 void kprint(const char *msg) {
     klog_write(msg); /* Hook for dmesg */
@@ -110,30 +109,28 @@ void kprint(const char *msg) {
         p++;
     }
 
-    if (!fb) return;
-    
-    /* ... rest of kprint ... */
+    if (!g_boot_info) return;
     
     while (*msg) {
         if (*msg == '\n') {
             cursor_x = 0;
             cursor_y++;
-            if (cursor_y >= (int)(fb->height / 12)) {
+            if (cursor_y >= (int)(g_boot_info->framebuffer_height / 12)) {
                 /* Scrolling Logic */
-                uint32_t *fb_ptr = (uint32_t *)fb->address;
-                uint64_t pitch_u32 = fb->pitch / 4;
-                uint64_t total_lines = fb->height;
+                uint32_t *fb_ptr = (uint32_t *)g_boot_info->framebuffer_addr;
+                uint64_t pitch_u32 = g_boot_info->framebuffer_pitch / 4;
+                uint64_t total_lines = g_boot_info->framebuffer_height;
                 
                 /* Shift copy */
                 for (uint64_t y = 0; y < total_lines - 12; y++) {
-                    for (uint64_t x = 0; x < fb->width; x++) {
+                    for (uint64_t x = 0; x < g_boot_info->framebuffer_width; x++) {
                             fb_ptr[y * pitch_u32 + x] = fb_ptr[(y + 12) * pitch_u32 + x];
                     }
                 }
                 
                 /* Clear the bottom 12 lines */
                 for (uint64_t y = total_lines - 12; y < total_lines; y++) {
-                    for (uint64_t x = 0; x < fb->width; x++) {
+                    for (uint64_t x = 0; x < g_boot_info->framebuffer_width; x++) {
                         fb_ptr[y * pitch_u32 + x] = 0;
                     }
                 }
@@ -149,28 +146,27 @@ void kprint(const char *msg) {
         } else {
             draw_char(*msg, cursor_x, cursor_y, 0xFFFFFF);
             cursor_x++;
-            if (cursor_x >= (int)(fb->width / 8)) {
+            if (cursor_x >= (int)(g_boot_info->framebuffer_width / 8)) {
                 cursor_x = 0;
                 cursor_y++;
-                if (cursor_y >= (int)(fb->height / 12)) {
+                if (cursor_y >= (int)(g_boot_info->framebuffer_height / 12)) {
                     /* Scrolling Logic */
                     
                     /* 1. Move everything UP by 12 pixels */
-                    uint32_t *fb_ptr = (uint32_t *)fb->address;
-                    uint64_t pitch_u32 = fb->pitch / 4;
-                    uint64_t total_lines = fb->height;
+                    uint32_t *fb_ptr = (uint32_t *)g_boot_info->framebuffer_addr;
+                    uint64_t pitch_u32 = g_boot_info->framebuffer_pitch / 4;
+                    uint64_t total_lines = g_boot_info->framebuffer_height;
                     
                     /* Shift copy */
                     for (uint64_t y = 0; y < total_lines - 12; y++) {
-                        /* Optimize this with a larger memcpy if we had libc, but loop is fine for now */
-                        for (uint64_t x = 0; x < fb->width; x++) {
+                        for (uint64_t x = 0; x < g_boot_info->framebuffer_width; x++) {
                              fb_ptr[y * pitch_u32 + x] = fb_ptr[(y + 12) * pitch_u32 + x];
                         }
                     }
                     
                     /* 2. Clear the bottom 12 lines */
                     for (uint64_t y = total_lines - 12; y < total_lines; y++) {
-                        for (uint64_t x = 0; x < fb->width; x++) {
+                        for (uint64_t x = 0; x < g_boot_info->framebuffer_width; x++) {
                             fb_ptr[y * pitch_u32 + x] = 0;
                         }
                     }
@@ -192,22 +188,22 @@ void kprint_buf(const char *buf, uint64_t len) {
 
 /* NEW: TUI Functions */
 void term_clear(void) {
-    if (!fb) return;
+    if (!g_boot_info) return;
     /* Clear entire framebuffer to black */
-    for (uint64_t i = 0; i < fb->height * fb->pitch / 4; i++) {
-        ((uint32_t *)fb->address)[i] = 0;
+    for (uint64_t i = 0; i < g_boot_info->framebuffer_height * g_boot_info->framebuffer_pitch / 4; i++) {
+        ((uint32_t *)g_boot_info->framebuffer_addr)[i] = 0;
     }
     cursor_x = 0;
     cursor_y = 0;
 }
 
 void term_set_cursor(int x, int y) {
-    if (!fb) return;
+    if (!g_boot_info) return;
     /* Clamp to screen bounds */
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    int max_x = (fb->width / 8);
-    int max_y = (fb->height / 12);
+    int max_x = (g_boot_info->framebuffer_width / 8);
+    int max_y = (g_boot_info->framebuffer_height / 12);
     
     if (x >= max_x) x = max_x - 1;
     if (y >= max_y) y = max_y - 1;
@@ -217,7 +213,7 @@ void term_set_cursor(int x, int y) {
 }
 
 void term_draw_cursor(void) {
-    if (!fb) return;
+    if (!g_boot_info) return;
     int x = cursor_x;
     int y = cursor_y;
     
@@ -226,8 +222,8 @@ void term_draw_cursor(void) {
         for (int dx = 0; dx < 8; dx++) {
              int px = x * 8 + dx;
              int py = y * 12 + dy;
-             if (px < (int)fb->width && py < (int)fb->height) {
-                 uint32_t *pixel = &((uint32_t *)fb->address)[py * (fb->pitch / 4) + px];
+             if (px < (int)g_boot_info->framebuffer_width && py < (int)g_boot_info->framebuffer_height) {
+                 uint32_t *pixel = &((uint32_t *)g_boot_info->framebuffer_addr)[py * (g_boot_info->framebuffer_pitch / 4) + px];
                  *pixel = 0x00FF00; /* Green Cursor */
              }
         }
@@ -235,7 +231,7 @@ void term_draw_cursor(void) {
 }
 
 void term_erase_cursor(void) {
-    if (!fb) return;
+    if (!g_boot_info) return;
     int x = cursor_x;
     int y = cursor_y;
     
@@ -244,8 +240,8 @@ void term_erase_cursor(void) {
         for (int dx = 0; dx < 8; dx++) {
              int px = x * 8 + dx;
              int py = y * 12 + dy;
-             if (px < (int)fb->width && py < (int)fb->height) {
-                 uint32_t *pixel = &((uint32_t *)fb->address)[py * (fb->pitch / 4) + px];
+             if (px < (int)g_boot_info->framebuffer_width && py < (int)g_boot_info->framebuffer_height) {
+                 uint32_t *pixel = &((uint32_t *)g_boot_info->framebuffer_addr)[py * (g_boot_info->framebuffer_pitch / 4) + px];
                  *pixel = 0x000000; /* Black */
              }
         }
@@ -258,26 +254,25 @@ static void hcf(void) {
     }
 }
 
-void _start(void) {
-    if (LIMINE_BASE_REVISION_SUPPORTED == false) {
-        hcf();
-    }
-
-    /* Get framebuffer */
-    if (framebuffer_request.response == NULL ||
-        framebuffer_request.response->framebuffer_count < 1) {
-        hcf();
-    }
-
-    fb = framebuffer_request.response->framebuffers[0];
+__attribute__((section(".text.entry")))
+void _start(boot_info_t *boot_info) {
+    __asm__ volatile ("mov $0x3f8, %%dx; mov $'K', %%al; out %%al, %%dx" ::: "ax", "dx");
     
-    /* Initialize Graphics Subsystem */
-    gfx_init(fb->address, fb->width, fb->height, fb->pitch);
+    /* Capture boot info */
+    g_boot_info = boot_info;
     
     serial_init();
+    kprint("[KERNEL] We have liftoff!\n");
+    for(;;) { __asm__ volatile("hlt"); }
+    
+    /* Initialize Graphics Subsystem */
+    if (g_boot_info) {
+        // gfx_init((void*)g_boot_info->framebuffer_addr, g_boot_info->framebuffer_width, g_boot_info->framebuffer_height, g_boot_info->framebuffer_pitch);
+        kprint("[KERNEL] Skipped GFX\n");
+    }
 
     /* Clear screen */
-    term_clear();
+    // term_clear();
     
     klog_init();
 
@@ -290,15 +285,19 @@ void _start(void) {
     idt_init();
 
     kprint("Initializing PMM...\n");
+    kprint("[KERNEL] Stabilization Loop.\n");
+    for(;;) { __asm__ volatile("hlt"); }
     pmm_init();
 
     kprint("Initializing Heap...\n");
     heap_init();
 
     kprint("Initializing InitRD...\n");
-    if (initrd_init() != 0) {
-        kprint("InitRD failed!\n");
-    }
+    /* TODO: Pass raw InitRD address from bootloader if needed, currently initrd_init likely assumes linked or limine module */
+    // if (initrd_init() != 0) {
+    //    kprint("InitRD failed!\n");
+    // }
+    /* Disabling initrd verify temporarily as we change bootloader */
 
     kprint("Initializing Keyboard...\n");
     keyboard_init();
@@ -308,6 +307,35 @@ void _start(void) {
 
     kprint("Initializing ATA Disk...\n");
     ata_init();
+    
+    /* Filesystem Mount */
+    struct mbr sector;
+    mbr_read(&sector);
+    if (sector.signature != 0xAA55) {
+        kprint("Disk not initialized. Formatting...\n");
+        mbr_write_default();
+        fat32_format();
+    } else {
+        kprint("Valid MBR found.\n");
+    }
+    
+    if (fat32_init() == 0) {
+        kprint("FAT32 Filesystem Mounted.\n");
+    } else {
+        kprint("Failed to mount filesystem.\n");
+    }
+
+    kprint("Initializing Scheduler...\n");
+    sched_init();
+
+    kprint("Initializing Timer...\n");
+    timer_init(100);
+
+    kprint("Starting Multitasking (creating background task)...\n");
+    sched_create_task(background_task);
+
+    kprint("Enabling Interrupts...\n");
+    __asm__ volatile ("sti");
 
     kprint("\nBoot complete!\n");
 
@@ -317,3 +345,4 @@ void _start(void) {
     /* Should never reach here */
     hcf();
 }
+

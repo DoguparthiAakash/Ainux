@@ -80,4 +80,13 @@ int fat32_read_file(const char *filename, uint8_t **data, uint32_t *size);
 /* Write/Create a file in root directory */
 int fat32_write_file(const char *filename, const uint8_t *data, uint32_t size);
 
+/* Change current directory */
+int fat32_change_dir(const char *path);
+
+/* Create Directory */
+int fat32_create_dir(const char *dirname);
+
+/* Delete File */
+int fat32_delete_file(const char *filename);
+
 #endif

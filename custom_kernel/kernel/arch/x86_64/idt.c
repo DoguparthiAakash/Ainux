@@ -74,6 +74,8 @@ void pic_eoi(unsigned char irq) {
 /* Forward declarations for drivers */
 extern void keyboard_handler(void);
 extern void mouse_handler(void);
+extern void timer_isr_stub(void);
+extern void syscall_isr_stub(void);
 
 /* Generic exception handler */
 __attribute__((interrupt))
@@ -137,13 +139,20 @@ void idt_init(void) {
     pic_remap(32, 40);
 
     /* Register IRQ handlers */
-    idt_set_descriptor(33, irq1_handler, 0x8E);  /* IRQ 1: Keyboard */
-    idt_set_descriptor(44, irq12_handler, 0x8E); /* IRQ 12: Mouse */
+    idt_set_descriptor(32, timer_isr_stub, 0x8E); /* IRQ 0: Timer */
+    idt_set_descriptor(33, irq1_handler, 0x8E);   /* IRQ 1: Keyboard */
+    idt_set_descriptor(44, irq12_handler, 0x8E);  /* IRQ 12: Mouse */
+    
+    /* Syscall Handler (0x80) */
+    /* DPL 3 (User executable) - For now 0x8E is DPL 0 (Kernel), use 0xEE for DPL 3 */
+    /* But since we don't have Ring 3 yet, 0x8E is fine. For "Advanced" later, we might change to 0xEE. */
+    idt_set_descriptor(0x80, syscall_isr_stub, 0x8E);
     
     /* Unmask IRQ 1 (Keyboard) and IRQ 12 (Mouse) */
     /* Read OCW1 (Mask), clear bits 1 and 4 (IRQ12=bit 4 on slave? No IRQ12 is Slave IRQ4) */
     /* Master Mask */
     uint8_t mask1 = inb(PIC1_DATA);
+    mask1 &= ~(1 << 0); /* Enable IRQ 0 (Timer) */
     mask1 &= ~(1 << 1); /* Enable IRQ 1 */
     mask1 &= ~(1 << 2); /* Enable IRQ 2 (Cascade for slave) */
     outb(PIC1_DATA, mask1);
@@ -154,5 +163,5 @@ void idt_init(void) {
     outb(PIC2_DATA, mask2);
 
     __asm__ volatile ("lidt %0" : : "m"(idtr));
-    __asm__ volatile ("sti"); /* Enable interrupts */
+    /* Interrupts are NOT enabled here. Enable them manually in kernel.c after all subsystems are ready. */
 }
