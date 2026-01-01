@@ -2,9 +2,15 @@
 #define SYSCALLS_H
 
 #include <stdint.h>
-#include "../arch/x86_64/idt.h" // For interrupt frame
+#include "idt.h" // For interrupt frame
 
+// Define syscall numbers
+#define SYS_READ 0
 #define SYS_WRITE 1
+#define SYS_OPEN 2
+#define SYS_CLOSE 3
+#define SYS_LSEEK 8
+
 #define SYS_EXIT  60
 #define SYS_YIELD 158
 #define SYS_SLEEP 35

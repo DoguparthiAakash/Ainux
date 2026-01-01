@@ -31,6 +31,13 @@ uint32_t pci_read_config(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset
     return inl(PCI_CONFIG_DATA);
 }
 
+void pci_write_config(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
+    uint32_t address = (uint32_t)((bus << 16) | (slot << 11) |
+              (func << 8) | (offset & 0xFC) | ((uint32_t)0x80000000));
+    outl(PCI_CONFIG_ADDRESS, address);
+    outl(PCI_CONFIG_DATA, value);
+}
+
 const char* pci_get_vendor_name(uint16_t vendor_id) {
     switch (vendor_id) {
         case 0x8086: return "Intel";
@@ -77,6 +84,11 @@ void pci_check_device(uint8_t bus, uint8_t device, uint8_t function) {
     
     printf("PCI %d:%d.%d [%s] %s (%x:%x)\n",
            bus, device, function, v_name, d_name, vendor_id, device_id);
+
+    if (class_code == 0x02) {
+        if (subclass == 0x00) printf(" -> Ethernet Controller Detected\n");
+        else if (subclass == 0x80) printf(" -> Wireless Controller Detected\n");
+    }
 }
 
 void pci_scan_bus(void) {
@@ -87,4 +99,26 @@ void pci_scan_bus(void) {
              /* TODO: Check multi-function bit to scan funcs 1-7 */
         }
     }
+}
+
+int pci_find_device(uint16_t vendor_id, uint16_t device_id, uint8_t *bus, uint8_t *slot, uint8_t *func) {
+    for (uint16_t b = 0; b < 256; b++) {
+        for (uint8_t s = 0; s < 32; s++) {
+            for (uint8_t f = 0; f < 8; f++) {
+                uint32_t val = pci_read_config(b, s, f, 0x00);
+                if ((val & 0xFFFF) == 0xFFFF) {
+                    if (f == 0) break; // If func 0 invalid, device invalid
+                    continue; 
+                }
+                
+                if ((val & 0xFFFF) == vendor_id && ((val >> 16) & 0xFFFF) == device_id) {
+                    *bus = b;
+                    *slot = s;
+                    *func = f;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
 }

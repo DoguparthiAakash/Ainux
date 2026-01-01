@@ -70,23 +70,65 @@ void keyboard_handler(void) {
     return;
 }
 
+/* Serial Helper */
+#define COM1_PORT 0x3F8
+#define COM1_STATUS 0x3FD
+
+static int serial_input_initialized = 0;
+
+void poll_serial(void) {
+    if (!serial_input_initialized) {
+        /* Initialize Serial if not already? Usually bootloader/log does it. 
+           We assume 0x3F8 is active. */
+        serial_input_initialized = 1;
+    }
+    
+    // Check LSR (Line Status Register) Bit 0 (Data Ready)
+    uint8_t status = inb(COM1_STATUS);
+    if (status & 0x01) {
+        char c = (char)inb(COM1_PORT);
+        
+        // Handle CR/LF translation for comfort
+        if (c == '\r') c = '\n';
+        
+        // Inject into buffer
+        kb_buffer[kb_write_pos] = c;
+        kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
+        
+        // Echo back for visibility
+        // kprint_char(c); 
+    }
+}
+
 void keyboard_poll(void) {
+    /* Poll Serial First (Headless Support) */
+    poll_serial();
+
     uint8_t status = inb(KEYBOARD_STATUS_PORT);
     if (status & 1) { /* Output buffer full */
         if (status & 0x20) return; /* Mouse data */
         
         static int e0_prefix = 0;
-        static uint8_t last_scancode = 0; /* Dedup */
+        static uint8_t last_scancode = 0;
+        static int repeat_count = 0;
 
         uint8_t scancode = inb(KEYBOARD_DATA_PORT);
         
-        /* Ignore if identical to last scancode (Fixes double-typing on fast poll) */
-        /* Note: This kills auto-repeat for now, but stability is priority */
+        /* Auto-repeat logic: Allow same scancode after threshold */
         if (scancode == last_scancode) {
-             /* Read it to clear buffer, but don't process */
-             return; 
+            repeat_count++;
+            /* After initial delay, allow repeats at a slower rate */
+            if (repeat_count < 50) {
+                return; /* Still in delay period */
+            }
+            /* Allow repeat every 5 polls (~50ms at fast poll rate) */
+            if (repeat_count % 5 != 0) {
+                return;
+            }
+        } else {
+            repeat_count = 0;
+            last_scancode = scancode;
         }
-        last_scancode = scancode;
         
         /* Copy-paste of handler logic to update buffer */
         if (scancode == 0xE0) { e0_prefix = 1; return; }

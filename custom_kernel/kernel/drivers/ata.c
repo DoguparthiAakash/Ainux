@@ -46,6 +46,12 @@ void ata_init(void) {
         outb(drives[i].port + ATA_REG_LBA_MID, 0);
         outb(drives[i].port + ATA_REG_LBA_HIGH, 0);
         
+        /* 400ns delay */
+        inb(drives[i].port + ATA_REG_STATUS);
+        inb(drives[i].port + ATA_REG_STATUS);
+        inb(drives[i].port + ATA_REG_STATUS);
+        inb(drives[i].port + ATA_REG_STATUS);
+        
         outb(drives[i].port + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
         
         uint8_t status = inb(drives[i].port + ATA_REG_STATUS);
@@ -115,6 +121,13 @@ int ata_read_sectors(uint32_t lba, uint8_t count, uint8_t *buffer) {
 int ata_write_sectors(uint32_t lba, uint8_t count, const uint8_t *buffer) {
     ata_wait_bsy();
     outb(active_port + ATA_REG_DRIVE_HEAD, 0xE0 | (active_drive == 0xA0 ? 0 : 0x10) | ((lba >> 24) & 0x0F));
+    
+    /* 400ns delay */
+    inb(active_port + ATA_REG_STATUS);
+    inb(active_port + ATA_REG_STATUS);
+    inb(active_port + ATA_REG_STATUS);
+    inb(active_port + ATA_REG_STATUS);
+
     outb(active_port + ATA_REG_SECTOR_COUNT, count);
     outb(active_port + ATA_REG_LBA_LOW, (uint8_t)lba);
     outb(active_port + ATA_REG_LBA_MID, (uint8_t)(lba >> 8));
@@ -124,12 +137,24 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const uint8_t *buffer) {
     for (int i = 0; i < count; i++) {
         ata_wait_bsy();
         ata_wait_drq();
+        
         outsw(active_port + ATA_REG_DATA, buffer + (i * 512), 256);
+        
+        /* Small delay after write before checking status */
+        asm volatile("pause");
+        ata_wait_bsy();
     }
     
-    /* Flush Cache? */
-    outb(active_port + ATA_REG_COMMAND, 0xE7); /* Cache Flush */
+    /* Flush Cache Command (E7h) */
+    outb(active_port + ATA_REG_COMMAND, 0xE7); 
     ata_wait_bsy();
+    
+    /* Check for errors */
+    uint8_t status = inb(active_port + ATA_REG_STATUS);
+    if (status & 0x01) { /* ERR bit */
+        kprint("[ATA] Error during Write/Flush!\n");
+        return -1;
+    }
 
     return 0;
 }

@@ -18,5 +18,6 @@ void exit(int status);
 #define RAND_MAX 32767
 int rand(void);
 void srand(unsigned int seed);
+char *itoa(int value, char *str, int base);
 
 #endif

@@ -6,6 +6,22 @@
    but klog_dump needs to print to screen. */
 extern void kprint(const char *msg); 
 
+void kprint_color(int color, const char *msg) {
+    const char *ansi_code = "";
+    switch (color) {
+        case KLOG_COLOR_RED:    ansi_code = "\033[1;31m"; break;
+        case KLOG_COLOR_GREEN:  ansi_code = "\033[1;32m"; break;
+        case KLOG_COLOR_YELLOW: ansi_code = "\033[1;33m"; break;
+        case KLOG_COLOR_BLUE:   ansi_code = "\033[1;34m"; break;
+        case KLOG_COLOR_CYAN:   ansi_code = "\033[1;36m"; break;
+        default: ansi_code = ""; break;
+    }
+
+    if (*ansi_code) kprint(ansi_code);
+    kprint(msg);
+    if (*ansi_code) kprint("\033[0m");
+} 
+
 #define LOG_SIZE 4096
 static char log_buffer[LOG_SIZE];
 static uint64_t log_head = 0;
@@ -19,6 +35,11 @@ void klog_init(void) {
 
 void klog_write(const char *msg) {
     while (*msg) {
+        // struct task_struct *curr = sched_get_current();
+        // if (curr && curr->output_window) {
+        //     // wm_console_write((Window*)curr->output_window, msg); // DEBUG: Disabled
+        //     // return; /* Redirected to Window, skip Global FB */
+        // }
         log_buffer[log_head++] = *msg++;
         if (log_head >= LOG_SIZE) {
             log_head = 0;

@@ -9,6 +9,7 @@ typedef struct {
     uint8_t left_btn;
     uint8_t right_btn;
     uint8_t middle_btn;
+    int scroll_z;
 } MouseState;
 
 void mouse_init(void);

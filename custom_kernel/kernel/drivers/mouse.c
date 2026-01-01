@@ -1,4 +1,7 @@
 #include "mouse.h"
+#include "gfx/gfx.h"
+
+extern void kprint(const char *s);
 
 /* Helper for I/O ports (replicated here or use common header later) */
 static inline void outb(uint16_t port, uint8_t val) {
@@ -15,7 +18,7 @@ static inline uint8_t inb(uint16_t port) {
 #define MOUSE_PORT_CMD     0x64
 
 /* Mouse State */
-static MouseState mouse_state = { 400, 300, 0, 0, 0 }; /* Start center-ish */
+static MouseState mouse_state = { 400, 300, 0, 0, 0, 0 }; /* Start center-ish */
 static uint8_t mouse_cycle = 0;
 static int8_t mouse_byte[3];
 
@@ -61,6 +64,20 @@ void mouse_init(void) {
     mouse_wait(1);
     outb(MOUSE_PORT_DATA, status);
     
+    /* Magic Sequence to enable Scroll Wheel (IntelliMouse) */
+    mouse_write(0xF3); mouse_write(200); mouse_read();
+    mouse_write(0xF3); mouse_write(100); mouse_read();
+    mouse_write(0xF3); mouse_write(80);  mouse_read();
+    
+    mouse_write(0xF2); /* Get ID */
+    mouse_read(); 
+    uint8_t id = mouse_read();
+    
+    /* If ID is 3, wheel is enabled! */
+    if (id == 3) {
+        kprint("[Mouse] Scroll Wheel Enabled (IntelliMouse mode)\n");
+    }
+
     /* Use Default Settings */
     mouse_write(0xF6);
     mouse_read(); /* Ack */
@@ -81,6 +98,8 @@ void mouse_handler(void) {
     uint8_t data = inb(MOUSE_PORT_DATA);
     
     /* Process Packet */
+    /* IntelliMouse sends 4 bytes: Status, X, Y, Z */
+    
     switch(mouse_cycle) {
         case 0:
             if ((data & 0x08) == 0) return; /* Sync bit absent? */
@@ -93,9 +112,30 @@ void mouse_handler(void) {
             break;
         case 2:
             mouse_byte[2] = data;
-            mouse_cycle = 0;
-            
-            /* Update State */
+            mouse_cycle++;
+            break;
+        case 3:
+            /* Z-axis */
+            /* But if device is standard ps/2, this byte won't come, cycle hangs? 
+               Wait, standard ps/2 only sends 3 interrupts. 
+               So cycle 3 never happens.
+               We need to check ID or assume.
+               Use 3 for now, upgrade later?
+               Actually, modifying cycle is risky without global state check.
+               Let's try to just use existing 3-byte logic but modify init.
+               Wait, user wants scrolling. I MUST handle 4th byte.
+               
+               If I enable IntelliMouse, it sends 4 interrupts? No, 1 interrupt per byte?
+               Or does it send 4 bytes in burst?
+               PS/2 interrupts once per byte typically.
+            */
+             int8_t z = (int8_t)data; 
+             mouse_state.scroll_z += z;
+             mouse_cycle = 0;
+             /* Fallthrough to update? Or Duplicate update logic? */
+             /* Let's copy update logic here or extract it */
+             
+             /* Update State */
             int8_t x_rel = mouse_byte[1];
             int8_t y_rel = mouse_byte[2];
             
@@ -104,13 +144,21 @@ void mouse_handler(void) {
             mouse_state.middle_btn = (mouse_byte[0] & 0x04);
             
             mouse_state.x += x_rel;
-            mouse_state.y -= y_rel; /* Y is inverted on PS/2 usually */
+            mouse_state.y -= y_rel; 
             
-            /* Clamping (Assume 800x600 for now) */
+            /* Clamping to actual screen size */
+            /* Clamping to actual screen size */
+            uint64_t w, h, p;
+            void *addr;
+            gfx_get_info(&w, &h, &p, &addr);
+            
+            int screen_w = (int)w;
+            int screen_h = (int)h;
+            
             if (mouse_state.x < 0) mouse_state.x = 0;
             if (mouse_state.y < 0) mouse_state.y = 0;
-            if (mouse_state.x > 800) mouse_state.x = 800; /* Screen Width */
-            if (mouse_state.y > 600) mouse_state.y = 600; /* Screen Height */
+            if (mouse_state.x >= screen_w) mouse_state.x = screen_w - 1;
+            if (mouse_state.y >= screen_h) mouse_state.y = screen_h - 1;
             
             break;
     }

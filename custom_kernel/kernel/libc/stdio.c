@@ -1,7 +1,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "stdlib.h"
-#include "../fs/initrd.h"
+#include "io/initrd.h"
 
 extern void kprint(const char *msg);
 
@@ -13,8 +13,18 @@ FILE *stderr = NULL;
 /* Supports %d, %s, %c, %x, %p */
 static char *print_num(char *str, long num, int base, int width, int pad_zero) {
     if (num == 0) {
-        *str++ = '0';
-        return str;
+        if (width == 0) {
+            *str++ = '0';
+            return str;
+        } else {
+             /* Handle padding for 0 */
+             int i=0;
+             char buf[32];
+             buf[i++] = '0';
+             while (i < width) buf[i++] = pad_zero ? '0' : ' ';
+             while (i > 0) *str++ = buf[--i];
+             return str;
+        }
     }
     int neg = 0;
     if (num < 0 && base == 10) {
@@ -70,7 +80,7 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
         } else if (*format == 'd' || *format == 'i') {
             int d = va_arg(ap, int);
             str = print_num(str, d, 10, width, pad_zero);
-        } else if (*format == 'x') {
+        } else if (*format == 'x' || *format == 'X') {
             int x = va_arg(ap, int);
             str = print_num(str, x, 16, width, pad_zero);
         } else if (*format == 'c') {

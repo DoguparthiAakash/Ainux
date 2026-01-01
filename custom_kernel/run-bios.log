@@ -1,0 +1,27 @@
+tar -cf initrd.tar -C initrd .
+mkdir -p isodir/boot/grub
+cp kernel.elf isodir/boot/
+cp initrd.tar isodir/boot/
+cp boot/grub/grub.cfg isodir/boot/grub/
+mkdir -p isodir/boot/grub/fonts
+cp /usr/share/grub/unicode.pf2 isodir/boot/grub/fonts/
+grub-mkrescue -o os.iso isodir
+xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:os.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data, 58.0g free
+Added to ISO image: directory '/'='/tmp/grub.KKlszv'
+xorriso : UPDATE :     628 files added in 1 seconds
+Added to ISO image: directory '/'='/home/aakash/Downloads/Ainuix/custom_kernel/isodir'
+xorriso : UPDATE :     635 files added in 1 seconds
+xorriso : NOTE : Copying to System Area: 512 bytes from file '/usr/lib/grub/i386-pc/boot_hybrid.img'
+ISO image produced: 9706 sectors
+Written to medium : 9706 sectors at LBA 0
+Writing to 'stdio:os.iso' completed successfully.
+
+rm -rf isodir
+qemu-system-x86_64 -cdrom os.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -enable-kvm -serial stdio -vga std
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID[eax=80000001h].ECX.svm [bit 2]
+qemu: terminating on signal 15 from pid 36455 (make)

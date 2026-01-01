@@ -1,59 +1,74 @@
 KERNEL_SOURCE_FILES := $(shell find kernel -name '*.c')
-OBJS := $(KERNEL_SOURCE_FILES:.c=.o)
+OBJS := $(KERNEL_SOURCE_FILES:.c=.o) kernel/hal/x86_64/boot.o kernel/hal/x86_64/syscall_entry.o
 
 CC = cc
 LD = ld
-NASM = nasm
-OBJCOPY = objcopy
 
-CFLAGS = -O2 -g -Wall -Wextra -pipe -I. -Ikernel -Ikernel/arch/x86_64 -Ikernel/libc -ffreestanding -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
-LDFLAGS = -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T kernel/arch/x86_64/linker.ld
+# Add new include paths for architecture layers
+CFLAGS = -Os -g -Wall -Wextra -pipe -I. -Ikernel -Ikernel/hal -Ikernel/hal/x86_64 -Ikernel/ke -Ikernel/ex -Ikernel/drivers -Ikernel/libc -Ikernel/crypto -ffreestanding -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
+LDFLAGS = -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T kernel/hal/x86_64/linker.ld
 
 RUST_TARGET := x86_64-unknown-none
 RUST_DIR := kernel/memory_rs
 RUST_LIB := $(RUST_DIR)/target/$(RUST_TARGET)/release/libmemory_rs.a
 
-all: disk.img
+all: limine-iso
 
-# Bootloader
-boot.bin: bootloader/boot.asm
-	$(NASM) -f bin $< -o $@
+iso: limine-iso
+	cp limine.iso os.iso
 
-stage2.bin: bootloader/stage2.asm
-	$(NASM) -f bin $< -o $@
+limine-iso: kernel.elf initrd.tar
+	mkdir -p liminedir/boot
+	cp kernel.elf liminedir/boot/
+	cp initrd.tar liminedir/boot/
+	cp limine.conf liminedir/
+	cp limine/limine-bios-cd.bin liminedir/
+	cp limine/limine-bios.sys liminedir/boot/
+	cp limine/limine-uefi-cd.bin liminedir/
+	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table --efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label liminedir -o limine.iso
+	./limine/limine bios-install limine.iso
+	rm -rf liminedir
 
-# Kernel
 kernel.elf: $(OBJS) $(RUST_LIB)
 	$(LD) $(LDFLAGS) $(OBJS) $(RUST_LIB) -o $@
-
-kernel.bin: kernel.elf
-	$(OBJCOPY) -O binary kernel.elf kernel.bin
 
 $(RUST_LIB):
 	cd $(RUST_DIR) && cargo build --release --target $(RUST_TARGET)
 
-initrd.tar: initrd
+initrd.tar: initrd userspace_build kernel.elf
+	cp userspace/shell.elf initrd/shell.elf
+	cp userspace/hello.elf initrd/hello.elf
+	cp userspace/hello.elf initrd/a.out
+	cp kernel.elf initrd/kernel.elf
 	tar -cf initrd.tar -C initrd .
+
+userspace_build:
+	$(MAKE) -C userspace
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Disk Image
-disk.img: boot.bin stage2.bin kernel.bin initrd.tar
-	dd if=/dev/zero of=disk.img bs=1M count=64
-	cat boot.bin stage2.bin kernel.bin > disk.raw
-	dd if=disk.raw of=disk.img conv=notrunc
-	rm disk.raw
+%.o: %.asm
+	nasm -f elf64 $< -o $@
 
 clean:
-	rm -f kernel.elf kernel.bin boot.bin stage2.bin $(OBJS) disk.img initrd.tar
+	rm -f kernel.elf $(OBJS) os.iso initrd.tar
+	rm -rf isodir
 	cd $(RUST_DIR) && cargo clean
+	$(MAKE) -C userspace clean
 
-run: disk.img
-	qemu-system-x86_64 -drive file=disk.img,format=raw,if=ide -M pc -m 2G -enable-kvm -serial stdio
+disk.img:
+	dd if=/dev/zero of=disk.img bs=1M count=64
 
-run-headless: disk.img
-	qemu-system-x86_64 -drive file=disk.img,format=raw,if=ide -M pc -m 2G -enable-kvm -display none -serial stdio
+run: limine-iso disk.img
+	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -serial stdio -vga std -boot d -net nic,model=rtl8139 -net user
 
-run-usb: disk.img
-	qemu-system-x86_64 -drive file=$(DRIVE),format=raw,if=ide -M pc -m 2G -enable-kvm
+run-uefi: limine-iso disk.img
+	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -bios /usr/share/ovmf/OVMF.fd -vga std -serial stdio
+
+run-headless: limine-iso disk.img
+	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -display none -serial stdio -boot d
+
+# Run with physical USB drive (Usage: sudo make run-usb DRIVE=/dev/sdb)
+run-usb: limine-iso
+	qemu-system-x86_64 -cdrom limine.iso -drive file=$(DRIVE),format=raw,if=ide -M pc -m 2G -enable-kvm -bios /usr/share/ovmf/OVMF.fd
