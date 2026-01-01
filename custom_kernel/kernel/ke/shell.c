@@ -1157,6 +1157,19 @@ static void cmd_cal(char *args) {
     kprint("\n");
 }
 
+/* Host Command */
+#include "../../net/dns.h"
+static void cmd_host(char *arg) {
+    if (!arg) {
+        kprint("Usage: host <hostname>\n");
+        return;
+    }
+    kprint("Resolving "); kprint(arg); kprint("...\n");
+    dns_resolve(arg);
+    /* Note: Resolution is async via callback print. */
+}
+
+void cmd_files(char *arg); 
 
 static void cmd_help(void) {
     kprint("\n=== Available Commands ===\n");
@@ -2416,6 +2429,10 @@ int exec_command(char *cmd_buffer) {
             cmd_run(arg);
         } else if (str_cmp(cmd_buffer, "bg") == 0) {
             cmd_bg(arg);
+        } else if (str_cmp(cmd_buffer, "host") == 0) {
+            cmd_host(arg);
+        } else if (str_cmp(cmd_buffer, "files") == 0) {
+            cmd_files(arg);
         } else if (str_cmp(cmd_buffer, "testlibc") == 0) {
             libc_test_run();
         } else if (str_cmp(cmd_buffer, "cat") == 0) {

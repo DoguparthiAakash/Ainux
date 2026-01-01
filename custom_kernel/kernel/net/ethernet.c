@@ -2,7 +2,7 @@
 #include "ethernet.h"
 #include "arp.h"
 #include "ip.h"
-#include "../drivers/net/rtl8139.h"
+#include "netdev.h"
 #include "../libc/stdio.h"
 #include "../libc/string.h"
 
@@ -13,15 +13,24 @@ typedef struct {
     uint16_t type;
 } __attribute__((packed)) eth_header_t;
 
+#include "../ex/mm/heap.h"
+
 void ethernet_send(uint8_t *dest, uint16_t type, uint8_t *data, uint32_t len) {
-    uint8_t buffer[1518];
+    net_device_t *dev = netdev_get_default();
+    if (!dev) {
+        printf("[ETH] Error: No Default Network Device!\n");
+        return;
+    }
+
+    uint8_t *buffer = (uint8_t*)kmalloc(1518);
+    if (!buffer) return;
+
     eth_header_t *eth = (eth_header_t*)buffer;
     
     /* Fill Header */
     memcpy(eth->dest, dest, 6);
     
-    uint8_t *my_mac = rtl8139_get_mac_addr();
-    memcpy(eth->src, my_mac, 6);
+    memcpy(eth->src, dev->mac_, 6);
     
     eth->type = htons(type);
     
@@ -30,8 +39,9 @@ void ethernet_send(uint8_t *dest, uint16_t type, uint8_t *data, uint32_t len) {
     memcpy(buffer + sizeof(eth_header_t), data, len);
     
     /* Send via Driver */
-    /* printf("[ETH] Sending %d bytes to %02x:%02x...\n", len, dest[0], dest[1]); */
-    rtl8139_send_packet(buffer, sizeof(eth_header_t) + len);
+    dev->send(dev, buffer, sizeof(eth_header_t) + len);
+    
+    kfree(buffer);
 }
 
 void ethernet_handle_packet(uint8_t *packet, uint32_t len) {

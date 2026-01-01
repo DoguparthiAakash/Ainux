@@ -3,8 +3,10 @@
 #include "ethernet.h"
 #include "arp.h"
 #include "icmp.h"
+#include "udp.h"
 #include "../libc/string.h"
 #include "../libc/stdio.h"
+#include "../ex/mm/heap.h"
 
 typedef struct {
     uint8_t  ihl : 4;
@@ -40,7 +42,9 @@ static uint16_t checksum(void *data, uint32_t len) {
 static uint32_t my_ip = 0x0A00020F; /* 10.0.2.15 */
 
 void ip_send(uint32_t dst_ip, uint8_t protocol, uint8_t *data, uint32_t len) {
-    uint8_t buffer[1500];
+    uint8_t *buffer = (uint8_t*)kmalloc(1500);
+    if (!buffer) return;
+
     ip_header_t *ip = (ip_header_t*)buffer;
     
     memset(ip, 0, sizeof(ip_header_t));
@@ -59,24 +63,11 @@ void ip_send(uint32_t dst_ip, uint8_t protocol, uint8_t *data, uint32_t len) {
     
     memcpy(buffer + sizeof(ip_header_t), data, len);
     
-    /* Need MAC to send via Ethernet. */
-    /* ARP Interaction! */
-    /* For now, let's assume we know the Gateway MAC or just Broadcast? */
-    /* Ideally we check ARP Cache. */
-    /* If we just use Broadcast for everything, it's inefficient but works for simple demo. */
-    
-    /* BUT `ethernet_send` takes a MAC. */
-    /* We need ARP resolution. */
-    /* Let's fake it: If dst_ip == Gateway, use Cached Gateway MAC? */
-    /* Or just Broadcast IP packets? Most switches flood them, but routers might drop. */
-    
-    /* Lets use a global "last known mac" for now from ARP? */
-    /* Or just broadcast ff:ff:ff:ff:ff:ff and hope for the best? */
-    /* QEMU User Mode Net might reject Broadcast IP unicasts? */
-    
     uint8_t mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     
     ethernet_send(mac, ETHERTYPE_IP, buffer, sizeof(ip_header_t) + len);
+    
+    kfree(buffer);
 }
 
 void ip_handle_packet(uint8_t *packet, uint32_t len) {
@@ -94,7 +85,8 @@ void ip_handle_packet(uint8_t *packet, uint32_t len) {
     
     if (ip->proto == IP_PROTO_ICMP) {
          icmp_handle_packet(payload, payload_len, ntohl(ip->src_ip));
-         /* printf("[IP] ICMP Packet!\n"); */
+    } else if (ip->proto == 17) {
+         udp_handle_packet(payload, payload_len, ntohl(ip->src_ip)); 
     } else {
          /* printf("[IP] Proto %d\n", ip->proto); */
     }

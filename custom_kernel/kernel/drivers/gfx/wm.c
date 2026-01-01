@@ -104,6 +104,30 @@ Window* wm_create_window(int x, int y, int width, int height, const char *title)
     return win;
 }
 
+void wm_destroy_window(Window *win) {
+    if (!win) return;
+    
+    int index = -1;
+    for (int i = 0; i < window_count; i++) {
+        if (windows[i] == win) {
+            index = i;
+            break;
+        }
+    }
+    
+    if (index != -1) {
+        if (win->buffer) kfree(win->buffer);
+        kfree(win);
+        
+        /* Shift */
+        for (int i = index; i < window_count - 1; i++) {
+            windows[i] = windows[i+1];
+        }
+        window_count--;
+        windows[window_count] = NULL;
+    }
+}
+
 extern const uint8_t font_8x8[95][8];
 
 static void wm_draw_char(Window *win, int x, int y, char c, uint32_t color) {
@@ -238,7 +262,10 @@ static void wm_draw_string_bb(int x, int y, const char *str, uint32_t color) {
     }
 }
 
-static void wm_composite(MouseState *mouse) {
+/* Composite (Public for app loops) */
+void wm_composite(void *ctx) {
+    /* kprint("[WM] Composite Start\n"); */
+    MouseState *mouse = (MouseState*)ctx;
     if (!backbuffer) return;
     
     /* 1. Draw Premium Background (Gradient) */

@@ -3,6 +3,11 @@
 #include "boot_info.h"
 #include "cpu.h"
 #include "gdt.h"
+#include "pci.h"
+#include "../net/netdev.h"
+#include "../net/udp.h"
+#include "../net/dns.h"
+#include "../net/icmp.h"
 #include "idt.h"
 #include "io/initrd.h"
 #include "mm/pmm.h"
@@ -626,8 +631,16 @@ void kmain(struct boot_info *info) {
     wifi_ath_init();
     
     /* void sim_wifi_init(void); - declared in header usually, simplifying here */
-    /* void sim_wifi_init(void); */
-    /* sim_wifi_init(); */ /* Disabled per user request (Remove Simulation) */
+    /* Networking */
+    /* sim_wifi_init(); */
+    
+    udp_init();
+    dns_init();
+    
+    /*
+    e1000_init();
+    wifi_ath_init();
+    */ /* Disabled per user request (Remove Simulation) */
     
     /* Filesystem Mount */
     struct mbr sector;
