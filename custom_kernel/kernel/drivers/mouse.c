@@ -54,29 +54,39 @@ void mouse_init(void) {
     mouse_wait(1);
     outb(MOUSE_PORT_CMD, 0xA8);
     
-    /* Enable Interrupts */
+    /* Enable Interrupts - NO, DISABLE for Polling */
+    /* If we rely on 'keyboard_poll', having interrupts enabled causes a race 
+       where ISR steals the byte and poll sees nothing, or vice versa (ISR blocked).
+       
+       Standard PS/2 Init asks to enable usage of IRQ12 (Bit 1 in Cmd), 
+       but we should MASK it in the PIC if we want pure polling?
+       Or easier: Don't set Bit 1 in the controller config byte.
+    */
+    
     mouse_wait(1);
-    outb(MOUSE_PORT_CMD, 0x20);
+    outb(MOUSE_PORT_CMD, 0x20); /* Read Config */
     mouse_wait(0);
-    status = (inb(MOUSE_PORT_DATA) | 2); 
+    /* status = (inb(MOUSE_PORT_DATA) | 2); // Enable IRQ12 */
+    status = (inb(MOUSE_PORT_DATA) & ~2); /* DISABLE IRQ12 */
+    
     mouse_wait(1);
-    outb(MOUSE_PORT_CMD, 0x60);
+    outb(MOUSE_PORT_CMD, 0x60); /* Write Config */
     mouse_wait(1);
     outb(MOUSE_PORT_DATA, status);
     
-    /* Magic Sequence to enable Scroll Wheel (IntelliMouse) */
+    /* Magic Sequence to enable Scroll Wheel (IntelliMouse) - DISABLED for Stability */
+    /*
     mouse_write(0xF3); mouse_write(200); mouse_read();
     mouse_write(0xF3); mouse_write(100); mouse_read();
     mouse_write(0xF3); mouse_write(80);  mouse_read();
     
-    mouse_write(0xF2); /* Get ID */
+    mouse_write(0xF2); 
     mouse_read(); 
     uint8_t id = mouse_read();
-    
-    /* If ID is 3, wheel is enabled! */
     if (id == 3) {
         kprint("[Mouse] Scroll Wheel Enabled (IntelliMouse mode)\n");
     }
+    */
 
     /* Use Default Settings */
     mouse_write(0xF6);
@@ -112,41 +122,45 @@ void mouse_handler(void) {
             break;
         case 2:
             mouse_byte[2] = data;
-            mouse_cycle++;
-            break;
-        case 3:
-            /* Z-axis */
-            /* But if device is standard ps/2, this byte won't come, cycle hangs? 
-               Wait, standard ps/2 only sends 3 interrupts. 
-               So cycle 3 never happens.
-               We need to check ID or assume.
-               Use 3 for now, upgrade later?
-               Actually, modifying cycle is risky without global state check.
-               Let's try to just use existing 3-byte logic but modify init.
-               Wait, user wants scrolling. I MUST handle 4th byte.
-               
-               If I enable IntelliMouse, it sends 4 interrupts? No, 1 interrupt per byte?
-               Or does it send 4 bytes in burst?
-               PS/2 interrupts once per byte typically.
-            */
-             int8_t z = (int8_t)data; 
-             mouse_state.scroll_z += z;
-             mouse_cycle = 0;
-             /* Fallthrough to update? Or Duplicate update logic? */
-             /* Let's copy update logic here or extract it */
-             
-             /* Update State */
+            
+            /* Update State (Standard PS/2) */
+            /* Byte 1: Y ovfl, X ovfl, Y sign, X sign, 1, Mid, Right, Left */
+            /* Byte 2: X Movement */
+            /* Byte 3: Y Movement */
+            
             int8_t x_rel = mouse_byte[1];
             int8_t y_rel = mouse_byte[2];
+            
+            /* Handle sign extension manually if needed, or rely on int8_t cast */
+            /* Actually, PS/2 data packet:
+               Byte 0: Yovfl Xovfl Ysign Xsign 1 M R L
+            */
+            
+            if (mouse_byte[0] & 0x40) x_rel = 0; // X Overflow?
+            if (mouse_byte[0] & 0x80) y_rel = 0; // Y Overflow?
+            
+            /* Logic for signs is implicitly handled by int8_t cast if bits set? 
+               Wait, standard packet:
+               Byte 1 is just movement. If sign bit in Byte 0 is set, we must extend sign.
+               But int8_t cast of Byte 1 doesn't know about Byte 0 sign bit.
+               
+               Correct conversion:
+            */
+            int x = (int)mouse_byte[1];
+            int y = (int)mouse_byte[2];
+            
+            if (mouse_byte[0] & 0x10) x |= 0xFFFFFF00; /* X Sign */
+            if (mouse_byte[0] & 0x20) y |= 0xFFFFFF00; /* Y Sign */
             
             mouse_state.left_btn = (mouse_byte[0] & 0x01);
             mouse_state.right_btn = (mouse_byte[0] & 0x02);
             mouse_state.middle_btn = (mouse_byte[0] & 0x04);
             
-            mouse_state.x += x_rel;
-            mouse_state.y -= y_rel; 
+            mouse_state.x += x;
+            mouse_state.y -= y; /* PS/2 Y is bottom-to-top? No, usually top-down but Y moves up? 
+                                   Typically Y increases UP in PS/2. Screen Y increases DOWN.
+                                   So we subtract Y. */
             
-            /* Clamping to actual screen size */
             /* Clamping to actual screen size */
             uint64_t w, h, p;
             void *addr;
@@ -160,6 +174,16 @@ void mouse_handler(void) {
             if (mouse_state.x >= screen_w) mouse_state.x = screen_w - 1;
             if (mouse_state.y >= screen_h) mouse_state.y = screen_h - 1;
             
+            mouse_cycle = 0;
+            
+            // Debug: Print dot on movement to verify driver
+            // kprint(".");
+            // Or fuller debug:
+            /*
+            char s[32];
+            klog_render_hex64(mouse_state.x, s);
+            kprint("M: "); kprint(s); kprint("\n");
+            */
             break;
     }
 }

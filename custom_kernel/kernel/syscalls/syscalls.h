@@ -12,6 +12,8 @@
 #define SYS_LSEEK 8
 
 #define SYS_EXIT  60
+#define SYS_SPAWN 59
+#define SYS_WAIT  61
 #define SYS_YIELD 158
 #define SYS_SLEEP 35
 #define SYS_DRAW_RECT 400 // Arbitrary choice

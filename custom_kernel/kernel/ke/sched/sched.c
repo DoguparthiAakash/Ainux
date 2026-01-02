@@ -180,15 +180,14 @@ void sched_exit(int code) {
     current_task->exit_code = code;
     current_task->state = TASK_ZOMBIE;
     
-    kprint("[SCHED] Task exited\n");
+    // kprint("[SCHED] Task exited (Zombie). Yielding...\n");
+    // kprint("[SCHED] Task exited (Zombie). Yielding... Ptr: ");
+    /* Print Pointer Hex */
+    // char hex[]="0123456789ABCDEF"; uint64_t v=(uint64_t)current_task; char s[19]; s[0]='0'; s[1]='x';
+    // for(int i=0;i<16;i++){ s[17-i] = hex[v&0xF]; v>>=4; } s[18]=0;
+    // kprint(s);
+    // kprint("\n");
     
-    /* TODO: Clean up resources, notify parent, etc. */
-    
-    /* Force Context Switch */
-    current_task->state = TASK_ZOMBIE;
-    
-    kprint("[SCHED] Task exited\n");
-
     /* Ensure interrupts are enabled so Timer can fire and switch us out */
     __asm__ volatile("sti");
     
@@ -215,48 +214,46 @@ void sched_unblock(struct task_struct *task) {
 
 /* C Handler called by Assembly Stub */
 uint64_t timer_isr_handler_c(uint64_t rsp) {
-    /* 1. Tick the timer */
+    /* kprint("."); */
     timer_handler_callback();
 
-    /* 2. Save current RSP */
     if (current_task) {
         current_task->rsp = rsp;
     }
 
-    /* 3. Find next runnable task (Round Robin) */
     struct task_struct *next = current_task->next;
+    /* Find next runnable */
     while (next->state != TASK_READY && next->state != TASK_RUNNING) {
-        if (next == current_task) break; /* All tasks blocked or Zombies */
+        if (next == current_task) break; 
         next = next->next;
     }
     
-    /* Only reschedule valid tasks */
+    /* Debug: Trace Switch if changing task */
+    if (next != current_task) {
+        // kprint("[SCHED] Sw: ");
+        /* ... snip ... */
+    }
+    
     if (current_task->state == TASK_RUNNING) {
         current_task->state = TASK_READY;
     }
     
     current_task = next;
     
-    /* If we switched to a Zombie/Blocked task (because nothing else), keep it as is? */
-    /* Wait, loop ensures next is READY/RUNNING unless ALL are blocked. */
-    /* If all blocked, next == current. We might run a blocked task? */
-    /* Ideally idle task always ready. IDLE task (PID 0 background) should prevent this. */
-    
     if (current_task->state == TASK_READY) {
         current_task->state = TASK_RUNNING;
     }
     
-    /* 4. Update TSS RSP0 for Ring 3 -> Ring 0 transitions */
     if (current_task->rsp0) {
         tss_set_rsp0(current_task->rsp0);
     }
     
-    /* 5. Switch address space if different */
     if (current_task->address_space) {
+        /* Only switch if different to avoid TLB flush overhead? */
+        /* For debug, always switch to be safe? */
         vmm_switch_address_space(current_task->address_space);
     }
 
-    /* 6. Return new RSP */
     return current_task->rsp;
 }
 

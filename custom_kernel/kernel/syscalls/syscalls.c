@@ -10,6 +10,8 @@
 // Forward declaration of specific syscall implementations
 long sys_write(int fd, const char *buf, uint64_t count);
 long sys_read(int fd, char *buf, uint64_t count);
+long sys_spawn(const char *path);
+long sys_wait(int pid);
 long sys_open(const char *pathname, int flags, ...);
 int sys_close(int fd);
 long sys_lseek(int fd, long offset, int whence);
@@ -70,6 +72,16 @@ void syscall_handler_c_stub(struct registers *regs) {
         case SYS_EXIT:
             sys_exit((int)arg1);
             break;
+        case SYS_SPAWN:
+            regs->rax = sys_spawn((const char *)arg1);
+            break;
+        case SYS_WAIT:
+            regs->rax = sys_wait((int)arg1);
+            break;
+
+/* ... Implementations ... */
+
+/* Moved Implementations to Bottom */
         case SYS_YIELD:
             sys_yield();
             break;
@@ -88,21 +100,51 @@ void syscall_handler_c_stub(struct registers *regs) {
 // ------ Implementations ------
 
 long sys_read(int fd, char *buf, uint64_t count) {
-    // In a real system, this would read from file descriptors
-    // For now, we'll return 0 (EOF) for all reads
-    (void)fd; (void)buf; (void)count;
-    return 0;
+    // kprint("[SYSCALL] sys_read enter\n");
+    if (fd == 0) { /* STDIN */
+        if (count == 0) return 0;
+        
+        /* Check for NULL buffer */
+        if (!buf) {
+            kprint("[SYSCALL] Read with NULL buffer!\n");
+            return -1;
+        }
+
+        /* kprint("[SYSCALL] Waiting for key...\n"); */
+        extern char keyboard_getchar(void);
+        char c = keyboard_getchar();
+        // kprint("[SYSCALL] Got key\n");
+        
+        /* Write to user buffer - this risks PF if buf is bad */
+        buf[0] = c;
+        return 1;
+    }
+    return 0; /* EOF for others */
 }
 
 long sys_write(int fd, const char *buf, uint64_t count) {
-    (void)fd;
-    if (count > 0) {
-        for (uint64_t i = 0; i < count; i++) {
-            char c[2] = {buf[i], 0};
-            kprint(c);
+    if (fd == 1 || fd == 2) { /* STDOUT / STDERR */
+        if (count > 0) {
+            if (!buf) return -1;
+            
+            /* Buffer output to handle ANSI codes atomically */
+            char kbuf[256];
+            uint64_t done = 0;
+            while (done < count) {
+                uint64_t chunk = count - done;
+                if (chunk > 255) chunk = 255;
+                
+                /* Copy from user buffer to kernel buffer */
+                for(uint64_t i=0; i<chunk; i++) kbuf[i] = buf[done+i];
+                kbuf[chunk] = 0;
+                
+                kprint(kbuf);
+                done += chunk;
+            }
         }
+        return count;
     }
-    return count;
+    return 0;
 }
 
 long sys_open(const char *pathname, int flags, ...) {
@@ -176,6 +218,40 @@ void sys_draw_rect(int x, int y, int w, int h, uint32_t color) {
         /* Direct Hardware Access (Kernel Mode / Fullscreen) */
         gfx_fill_rect(x, y, w, h, color);
     }
+}
+
+/* Included headers for elf and sched */
+#include "io/elf.h"
+#include "sched/sched.h"
+
+long sys_spawn(const char *path) {
+    kprint("[SYSCALL] Spawning: ");
+    kprint(path);
+    kprint("\n");
+    
+    elf_load_result_t res;
+    
+    if (elf_load_file(path, &res) != 0) {
+        kprint("Failed to load ELF\n");
+        return -1;
+    }
+    
+    struct task_struct *task = sched_create_user_task(res.entry_point, res.stack_top, res.address_space);
+    if (!task) return -1;
+    
+    return task->id;
+}
+
+long sys_wait(int pid) {
+    struct task_struct *target = sched_get_by_pid(pid);
+    if (!target) return -1;
+    
+    while (target->state != TASK_ZOMBIE) {
+        sys_yield();
+    }
+    
+    int code = target->exit_code;
+    return code;
 }
 
 // ------ Assembly Stub ------

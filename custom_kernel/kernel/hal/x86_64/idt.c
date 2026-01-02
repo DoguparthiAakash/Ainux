@@ -3,6 +3,7 @@
 #include "gfx/gfx.h" /* Visual Debug */
 #include "sched/sched.h"
 #include "drivers/gfx/wm.h"
+#include "log.h"
 
 struct idt_entry idt[IDT_ENTRIES];
 struct idt_ptr idtr;
@@ -112,6 +113,15 @@ void gpf_handler(struct interrupt_frame *frame, uint64_t error_code) {
     }
 
     kprint("\n[CPU EXCEPTION] GENERAL PROTECTION FAULT (13)\n");
+    
+    /* Check if it's a User Task */
+    /* We can't rely on error_code for CPL in GPF reliably, use sched state */
+    if (curr && (curr->flags & TASK_USER)) {
+        kprint_color(KLOG_COLOR_RED, "[CRASH] Userspace General Protection Fault. Terminating...\n");
+        sched_exit(-11); /* SIGSEGV */
+    }
+
+    kprint("[KERNEL PANIC] System Halted.\n");
     __asm__ volatile ("cli; hlt");
 }
 
@@ -162,7 +172,18 @@ void pf_handler(struct interrupt_frame *frame, uint64_t error_code) {
     if (error_code & 8) kprint("RESERVED ");
     if (error_code & 16) kprint("FETCH ");
     kprint("\n");
-    kprint("[CPU EXCEPTION] Halting...\n");
+
+    /* Crash Recovery for Userspace */
+    uint64_t USER_SPACE_LIMIT = 0x00007FFFFFFFFFFF;
+    if ((error_code & 4) || (cr2 < USER_SPACE_LIMIT)) { 
+        /* Either User Mode Fault, OR Kernel accessing User Address (Syscall Copy) */
+        kprint_color(KLOG_COLOR_RED, "[CRASH] Page Fault at User Addr. Terminating Process.\n");
+        sched_exit(-11); /* SIGSEGV */
+        /* Unreachable */
+    }
+
+    /* Kernel Panic */
+    kprint("[KERNEL PANIC] System Halted.\n");
     __asm__ volatile ("cli; hlt");
 }
 
@@ -170,8 +191,8 @@ void pf_handler(struct interrupt_frame *frame, uint64_t error_code) {
 __attribute__((interrupt))
 void irq1_handler(struct interrupt_frame *frame) {
     (void)frame;
-    outb(0xE9, 'K');
-    gfx_put_pixel_safe(0, 0, 0x00FF00); /* Green Dot */
+    /* outb(0xE9, 'K'); */
+    /* gfx_put_pixel_safe(0, 0, 0x00FF00); */
     keyboard_handler();
     pic_eoi(1);
 }
@@ -180,9 +201,9 @@ void irq1_handler(struct interrupt_frame *frame) {
 __attribute__((interrupt))
 void irq12_handler(struct interrupt_frame *frame) {
     (void)frame;
-    outb(0xE9, 'M');
-    gfx_put_pixel_safe(10, 0, 0x0000FF); /* Blue Dot */
-    mouse_handler();
+    /* outb(0xE9, 'M'); */
+    /* gfx_put_pixel_safe(10, 0, 0x0000FF); */
+    /* mouse_handler(); */ /* Disable IRQ mouse handler too */
     pic_eoi(12);
 }
 

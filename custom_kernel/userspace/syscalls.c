@@ -56,3 +56,14 @@ void sys_yield(void) {
 void sys_sleep(uint64_t ms) {
     syscall1(SYS_SLEEP, ms);
 }
+
+#define SYS_SPAWN 59
+#define SYS_WAIT  61
+
+long sys_spawn(const char *path) {
+    return syscall1(SYS_SPAWN, (uint64_t)path);
+}
+
+long sys_wait(int pid) {
+    return syscall1(SYS_WAIT, (uint64_t)pid);
+}

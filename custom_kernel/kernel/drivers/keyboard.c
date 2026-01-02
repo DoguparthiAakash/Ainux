@@ -104,9 +104,17 @@ void keyboard_poll(void) {
     /* Poll Serial First (Headless Support) */
     poll_serial();
 
-    uint8_t status = inb(KEYBOARD_STATUS_PORT);
-    if (status & 1) { /* Output buffer full */
-        if (status & 0x20) return; /* Mouse data */
+    /* Loop to drain buffer (important for mouse bursts) */
+    while (1) {
+        uint8_t status = inb(KEYBOARD_STATUS_PORT);
+        if (!(status & 1)) break;
+        
+        if (status & 0x20) {
+             /* Mouse Data available! Poll it. */
+             extern void mouse_handler(void);
+             mouse_handler();
+             continue;
+        }
         
         static int e0_prefix = 0;
         static uint8_t last_scancode = 0;
@@ -119,11 +127,11 @@ void keyboard_poll(void) {
             repeat_count++;
             /* After initial delay, allow repeats at a slower rate */
             if (repeat_count < 50) {
-                return; /* Still in delay period */
+                continue; /* Still in delay period */
             }
             /* Allow repeat every 5 polls (~50ms at fast poll rate) */
             if (repeat_count % 5 != 0) {
-                return;
+                continue;
             }
         } else {
             repeat_count = 0;
@@ -131,11 +139,11 @@ void keyboard_poll(void) {
         }
         
         /* Copy-paste of handler logic to update buffer */
-        if (scancode == 0xE0) { e0_prefix = 1; return; }
+        if (scancode == 0xE0) { e0_prefix = 1; continue; }
         
         if (e0_prefix) {
             e0_prefix = 0;
-            if (scancode & 0x80) return;
+            if (scancode & 0x80) continue;
             char c = 0;
             switch (scancode) {
                 case 0x48: c = KEY_UP; break;
@@ -147,16 +155,16 @@ void keyboard_poll(void) {
                 kb_buffer[kb_write_pos] = c;
                 kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
             }
-            return;
+            continue;
         }
 
-        if (scancode == KEY_LSHIFT_PRESS || scancode == KEY_RSHIFT_PRESS) { shift_pressed = 1; return; }
-        if (scancode == KEY_LSHIFT_RELEASE || scancode == KEY_RSHIFT_RELEASE) { shift_pressed = 0; return; }
-        if (scancode == KEY_LCTRL_PRESS) { ctrl_pressed = 1; return; }
-        if (scancode == KEY_LCTRL_RELEASE) { ctrl_pressed = 0; return; }
-        if (scancode == KEY_CAPSLOCK) { capslock_active = !capslock_active; return; }
+        if (scancode == KEY_LSHIFT_PRESS || scancode == KEY_RSHIFT_PRESS) { shift_pressed = 1; continue; }
+        if (scancode == KEY_LSHIFT_RELEASE || scancode == KEY_RSHIFT_RELEASE) { shift_pressed = 0; continue; }
+        if (scancode == KEY_LCTRL_PRESS) { ctrl_pressed = 1; continue; }
+        if (scancode == KEY_LCTRL_RELEASE) { ctrl_pressed = 0; continue; }
+        if (scancode == KEY_CAPSLOCK) { capslock_active = !capslock_active; continue; }
 
-        if (scancode & 0x80) return;
+        if (scancode & 0x80) continue;
 
         char c = 0;
         if (scancode < sizeof(scancode_map_lower)) {

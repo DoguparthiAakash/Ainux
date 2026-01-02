@@ -19,19 +19,21 @@ static void ata_wait_drq(void) {
     while (!(inb(active_port + 7) & ATA_SR_DRQ) && timeout--);
 }
 
+static struct {
+    uint16_t port;
+    uint8_t drive;
+    const char *name;
+    int present;
+} drives[] = {
+    {0x1F0, 0xA0, "Primary Master", 0},
+    {0x1F0, 0xB0, "Primary Slave", 0},
+    {0x170, 0xA0, "Secondary Master", 0},
+    {0x170, 0xB0, "Secondary Slave", 0}
+};
+
 void ata_init(void) {
-    kprint("[ATA] Scanning for drives...\\n");
-    
-    struct {
-        uint16_t port;
-        uint8_t drive;
-        const char *name;
-    } drives[] = {
-        {0x1F0, 0xA0, "Primary Master"},
-        {0x1F0, 0xB0, "Primary Slave"},
-        {0x170, 0xA0, "Secondary Master"},
-        {0x170, 0xB0, "Secondary Slave"}
-    };
+    kprint("[ATA] Scanning for drives...\n");
+    found_drive = 0;
     
     for (int i=0; i<4; i++) {
         /* Check Floating Bus first */
@@ -65,9 +67,9 @@ void ata_init(void) {
         uint8_t hi = inb(drives[i].port + ATA_REG_LBA_HIGH);
         
         if (mid != 0 || hi != 0) {
-            kprint("[ATA] Found ATAPI Drive at ");
+            kprint("[ATA] Found ATAPI Drive: ");
             kprint(drives[i].name);
-            kprint("\\n");
+            kprint("\n");
             continue; /* Skip ATAPI (CD-ROM) for now */
         }
         
@@ -79,24 +81,46 @@ void ata_init(void) {
         uint16_t buffer[256];
         insw(drives[i].port + ATA_REG_DATA, buffer, 256);
         
-        kprint("[ATA] Found ATA Drive at ");
+        kprint("[ATA] Found ATA Drive: ");
         kprint(drives[i].name);
-        kprint("\\n");
+        kprint("\n");
         
-        /* Set as global active drive (simplified for single disk support) */
-        /* Currently ata.h/ata.c assumes pure macros. 
-           In a real driver we would store the port/drive config.
-           For this task, I'll update the global vars or macros... 
-           WAIT, macros are compiled in. I can't change 0x1F0 to 0x170 easily without variables.
-           I need to change ata.c to use variables for ports.
-        */
-        active_port = drives[i].port;
-        active_drive = drives[i].drive;
-        found_drive = 1;
-        return;
+        drives[i].present = 1;
+        
+        /* Set first found as active by default */
+        if (!found_drive) {
+            active_port = drives[i].port;
+            active_drive = drives[i].drive;
+            found_drive = 1;
+        }
     }
     
-    kprint("[ATA] No ATA Drives found.\\n");
+    if (!found_drive) kprint("[ATA] No ATA Drives found.\n");
+}
+
+/* New: Select Active Drive */
+int ata_select_drive(int index) {
+    if (index < 0 || index >= 4) return -1;
+    if (!drives[index].present) return -1;
+    
+    active_port = drives[index].port;
+    active_drive = drives[index].drive;
+    kprint("[ATA] Switched to "); kprint(drives[index].name); kprint("\n");
+    return 0;
+}
+
+void ata_list_drives(void) {
+    kprint("--- Detected Drives ---\n");
+    for(int i=0; i<4; i++) {
+        if (drives[i].present) {
+            char buf[4];
+            if(i==0) buf[0]='0'; else if(i==1) buf[0]='1'; else if(i==2) buf[0]='2'; else buf[0]='3';
+            buf[1]=0;
+            kprint(buf); kprint(": "); kprint(drives[i].name); 
+            if (drives[i].port == active_port && drives[i].drive == active_drive) kprint(" [ACTIVE]");
+            kprint("\n");
+        }
+    }
 }
 
 int ata_read_sectors(uint32_t lba, uint8_t count, uint8_t *buffer) {

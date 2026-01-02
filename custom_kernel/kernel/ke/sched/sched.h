@@ -32,7 +32,7 @@ struct task_struct {
     
     /* Scheduling */
     struct task_struct *next;      /* Linked list for scheduler */
-    int state;                     /* Current state */
+    volatile int state;            /* Current state */
     int flags;                     /* TASK_KERNEL or TASK_USER */
     int priority;                  /* Scheduling priority */
     uint64_t time_slice;           /* Remaining time slice */

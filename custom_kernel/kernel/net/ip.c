@@ -87,6 +87,9 @@ void ip_handle_packet(uint8_t *packet, uint32_t len) {
          icmp_handle_packet(payload, payload_len, ntohl(ip->src_ip));
     } else if (ip->proto == 17) {
          udp_handle_packet(payload, payload_len, ntohl(ip->src_ip)); 
+    } else if (ip->proto == 6) {
+         extern void tcp_handler(void *packet, uint16_t len, uint32_t src_ip);
+         tcp_handler(payload, payload_len, ntohl(ip->src_ip));
     } else {
          /* printf("[IP] Proto %d\n", ip->proto); */
     }

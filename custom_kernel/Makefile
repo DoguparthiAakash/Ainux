@@ -61,7 +61,7 @@ disk.img:
 	dd if=/dev/zero of=disk.img bs=1M count=64
 
 run: limine-iso disk.img
-	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -serial stdio -vga std -boot d -net nic,model=rtl8139 -net user
+	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide,index=0,media=disk -drive file=ext2.img,format=raw,if=ide,index=1,media=disk -M pc -m 2G -serial stdio -vga std -boot d -net nic,model=rtl8139 -net user
 
 run-uefi: limine-iso disk.img
 	qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -bios /usr/share/ovmf/OVMF.fd -vga std -serial stdio

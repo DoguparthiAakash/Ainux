@@ -38,6 +38,7 @@ void wm_fill_rect(Window *win, int x, int y, int w, int h, uint32_t color);
 void wm_console_write(Window *win, const char *str);
 void wm_destroy_window(Window *win);
 void wm_composite(void *mouse_state_ptr); /* void* to avoid typedef dep header hell if MouseState not visible */
+void wm_update_cursor(void *mouse_state_ptr);
 void wm_run(void); /* Main loop */
 
 #endif

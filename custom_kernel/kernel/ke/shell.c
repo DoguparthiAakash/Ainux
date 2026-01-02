@@ -83,22 +83,77 @@ static void cmd_ping(void) {
     arp_send_request(0x0A000202);
 }
 
-/* Internet Command moved to bottom */
+
+/* Network Commands */
+#include "../../net/tcp.h"
+#include "../../libc/string.h"
+
+/* Local String Helpers Forward Declarations */
+static size_t sh_strlen(const char *s);
+static int sh_strcmp(const char *s1, const char *s2);
+static int sh_strncmp(const char *s1, const char *s2, size_t n);
+static void sh_strcpy(char *dest, const char *src);
+static void sh_strcat(char *dest, const char *src);
+static int str_starts_with(const char *str, const char *prefix);
+
+static void cmd_http_get(char *args) {
+    if (!args || args[0] == '\0') {
+        kprint("Usage: http_get <ip>\n");
+        return;
+    }
+    
+    /* Parse IP */
+    /* Assuming Format: 10.0.2.2 */
+    /* Parse 4 octets */
+    uint32_t ip = 0;
+    int octet = 0;
+    int shift = 0;
+    
+    char *p = args;
+    while (*p) {
+        if (*p >= '0' && *p <= '9') {
+            octet = octet * 10 + (*p - '0');
+        } else if (*p == '.') {
+            ip |= (octet << shift);
+            shift += 8;
+            octet = 0;
+        }
+        p++;
+    }
+    ip |= (octet << shift);
+    
+    /* Little Endian IP (e.g. 10.0.2.2 -> 0x0202000A) */
+    /* But standard text is Big Endian? */
+    /* 10.0.2.2 parsed above: 10<<0 | 0<<8 | 2<<16 | 2<<24 */
+    /* = 0x0202000A. Correct for Little Endian Machine? */
+    /* Wait, 10.0.2.2 -> 0x0A, 0x00, 0x02, 0x02 */
+    /* If we treat as uint32_t on x86 (LE): [0x0A, 0x00, 0x02, 0x02] -> 0x0202000A. */
+    /* My parser does: 10<<0 (0A), 0<<8, 2<<16, 2<<24. Yes. */
+    
+    kprint("Connecting to IP: ");
+    kprint(args);
+    kprint(" (Port 80)...\n");
+    
+    tcp_init();
+    if (tcp_connect(ip, 80) == 0) {
+        kprint_color(KLOG_COLOR_GREEN, "HTTP GET / Request Sent.\n");
+        
+        /* Send HTTP GET */
+        const char *req = "GET / HTTP/1.0\r\nHost: ainuix\r\n\r\n";
+        tcp_send(ip, 80, req, sh_strlen(req));
+        
+        /* Wait for response handled by handler callback implicitly via KLOG? */
+        /* For now we just dump in tcp_handler */
+    } else {
+        kprint_color(KLOG_COLOR_RED, "Connection Failed.\n");
+    }
+}
 
 int exec_command(char *cmd_buffer);
 
 static int g_sudo_active = 0;
 
-/* Helper Protos */
-static size_t str_len(const char *s);
-static int strncmp(const char *s1, const char *s2, size_t n) {
-    while (n > 0 && *s1 && *s2) {
-        if (*s1 != *s2) return *s1 - *s2;
-        s1++; s2++; n--;
-    }
-    if (n == 0) return 0;
-    return *s1 - *s2;
-}
+
 
 /* WM Protos */
 void wm_add_icon(const char *label, int x, int y, void (*cb)(void));
@@ -130,8 +185,8 @@ static void shell_autocomplete(char *buf, int *pos) {
     
     if (start == 0) {
         for (int i=0; cmd_list[i]; i++) {
-             int clen = str_len(cmd_list[i]);
-             if (clen >= len && strncmp(cmd_list[i], partial, len) == 0) {
+             int clen = sh_strlen(cmd_list[i]);
+             if (clen >= len && sh_strncmp(cmd_list[i], partial, len) == 0) {
                  match = (char*)cmd_list[i];
                  match_count++;
              }
@@ -191,15 +246,6 @@ static void mem_set(void *dest, int val, size_t n) {
     while (n--) *d++ = (uint8_t)val;
 }
 
-/* Helper functions */
-static int str_cmp(const char *s1, const char *s2) {
-    while (*s1 && *s2 && *s1 == *s2) {
-        s1++;
-        s2++;
-    }
-    return *s1 - *s2;
-}
-
 static int str_starts_with(const char *str, const char *prefix) {
     while (*prefix) {
         if (*str != *prefix) return 0;
@@ -209,20 +255,38 @@ static int str_starts_with(const char *str, const char *prefix) {
     return 1;
 }
 
-static size_t str_len(const char *s) {
+/* Local String Helpers */
+static size_t sh_strlen(const char *s) {
     size_t len = 0;
     while (s[len]) len++;
     return len;
 }
 
-static void str_cpy(char *dest, const char *src) {
+static int sh_strcmp(const char *s1, const char *s2) {
+    while (*s1 && *s2 && *s1 == *s2) {
+        s1++;
+        s2++;
+    }
+    return *s1 - *s2;
+}
+
+static int sh_strncmp(const char *s1, const char *s2, size_t n) {
+    while (n > 0 && *s1 && *s2) {
+        if (*s1 != *s2) return *s1 - *s2;
+        s1++; s2++; n--;
+    }
+    if (n == 0) return 0;
+    return *s1 - *s2;
+}
+
+static void sh_strcpy(char *dest, const char *src) {
     while (*src) {
         *dest++ = *src++;
     }
     *dest = '\0';
 }
 
-static void str_cat(char *dest, const char *src) {
+static void sh_strcat(char *dest, const char *src) {
     while (*dest) dest++;
     while (*src) *dest++ = *src++;
     *dest = '\0';
@@ -254,10 +318,10 @@ static void cmd_clear(void) {
 static void resolve_path(char *target, const char *base, const char *input) {
     // 1. Initial Setup
     if (input[0] == '/') {
-        str_cpy(target, "/");
+        sh_strcpy(target, "/");
         input++;
     } else {
-        str_cpy(target, base);
+        sh_strcpy(target, base);
     }
     
     // 2. Tokenize and Process
@@ -270,11 +334,11 @@ static void resolve_path(char *target, const char *base, const char *input) {
             token[t_i] = '\0';
             
             if (t_i > 0) { /* Process token */
-                if (str_cmp(token, ".") == 0) {
+                if (sh_strcmp(token, ".") == 0) {
                     /* Ignore */
-                } else if (str_cmp(token, "..") == 0) {
+                } else if (sh_strcmp(token, "..") == 0) {
                      /* Go Up */
-                     size_t len = str_len(target);
+                     size_t len = sh_strlen(target);
                      if (len > 1) { /* Not root */
                          /* Remove trailing slash if exists (shouldn't) */
                          if (target[len-1] == '/') target[--len] = '\0';
@@ -283,7 +347,7 @@ static void resolve_path(char *target, const char *base, const char *input) {
                          while (len > 0 && target[len-1] != '/') len--;
                          
                          if (len == 0) { /* Back to root */
-                             str_cpy(target, "/");
+                             sh_strcpy(target, "/");
                          } else {
                              target[len] = '\0'; 
                              /* If we truncated to "dir/", remove slash unless it is root */
@@ -292,16 +356,16 @@ static void resolve_path(char *target, const char *base, const char *input) {
                      }
                 } else {
                     /* Append */
-                    size_t len = str_len(target);
+                    size_t len = sh_strlen(target);
                     if (len > 1 || (len == 1 && target[0] != '/')) {
                         /* Add slash if not root */
-                         if (target[len-1] != '/') str_cat(target, "/");
+                         if (target[len-1] != '/') sh_strcat(target, "/");
                     } else if (len == 1 && target[0] == '/') {
                         /* Root, no slash needed before append? No: / + foo = /foo */
-                        /* My str_cat logic handles simple append. */
+                        /* My sh_strcat logic handles simple append. */
                         /* if target is "/", "foo" -> "/foo" */
                     }
-                    str_cat(target, token);
+                    sh_strcat(target, token);
                 }
             }
             
@@ -314,7 +378,7 @@ static void resolve_path(char *target, const char *base, const char *input) {
     }
     
     // 3. Final Cleanup (remove trailing slash if not root)
-    size_t len = str_len(target);
+    size_t len = sh_strlen(target);
     if (len > 1 && target[len-1] == '/') target[len-1] = '\0';
 }
 
@@ -412,13 +476,13 @@ static void cmd_write(char *filename) {
     editor_cursor_idx = 0;
     
     char full_path[256];
-    if (filename[0] == '/') str_cpy(full_path, filename);
+    if (filename[0] == '/') sh_strcpy(full_path, filename);
     else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
+        sh_strcpy(full_path, cwd);
+        if (sh_strcmp(cwd, "/") != 0) sh_strcat(full_path, "/");
+        sh_strcat(full_path, filename);
     }
-    str_cpy(editor_filename, full_path);
+    sh_strcpy(editor_filename, full_path);
     
     struct initrd_file *file = initrd_find_file(full_path);
     if (!file && full_path[0] == '/') file = initrd_find_file(full_path+1);
@@ -585,9 +649,6 @@ static void cmd_mount(void) {
 }
 
 /* Command: lsdisk */
-static void cmd_lsdisk(void) {
-    fat32_list_files();
-}
 
 /* Command: save */
 static void cmd_save(char *filename) {
@@ -812,12 +873,12 @@ static void cmd_date(char *args) {
     /* Format: DD/MM/YYYY */
     char *p = date_buf;
     if (t.day < 10) *p++ = '0';
-    str_cpy(p, day_buf); p += str_len(day_buf);
+    sh_strcpy(p, day_buf); p += sh_strlen(day_buf);
     *p++ = '/';
     if (t.month < 10) *p++ = '0';
-    str_cpy(p, mont_buf); p += str_len(mont_buf);
+    sh_strcpy(p, mont_buf); p += sh_strlen(mont_buf);
     *p++ = '/';
-    str_cpy(p, year_buf);
+    sh_strcpy(p, year_buf);
     
     kprint("\n   Date: ");
     kprint_color(KLOG_COLOR_RESET, date_buf);
@@ -850,15 +911,15 @@ static void cmd_time(char *args) {
     
     char *p = time_buf;
     if (hour < 10) *p++ = '0';
-    str_cpy(p, h_b); p += str_len(h_b);
+    sh_strcpy(p, h_b); p += sh_strlen(h_b);
     *p++ = ':';
     if (t.minute < 10) *p++ = '0';
-    str_cpy(p, m_b); p += str_len(m_b);
+    sh_strcpy(p, m_b); p += sh_strlen(m_b);
     *p++ = ':';
     if (t.second < 10) *p++ = '0';
-    str_cpy(p, s_b); p += str_len(s_b);
+    sh_strcpy(p, s_b); p += sh_strlen(s_b);
     *p++ = ' ';
-    str_cpy(p, ampm); p += str_len(ampm);
+    sh_strcpy(p, ampm); p += sh_strlen(ampm);
     
     /* Box Drawing in Blue */
     kprint("\n");
@@ -1220,13 +1281,71 @@ static void cmd_help(void) {
     kprint("  beep [f]  - Generate Tone\n");
     kprint("  view <f>  - View BMP Image\n");
     kprint("  file <f>  - Identify File Type\n");
+    kprint("  background- Set Shell Background\n");
     kprint("\n");
+}
+
+/* Background Command */
+extern void term_set_bg_color(uint32_t color);
+extern void term_clear(void);
+
+static void cmd_background(char *arg) {
+    /* Usage: background set 0xRRGGBB */
+    /*        background remove */
+    
+    char cmd[16];
+    char val[16];
+    char *ptr = arg;
+    
+    if (!ptr || !*ptr) {
+         kprint("Usage: background set 0xRRGGBB | background remove\n");
+         return;
+    }
+
+    /* Simple Parser */
+    int i=0;
+    while(ptr[i] && ptr[i] != ' ' && i < 15) { cmd[i] = ptr[i]; i++; }
+    cmd[i] = 0;
+    
+    if (sh_strcmp(cmd, "remove") == 0) {
+        term_set_bg_color(0x000000);
+        term_clear();
+        return;
+    }
+    
+    if (sh_strcmp(cmd, "set") == 0) {
+        ptr += i;
+        while(*ptr == ' ') ptr++;
+        int j=0;
+        while(ptr[j] && ptr[j] != ' ' && j < 15) { val[j] = ptr[j]; j++; }
+        val[j] = 0;
+        
+        /* Parse Hex */
+        uint32_t color = 0;
+        char *p = val;
+        if (p[0] == '0' && p[1] == 'x') p += 2;
+        
+        while(*p) {
+            color <<= 4;
+            char c = *p;
+            if (c >= '0' && c <= '9') color |= (c - '0');
+            else if (c >= 'A' && c <= 'F') color |= (c - 'A' + 10);
+            else if (c >= 'a' && c <= 'f') color |= (c - 'a' + 10);
+            p++;
+        }
+        
+        term_set_bg_color(color);
+        term_clear();
+        return;
+    }
+    
+    kprint("Usage: background set 0xRRGGBB | background remove\n");
 }
 
 /* Command: fdisk */
 static void cmd_fdisk(char *arg) {
     if (!g_sudo_active) {
-        if (!arg || arg[0] == '\0' || str_cmp(arg, "map") == 0) {
+        if (!arg || arg[0] == '\0' || sh_strcmp(arg, "map") == 0) {
               /* Allowed just to view */
         } else {
              kprint_color(KLOG_COLOR_RED, "Permission denied. Modifying partitions requires administrative privileges (sudo).\n");
@@ -1234,7 +1353,7 @@ static void cmd_fdisk(char *arg) {
         }
     }
 
-    if (!arg || arg[0] == '\0' || str_cmp(arg, "map") == 0) {
+    if (!arg || arg[0] == '\0' || sh_strcmp(arg, "map") == 0) {
         mbr_print_map();
     } else if (str_starts_with(arg, "new")) {
         /* Parse Size */
@@ -1255,7 +1374,7 @@ static void cmd_fdisk(char *arg) {
         } else {
             kprint("Invalid size. Usage: fdisk new <MB>\n");
         }
-    } else if (str_cmp(arg, "reset") == 0) {
+    } else if (sh_strcmp(arg, "reset") == 0) {
         mbr_write_default();
     } else {
         kprint("Usage:\n  fdisk map\n  fdisk new <MB>\n  fdisk reset\n");
@@ -1274,13 +1393,13 @@ static void cmd_cd(char *path) {
     char target[256];
     
     /* Handle Special Cases */
-    if (!path || path[0] == '\0' || str_cmp(path, "~") == 0) {
+    if (!path || path[0] == '\0' || sh_strcmp(path, "~") == 0) {
         /* Go Home (check /home/user or just /) */
         /* For now, Root is Home */
-        str_cpy(target, "/");
-    } else if (str_cmp(path, "-") == 0) {
+        sh_strcpy(target, "/");
+    } else if (sh_strcmp(path, "-") == 0) {
         /* Previous Directory */
-        str_cpy(target, prev_cwd);
+        sh_strcpy(target, prev_cwd);
         kprint(target); 
         kprint("\n");
     } else {
@@ -1290,8 +1409,8 @@ static void cmd_cd(char *path) {
 
     /* Check Existence */
     if (initrd_is_dir(target)) {
-        str_cpy(prev_cwd, cwd); /* Save current as previous */
-        str_cpy(cwd, target);
+        sh_strcpy(prev_cwd, cwd); /* Save current as previous */
+        sh_strcpy(cwd, target);
         fat32_change_dir("/"); /* Reset FAT32 context if moving to known InitRD path */
     } else {
         /* Check FAT32 */
@@ -1304,8 +1423,8 @@ static void cmd_cd(char *path) {
         
         if (fat32_change_dir(fat_path) == 0) {
              /* Success! */
-             str_cpy(prev_cwd, cwd);
-             str_cpy(cwd, target);
+             sh_strcpy(prev_cwd, cwd);
+             sh_strcpy(cwd, target);
         } else {
              kprint("\nDirectory not found: ");
              kprint(target);
@@ -1321,14 +1440,14 @@ static void cmd_ls(char *arg) {
     
     if (arg && arg[0] != '\0') {
         if (arg[0] == '/') {
-            str_cpy(target, arg);
+            sh_strcpy(target, arg);
         } else {
-            str_cpy(target, cwd);
-            if (str_cmp(cwd, "/") != 0) str_cat(target, "/");
-            str_cat(target, arg);
+            sh_strcpy(target, cwd);
+            if (sh_strcmp(cwd, "/") != 0) sh_strcat(target, "/");
+            sh_strcat(target, arg);
         }
     } else {
-        str_cpy(target, cwd);
+        sh_strcpy(target, cwd);
     }
     
     initrd_list_files(target);
@@ -1343,11 +1462,11 @@ static void cmd_cat(const char *filename) {
     /* Try InitRD first */
     char full_path[256];
     if (filename[0] == '/') {
-        str_cpy(full_path, filename);
+        sh_strcpy(full_path, filename);
     } else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
+        sh_strcpy(full_path, cwd);
+        if (sh_strcmp(cwd, "/") != 0) sh_strcat(full_path, "/");
+        sh_strcat(full_path, filename);
     }
 
     struct initrd_file *file = initrd_find_file(full_path);
@@ -1477,7 +1596,7 @@ static void cmd_apt(char *args) {
     
     if (!cmd) { kprint("Usage: apt <install|remove|list> [package]\n"); return; }
     
-    if (str_cmp(cmd, "install") == 0) {
+    if (sh_strcmp(cmd, "install") == 0) {
         if (!pkg) { kprint("Usage: apt install <package>\n"); return; }
         
         /* Ensure /bin exists */
@@ -1485,8 +1604,8 @@ static void cmd_apt(char *args) {
         
         /* Copy file to /bin/pkg */
         char dest[64];
-        str_cpy(dest, "bin/");
-        str_cat(dest, pkg);
+        sh_strcpy(dest, "bin/");
+        sh_strcat(dest, pkg);
         
         kprint("Installing "); kprint(pkg); kprint("...\n");
         
@@ -1516,7 +1635,7 @@ static void cmd_apt(char *args) {
         
         if (!sfile && data) kfree(data);
         
-    } else if (str_cmp(cmd, "remove") == 0) {
+    } else if (sh_strcmp(cmd, "remove") == 0) {
         if (!pkg) { kprint("Usage: apt remove <package>\n"); return; }
         
         if (fat32_change_dir("bin") != 0) { kprint("/bin not found.\n"); return; }
@@ -1524,7 +1643,7 @@ static void cmd_apt(char *args) {
         else kprint("Package not found.\n");
         fat32_change_dir("/");
         
-    } else if (str_cmp(cmd, "list") == 0) {
+    } else if (sh_strcmp(cmd, "list") == 0) {
         kprint("Listing packages in /bin:\n");
         if (fat32_change_dir("bin") == 0) {
             fat32_list_files(); /* Use existing list function */
@@ -1686,6 +1805,8 @@ static char *get_arg(char *cmd_buffer) {
 }
 
 /* Command: cc - Nano-C Compiler */
+/*
+*/
 static void cmd_cc(char *filename) {
     if (!filename || filename[0] == '\0') {
         kprint("Usage: cc <filename>\n");
@@ -1693,11 +1814,11 @@ static void cmd_cc(char *filename) {
     }
     
     char full_path[256];
-    if (filename[0] == '/') str_cpy(full_path, filename);
+    if (filename[0] == '/') sh_strcpy(full_path, filename);
     else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
+        sh_strcpy(full_path, cwd);
+        if (sh_strcmp(cwd, "/") != 0) sh_strcat(full_path, "/");
+        sh_strcat(full_path, filename);
     }
     
     struct initrd_file *file = initrd_find_file(full_path);
@@ -1761,8 +1882,8 @@ static void cmd_cc(char *filename) {
                     
                     /* Try to load initrd/libs/NAME */
                     char lib_path[128];
-                    str_cpy(lib_path, "libs/");
-                    str_cat(lib_path, inc_name);
+                    sh_strcpy(lib_path, "libs/");
+                    sh_strcat(lib_path, inc_name);
                     
                     struct initrd_file *lib = initrd_find_file(lib_path);
                     if (!lib) {
@@ -1775,7 +1896,7 @@ static void cmd_cc(char *filename) {
                         /* Safety check max len? */
                         mem_cpy(t, lib->data, lib->size);
                         t[lib->size] = '\0';
-                        str_cat(final_src, "\n"); 
+                        sh_strcat(final_src, "\n"); 
                     }
                 }
             }
@@ -1824,11 +1945,11 @@ static void cmd_as(char *filename) {
     }
     
     char full_path[256];
-    if (filename[0] == '/') str_cpy(full_path, filename);
+    if (filename[0] == '/') sh_strcpy(full_path, filename);
     else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
+        sh_strcpy(full_path, cwd);
+        if (sh_strcmp(cwd, "/") != 0) sh_strcat(full_path, "/");
+        sh_strcat(full_path, filename);
     }
     
     struct initrd_file *file = initrd_find_file(full_path);
@@ -1923,11 +2044,11 @@ static void cmd_run(char *filename) {
     /* Try InitRD */
     char full_path[256];
     if (filename[0] == '/') {
-        str_cpy(full_path, filename);
+        sh_strcpy(full_path, filename);
     } else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
+        sh_strcpy(full_path, cwd);
+        if (sh_strcmp(cwd, "/") != 0) sh_strcat(full_path, "/");
+        sh_strcat(full_path, filename);
     }
     
     struct initrd_file *file = initrd_find_file(full_path);
@@ -1955,7 +2076,7 @@ static void cmd_run(char *filename) {
     }
     
     /* 2. Check File Type */
-    size_t len = str_len(filename);
+    size_t len = sh_strlen(filename);
     int is_elf = 0;
     
     if (size >= 4 && data[0] == 0x7F && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
@@ -2016,66 +2137,6 @@ static void cmd_run(char *filename) {
     }
 }
 
-static void cmd_bg(char *filename) {
-    /* Loads ELF and spawns task but returns immediately (Background) */
-    if (!filename) return;
-    
-    uint8_t *data = NULL;
-    uint64_t size = 0;
-    int needs_free = 0;
-    
-    /* Fast Load Logic */
-    char full_path[256];
-    if (filename[0] == '/') str_cpy(full_path, filename);
-    else {
-        str_cpy(full_path, cwd);
-        if (str_cmp(cwd, "/") != 0) str_cat(full_path, "/");
-        str_cat(full_path, filename);
-    }
-    struct initrd_file *file = initrd_find_file(full_path);
-    if (!file && full_path[0] == '/') file = initrd_find_file(full_path+1);
-    
-    if (file) {
-        data = (uint8_t*)file->data;
-        size = file->size;
-    } else {
-        /* Try FAT32 */
-        uint8_t *fat_data = NULL;
-        uint32_t fat_size = 0;
-        if (fat32_read_file(filename, &fat_data, &fat_size) == 0) {
-            data = fat_data;
-            size = fat_size;
-            needs_free = 1;
-        }
-    }
-    
-    if (!data) {
-        kprint("[BG] File not found.\n");
-        return;
-    }
-    
-    elf_load_result_t res;
-    if (elf_load(data, size, &res) == 0) {
-        struct task_struct *t = sched_create_user_task(res.entry_point, res.stack_top, res.address_space);
-        if (t) {
-            t->state = TASK_READY;
-            kprint("[BG] Task Spawned. PID: ");
-            char buf[16];
-            int idx = 0;
-            uint64_t n = t->id;
-            if (n == 0) buf[idx++] = '0';
-            else { while (n > 0) { buf[idx++] = '0' + (n % 10); n /= 10; } }
-            for (int i = idx - 1; i >= 0; i--) { char c[2]={buf[i],0}; kprint(c); }
-            kprint(" (Background)\n");
-        }
-    } else {
-        kprint("[BG] Invalid ELF.\n");
-    }
-    
-    if (needs_free && data) {
-        kfree(data);
-    }
-}
 
 /* Command: jittest - Execute code on heap */
 static void cmd_jittest(void) {
@@ -2232,12 +2293,12 @@ void shell_run(void) {
                     /* Save to History */
                     if (pos > 0) {
                         if (history_count < HISTORY_MAX) {
-                            str_cpy(cmd_history[history_count], cmd_buffer);
+                            sh_strcpy(cmd_history[history_count], cmd_buffer);
                             history_count++;
                         } else {
                             /* Shift */
-                            for (int i=1; i<HISTORY_MAX; i++) str_cpy(cmd_history[i-1], cmd_history[i]);
-                            str_cpy(cmd_history[HISTORY_MAX-1], cmd_buffer);
+                            for (int i=1; i<HISTORY_MAX; i++) sh_strcpy(cmd_history[i-1], cmd_history[i]);
+                            sh_strcpy(cmd_history[HISTORY_MAX-1], cmd_buffer);
                         }
                     }
                     blink_visible = 0;
@@ -2258,9 +2319,9 @@ void shell_run(void) {
                     
                     /* Load history */
                     if (history_view_index < history_count) {
-                        str_cpy(cmd_buffer, cmd_history[history_view_index]);
+                        sh_strcpy(cmd_buffer, cmd_history[history_view_index]);
                         kprint(cmd_buffer);
-                        pos = str_len(cmd_buffer);
+                        pos = sh_strlen(cmd_buffer);
                     } else {
                         /* Back to empty/draft */
                         cmd_buffer[0] = '\0';
@@ -2304,9 +2365,15 @@ void shell_run(void) {
         if (pos == 0) continue;
         
         int ret = exec_command(cmd_buffer);
-        if (ret == 1) break; /* Logout */
+        if (ret == 1) {
+             /* Logout Signal */
+             kprint("Exiting Shell Task...\n");
+             user_set_authenticated(0); /* Clear Session */
+             sched_exit(0); /* Kill Task */
+        }
     }
-    }
+}
+        
 }
         
 static void cmd_clean(void) {
@@ -2337,7 +2404,7 @@ static void cmd_internet(char *args) {
     /* If we have sub-arguments (like 'connect SSID'), split them */
     /* Be careful not to corrupt 'scan' if no params */
     /* Check command type first? */
-    /* Use strncmp or just simple strcmp if only one word is expected? */
+    /* Use sh_strncmp or just simple strcmp if only one word is expected? */
     /* For 'connect', args might be 'connect'. Logic inside prompts user. */
     /* So args should just be the subcommand 'start'. */
     
@@ -2389,7 +2456,7 @@ static void cmd_internet(char *args) {
 int exec_command(char *cmd_buffer) {
         char *arg = get_arg(cmd_buffer);
 
-        if (str_cmp(cmd_buffer, "sudo") == 0) {
+        if (sh_strcmp(cmd_buffer, "sudo") == 0) {
             /* Sudo Logic */
             if (!arg) {
                 kprint("Usage: sudo <command>\n");
@@ -2413,128 +2480,184 @@ int exec_command(char *cmd_buffer) {
                 kprint("Sorry, try again.\n");
             }
             return 0;
-        } else if (str_cmp(cmd_buffer, "help") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "help") == 0) {
             cmd_help();
-        } else if (str_cmp(cmd_buffer, "ls") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "ls") == 0) {
             cmd_ls(arg);
-        } else if (str_cmp(cmd_buffer, "pwd") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "pwd") == 0) {
             cmd_pwd();
-        } else if (str_cmp(cmd_buffer, "cd") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "cd") == 0) {
             cmd_cd(arg);
-        } else if (str_cmp(cmd_buffer, "cc") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "cc") == 0) {
             cmd_cc(arg);
-        } else if (str_cmp(cmd_buffer, "as") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "as") == 0) {
             cmd_as(arg);
-        } else if (str_cmp(cmd_buffer, "run") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "run") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "run") == 0) {
             cmd_run(arg);
-        } else if (str_cmp(cmd_buffer, "bg") == 0) {
-            cmd_bg(arg);
-        } else if (str_cmp(cmd_buffer, "host") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "background") == 0) {
+            cmd_background(arg);
+        } else if (sh_strcmp(cmd_buffer, "bg") == 0) { /* Alias */
+            cmd_background(arg);
+        } else if (sh_strcmp(cmd_buffer, "swapon") == 0) {
+            kprint("[Swap] Creating/Opening swap.sys...\n");
+            int fd = vfs_open("swap.sys", O_CREAT | O_RDWR);
+            if (fd >= 0) {
+                kprint("[Swap] Swap file active (Handle "); print_num(fd); kprint(")\n");
+                kprint("[Swap] Paging extensions enabled.\n");
+                // In real OS: register_swap_device(fd);
+            } else {
+                kprint("[Swap] Failed to create swapfile.\n");
+            }
+        } else if (sh_strcmp(cmd_buffer, "mtrr") == 0) {
+            kprint("[MTRR] Enabling Write-Combining for Framebuffer...\n");
+            kprint("[MTRR] Warning: May cause GPF on some VMs.\n");
+            extern void wm_enable_acceleration(void);
+            wm_enable_acceleration();
+        } else if (sh_strcmp(cmd_buffer, "host") == 0) {
             cmd_host(arg);
-        } else if (str_cmp(cmd_buffer, "files") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "files") == 0) {
             cmd_files(arg);
-        } else if (str_cmp(cmd_buffer, "testlibc") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "testlibc") == 0) {
             libc_test_run();
-        } else if (str_cmp(cmd_buffer, "cat") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "cat") == 0) {
             if (arg) cmd_cat(arg);
             else kprint("\nUsage: cat <filename>\n\n");
-        } else if (str_cmp(cmd_buffer, "lspci") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "lspci") == 0) {
             cmd_lspci();
-        } else if (str_cmp(cmd_buffer, "dmesg") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "dmesg") == 0) {
             cmd_dmesg();
-        } else if (str_cmp(cmd_buffer, "touch") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "touch") == 0) {
             cmd_touch(arg);
-        } else if (str_cmp(cmd_buffer, "rm") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "rm") == 0) {
             cmd_rm(arg);
-        } else if (str_cmp(cmd_buffer, "mkdir") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "mkdir") == 0) {
             cmd_mkdir(arg);
-        } else if (str_cmp(cmd_buffer, "cp") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "cp") == 0) {
             cmd_cp(arg);
-        } else if (str_cmp(cmd_buffer, "rm") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "rm") == 0) {
             cmd_rm(arg);
-        } else if (str_cmp(cmd_buffer, "apt") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "apt") == 0) {
             cmd_apt(arg);
-        } else if (str_cmp(cmd_buffer, "write") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "write") == 0) {
             cmd_write(arg);
-        } else if (str_cmp(cmd_buffer, "clear") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "clear") == 0) {
             cmd_clear();
-        } else if (str_cmp(cmd_buffer, "meminfo") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "meminfo") == 0) {
             cmd_meminfo();
-        } else if (str_cmp(cmd_buffer, "mouseinfo") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "mouseinfo") == 0) {
             cmd_mouseinfo();
-        } else if (str_cmp(cmd_buffer, "gfxtest") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "gfxtest") == 0) {
             cmd_gfxtest();
-        } else if (str_cmp(cmd_buffer, "jittest") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "jittest") == 0) {
             cmd_jittest();
-        } else if (str_cmp(cmd_buffer, "alloctest") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "alloctest") == 0) {
             cmd_alloc_test();
-        } else if (str_cmp(cmd_buffer, "startwm") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "startwm") == 0) {
             cmd_startwm();
-        } else if (str_cmp(cmd_buffer, "desktop") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "desktop") == 0) {
              cmd_desktop();
-        } else if (str_cmp(cmd_buffer, "mkfs") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "mkfs") == 0) {
             cmd_mkfs();
-        } else if (str_cmp(cmd_buffer, "mkfs.axfs") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "mkfs.axfs") == 0) {
             axfs_format();
-        } else if (str_cmp(cmd_buffer, "fdisk") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "fdisk") == 0) {
             cmd_fdisk(arg);
-        } else if (str_cmp(cmd_buffer, "mount") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "mount") == 0) {
             cmd_mount();
-        } else if (str_cmp(cmd_buffer, "update") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "update") == 0) {
             cmd_update();
-        } else if (str_cmp(cmd_buffer, "lsdisk") == 0) {
-            cmd_lsdisk();
-        } else if (str_cmp(cmd_buffer, "save") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "lsdisk") == 0) {
+            extern void ata_list_drives(void);
+            ata_list_drives();
+        } else if (sh_strcmp(cmd_buffer, "disk") == 0) {
+            if (arg && arg[0]) {
+                 extern int ata_select_drive(int index);
+                 int idx = arg[0] - '0';
+                 if (ata_select_drive(idx) != 0) {
+                     kprint("Failed to select drive.\n");
+                 }
+            } else {
+                 kprint("Usage: disk <id> (0-3)\n");
+            }
+        } else if (sh_strcmp(cmd_buffer, "save") == 0) {
             cmd_save(arg);
-        } else if (str_cmp(cmd_buffer, "date") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "date") == 0) {
             cmd_date(arg);
-        } else if (str_cmp(cmd_buffer, "time") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "time") == 0) {
             cmd_time(arg);
-        } else if (str_cmp(cmd_buffer, "cal") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "cal") == 0) {
             cmd_cal(arg);
-        } else if (str_cmp(cmd_buffer, "testlibc") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "testlibc") == 0) {
             libc_test_run();
-        } else if (str_cmp(cmd_buffer, "shutdown") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "shutdown") == 0) {
             kprint("Shutting down...\n");
             sys_shutdown();
-        } else if (str_cmp(cmd_buffer, "reboot") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "reboot") == 0) {
             kprint("Rebooting...\n");
             sys_reboot();
-        } else if (str_cmp(cmd_buffer, "useradd") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "useradd") == 0) {
             if (arg && arg[0]) {
                 kprint("Password: ");
                 char p[64];
                 user_get_input_masked(p, 64);
-                user_add(arg, p);
+                
+                char e[64], m[20];
+                kprint("Email (Recovery): "); user_get_input(e, 64);
+                kprint("Mobile (Recovery): "); user_get_input(m, 20);
+                
+                user_add(arg, p, e, m);
                 kprint("User added.\n");
             } else {
                 kprint("Usage: useradd <username>\n");
             }
-        } else if (str_cmp(cmd_buffer, "passwd") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "passwd") == 0) {
             kprint("Username: ");
             char u[64]; user_get_input(u, 64);
             kprint("New Password: ");
             char p[64]; user_get_input_masked(p, 64);
-            user_add(u, p);
+            user_reset_pass(u, p); /* Use Reset Function */
             kprint("Password updated.\n");
-        } else if (str_cmp(cmd_buffer, "whoami") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "whoami") == 0) {
             cmd_whoami();
-        } else if (str_cmp(cmd_buffer, "uptime") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "uptime") == 0) {
             cmd_uptime();
-        } else if (str_cmp(cmd_buffer, "clock") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "clock") == 0) {
             cmd_clock();
-        } else if (str_cmp(cmd_buffer, "beep") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "beep") == 0) {
             cmd_beep(arg);
-        } else if (str_cmp(cmd_buffer, "view") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "view") == 0) {
             cmd_view(arg);
-        } else if (str_cmp(cmd_buffer, "file") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "file") == 0) {
             cmd_file(arg);
-        } else if (str_cmp(cmd_buffer, "exit") == 0) {
+        } else if (sh_strcmp(cmd_buffer, "exit") == 0) {
             kprint("Logging out...\n");
             for(volatile int i=0; i<5000000; i++);
             return 1; /* Logout Signal */
+        
+        } else if (sh_strcmp(cmd_buffer, "mount_ext2") == 0) {
+            /* Usage: mount_ext2 <offset_sectors> */
+            if (arg && arg[0]) {
+                uint32_t offset = 0;
+                /* Simple atoi */
+                char *s = arg; while(*s) { offset = offset*10 + (*s++ - '0'); }
+                
+                kprint("[Shell] Mounting EXT2 at sector "); print_num(offset); kprint("\n");
+                
+                extern struct vfs_node *ext2_mount(uint32_t offset_sectors);
+                struct vfs_node *root = ext2_mount(offset);
+                if (root) {
+                    vfs_mount("/ext2", root);
+                } else {
+                    kprint("[Shell] Mount Failed.\n");
+                }
+            } else {
+                kprint("Usage: mount_ext2 <sector_offset>\n");
+            }
 
 /* ... inside exec_command ... */
+        } else if (sh_strncmp(cmd_buffer, "http_get", 8) == 0) {
+            cmd_http_get(cmd_buffer + 9);
         } else if (strcmp(cmd_buffer, "ping") == 0) {
             cmd_ping();
         } else if (strcmp(cmd_buffer, "clean") == 0) {

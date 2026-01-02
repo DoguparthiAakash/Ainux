@@ -41,6 +41,24 @@
 static int cursor_x = 0;
 static int cursor_y = 0;
 
+/* Console Decoration */
+static uint32_t console_bg_color = 0x000000;
+static uint32_t console_text_color = 0xFFFFFF;
+
+void term_set_bg_color(uint32_t color) {
+    console_bg_color = color;
+    
+    /* Adaptive Text Color */
+    /* Luminance = 0.299R + 0.587G + 0.114B */
+    int r = (color >> 16) & 0xFF;
+    int g = (color >> 8) & 0xFF;
+    int b = color & 0xFF;
+    int lum = (299 * r + 587 * g + 114 * b) / 1000;
+    
+    if (lum > 128) console_text_color = 0x000000; /* Dark Text for Light BG */
+    else console_text_color = 0xFFFFFF; /* Light Text for Dark BG */
+}
+
 /* Helper to get FB from GFX module */
 static int get_fb_info(uint64_t *w, uint64_t *h, uint64_t *p, void **addr) {
     gfx_get_info(w, h, p, addr);
@@ -67,7 +85,7 @@ static void draw_char(char c, int x, int y, uint32_t color) {
             if (px < (int)w && py < (int)h) {
                 uint32_t *pixel = &((uint32_t *)addr)[py * (p / 4) + px];
                 if (row & (1 << dx)) *pixel = color;
-                else *pixel = 0;
+                else *pixel = console_bg_color; /* Draw BG Color always to clear old text/artifacts */
             }
         }
     }
@@ -168,11 +186,12 @@ static void term_scroll_text(void) {
     
     uint64_t last_row_offset = (term_rows - 1) * 12 * pitch;
     /* Clear 12 lines */
+    /* Clear 12 lines with BG Color */
     for(uint32_t i=0; i<12; i++) {
-         memset(fb + last_row_offset + (i*pitch), 0, w*4); // Assuming 32bpp, w*4 is safe line width? 
-         // Actually use pitch for robust clearing? 
-         // pitch is bytes per line.
-         memset(fb + last_row_offset + (i*pitch), 0, pitch);
+         /* Use Pixel Loop for 32-bit fill if memset is byte-only (memset is usually fine for 0, but for color we need dword fill) */
+         /* Using direct pointer access */
+         uint32_t *row = (uint32_t*)((uint8_t*)fb + last_row_offset + (i*pitch));
+         for(uint64_t x=0; x < w; x++) row[x] = console_bg_color;
     }
 
     /* Update Text Buffer Logic (Keep history valid for logical operations if needed, but not for display) */
@@ -183,10 +202,18 @@ static void term_scroll_text(void) {
 }
 
 /* ANSI Color Parser State */
+/* kprint uses term_color, defaults to console_text_color */
+/* But kprint loop re-sets term_color often. We should default it to adaptive color. */
 static uint32_t term_color = 0xFFFFFF;
 
 void kprint(const char *msg) {
     klog_write(msg); /* Hook for dmesg */
+    if (term_color == 0xFFFFFF || term_color == 0x000000) term_color = console_text_color; /* Auto-sync defaults */
+    /* Sync default color */
+    /* Only reset if not in escape sequence? Usually kprint starts fresh or continues? */
+    /* Let's use console_text_color as base if current is default? */
+    /* Simplified: Just let escape codes override. Default draw uses 'term_color'. */
+    
     
     const char *p = msg;
     while (*p) {
@@ -246,7 +273,7 @@ void kprint(const char *msg) {
                 }
                 // Reset
                 else if (msg[0] == '0' && msg[1] == 'm') {
-                    term_color = 0xFFFFFF; // White
+                    term_color = console_text_color; // Adaptive Default
                     msg += 2; match = 1;
                 }
                 
@@ -294,6 +321,12 @@ void kprint(const char *msg) {
     }
 }
 
+/* Helper */
+void kprint_char(char c) {
+    char s[2] = {c, 0};
+    kprint(s);
+}
+
 void kprint_buf(const char *buf, uint64_t len) {
     for (uint64_t i = 0; i < len; i++) {
         char str[2] = {buf[i], 0};
@@ -307,8 +340,10 @@ void term_clear(void) {
     if (!get_fb_info(&w, &h, &p, &addr)) return;
     
     /* Clear entire framebuffer to black */
+    /* Clear entire framebuffer to BG Color */
+    uint32_t *fb = (uint32_t *)addr;
     for (uint64_t i = 0; i < h * p / 4; i++) {
-        ((uint32_t *)addr)[i] = 0;
+        fb[i] = console_bg_color;
     }
     cursor_x = 0;
     cursor_y = 0;
@@ -565,8 +600,8 @@ void kmain(struct boot_info *info) {
     kprint("Initializing Timer...\n");
     timer_init(100);
 
-    kprint("Starting Multitasking (creating background task)...\n");
-    sched_create_task(background_task);
+    // kprint("Starting Multitasking (creating background task)...\n");
+    // sched_create_task(background_task);
     
     /* Initialize ACPI (if RSDP found) */
     acpi_init(info->rsdp);
@@ -583,7 +618,13 @@ void kmain(struct boot_info *info) {
         kprint("Initializing Window Manager...\n");
         wm_init();
         
-        term_clear();
+        /* GUI Login Phase - DISABLED per User Request */
+        /* kprint("Starting GUI Login...\n");
+        extern int wm_login_screen(void);
+        if (wm_login_screen()) {
+             term_clear();
+             kprint("GUI Login Success.\n");
+        } */
     }
 
     kprint("Initializing InitRD...\n");
@@ -591,22 +632,9 @@ void kmain(struct boot_info *info) {
          initrd_init_memory(info->initrd_addr, info->initrd_size);
          vfs_mount("/initrd", initrd_mount_vfs());
          kprint("VFS: Mounted InitRD at /initrd\n");
-         
-         kprint("--- InitRD Contents ---\n");
-         initrd_list_files("/");
-         kprint("-----------------------\n");
-         
-             /* Spawn Userspace Shell - DISABLED for now to fix Login/Panic conflict */
-             /*
-             elf_load_result_t res;
-             if (elf_load_file("/initrd/shell.elf", &res) == 0) {
-                 sched_create_user_task(res.entry_point, res.stack_top, res.address_space);
-                 kprint_color(KLOG_COLOR_GREEN, "Spawned Userspace Shell (PID 1)!\n");
-             } else {
-                 kprint_color(KLOG_COLOR_RED, "Failed to spawn Userspace Shell!\n");
-             }
-             */
-         
+         // kprint("--- InitRD Contents ---\n");
+         // initrd_list_files("/");
+         // kprint("-----------------------\n");
     } else {
         kprint_color(KLOG_COLOR_RED, "InitRD not found!\n");
     }
@@ -630,60 +658,98 @@ void kmain(struct boot_info *info) {
     void wifi_ath_init(void);
     wifi_ath_init();
     
-    /* void sim_wifi_init(void); - declared in header usually, simplifying here */
-    /* Networking */
-    /* sim_wifi_init(); */
-    
     udp_init();
     dns_init();
     
-    /*
-    e1000_init();
-    wifi_ath_init();
-    */ /* Disabled per user request (Remove Simulation) */
+    /* Filesystem Mount logic omitted from diff for brevity, kept below in full file */
+    /* Wait, I can't assume what's below. I am replacing the block ending at 648. */
+    /* Need to handle FileSystem mount BEFORE menu? Or in menu? */
+    /* Best to initialize FS first so menu can load Userspace shell. */
     
-    /* Filesystem Mount */
+    /* FS Initialization Logic (Copied from lines 684-714) - REFACTORED */
+    /* We need to do this BEFORE the menu loop */
     struct mbr sector;
     mbr_read(&sector);
     if (sector.signature != 0xAA55) {
         kprint("Disk not initialized. Formatting...\n");
         mbr_write_default();
-        if (fat32_format() != 0) {
-            kprint_color(KLOG_COLOR_RED, "Critical: Format Failed.\n");
-        }
+        if (fat32_format() != 0) kprint_color(KLOG_COLOR_RED, "Critical: Format Failed.\n");
     } else {
         kprint("Valid MBR found.\n");
     }
     
-
-    
     if (fat32_init() == 0) {
-        kprint("FAT32 Filesystem Initialized.\n");
         vfs_mount("/", fat32_mount_vfs());
         kprint("VFS: Mounted FAT32 at /\n");
     } else {
-        kprint_color(KLOG_COLOR_RED, "Failed to mount filesystem. Formatting disk...\n");
-        /* Force re-format if mount fails (e.g. partition exists but is empty) */
-        mbr_write_default();
-        if (fat32_format() == 0) {
-             if (fat32_init() == 0) {
-                vfs_mount("/", fat32_mount_vfs());
-                kprint_color(KLOG_COLOR_GREEN, "FAT32 Formatted & Mounted via VFS.\n");
-             }
-        } else {
-             kprint_color(KLOG_COLOR_RED, "Critical: Filesystem Mount Failed after Format.\n");
+        kprint_color(KLOG_COLOR_RED, "Mount Failed. Formatting...\n");
+        if (fat32_format() == 0 && fat32_init() == 0) {
+            vfs_mount("/", fat32_mount_vfs());
+            kprint_color(KLOG_COLOR_GREEN, "FAT32 Formatted & Mounted.\n");
+        }
+    }
+    
+    /* Enable Interrupts for Keyboard Input */
+    kprint("Enabling Interrupts for Boot Menu...\n");
+    __asm__ volatile ("sti");
+
+    /* SUPERVISOR LOOP */
+    while (1) {
+        term_clear();
+        kprint_color(KLOG_COLOR_CYAN, "\n=== Ainux Kernel Boot Menu ===\n\n");
+        kprint("1. Kernel Debug Shell (Ring 0)\n");
+        kprint("2. Network Diagnostics (Ping 10.0.2.2)\n");
+        kprint("3. Reboot\n");
+        kprint("4. Shutdown\n\n");
+        kprint("Select Option [1-4]: ");
+        
+        int selection = 0;
+        
+        while (selection == 0) {
+            if (keyboard_available()) {
+                char c = keyboard_getchar();
+                if (c >= '1' && c <= '4') {
+                    kprint_char(c);
+                    kprint("\n");
+                    selection = c - '0';
+                }
+            }
+            __asm__ volatile ("hlt");
+        }
+        
+        if (selection == 1) {
+            kprint_color(KLOG_COLOR_YELLOW, "Launching Kernel Shell...\n");
+            struct task_struct *t = sched_create_task(shell_run);
+            while (t->state != TASK_ZOMBIE) { __asm__ volatile("hlt"); }
+        }
+        
+        if (selection == 2) {
+             kprint("Pinging Gateway (10.0.2.2)...\n");
+             extern void icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq);
+             icmp_send_echo(0x0A000202, 1, 1);
+             
+             /* Wait for key to return */
+             kprint("\nPress any key to return...\n");
+             while(!keyboard_available()) __asm__ volatile("hlt");
+             keyboard_getchar();
+        }
+        
+        if (selection == 3) {
+             kprint("Rebooting...\n");
+             outb(0x64, 0xFE);
+        }
+
+        if (selection == 4) {
+             kprint("Shutting Down...\n");
+             outw(0x604, 0x2000);
+             __asm__ volatile ("hlt");
         }
     }
 
-    /* sched_init moved up */
-    
-    /* Create init process */
-    kprint("Creating init process...\n");
-    sched_create_task(shell_run); /* Use shell as init for now */
-    
-    kprint("Enabling Interrupts...\n");
-    __asm__ volatile ("sti");
 
+    /* Redundant logic removed - already handled in boot menu block */
+    
+    
     kprint_color(KLOG_COLOR_GREEN, "\nBoot complete!\n");
 
     /* Enter idle loop */

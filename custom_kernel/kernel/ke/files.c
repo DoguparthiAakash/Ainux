@@ -6,6 +6,7 @@
 #include "../libc/string.h"
 #include "../libc/stdio.h"
 #include "../log.h"
+#include "../drivers/timer.h"
 #include "../ex/io/vfs.h"
 #include "../ex/mm/heap.h"
 
@@ -217,26 +218,20 @@ void cmd_files(char *arg) {
              }
         }
         
+        /* Global WM Logic (Drag etc) */
+        wm_update_cursor(&m);
+
         /* Render GUI */
-        kprint("[Files] Compositing...\n");
         wm_composite(&m);
-        kprint("[Files] Done.\n");
         
-        /* Yield is crucial? Shell task? */
-        /* sched_yield(); usually implies we give up time. */
-        /* If we loop tight, we freeze system? No, loop has polls. */
-        /* But we should yield to allow WM composite! */
-        /* Important: Add yield or sleep */
-        for(volatile int k=0; k<10000000; k++); // Large delay (slow FPS)
+        /* Frame Limit (~60 FPS) */
+        timer_sleep(16);
     }
     
     wm_destroy_window(fm_win);
-    /* Clear screen on exit to restore text console look */
-    /* Access term_clear? it's in init.c or wm.c */
-    /* wm.c has extern term_clear or implements it? */
-    /* wm_run() calls term_clear() at end. */
-    /* Let's try to find it. wm.c implies it's extern. */
-    /* It is in init.c. Not exposed in header? */
-    /* wm.h doesn't have it. */
-    /* Just clearing icon/window state is enough, console will overwrite. */
+    
+    /* Clear Screen on Exit */
+    /* Access term_clear (extern) */
+    extern void term_clear(void);
+    term_clear();
 }

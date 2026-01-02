@@ -943,13 +943,85 @@ vfs_node_t *fat32_finddir_vfs(vfs_node_t *node, const char *name) {
     return new_node;
 }
 
+/* Readdir Implementation */
+struct w_dirent *fat32_readdir_vfs(vfs_node_t *node, uint32_t index) {
+    (void)node;
+    /* Allocate standard dirent */
+    struct w_dirent *dirent = (struct w_dirent *)kmalloc(sizeof(struct w_dirent));
+    if (!dirent) return NULL;
+    memset(dirent, 0, sizeof(struct w_dirent));
+    
+    /* Read Directory Sector */
+    uint8_t *buffer = (uint8_t *)kmalloc(512);
+    if (!buffer) { kfree(dirent); return NULL; }
+    
+    uint32_t dir_lba = get_current_dir_lba();
+    ata_read_sectors(dir_lba, 1, buffer);
+    struct fat32_dir_entry *dir = (struct fat32_dir_entry *)buffer;
+    
+    /* Find entry at index */
+    int count = 0;
+    int found = 0;
+    
+    for(int i=0; i<16; i++) {
+        /* Skip invalid/deleted/volume_id */
+        if(dir[i].name[0] != 0x00 && dir[i].name[0] != 0xE5 && dir[i].attributes != 0x0F) {
+            if (count == (int)index) {
+                /* Found it */
+                /* Convert Name */
+                char name[13];
+                int len = 0;
+                /* Extract Name */
+                for(int j=0; j<8; j++) {
+                    if(dir[i].name[j] != ' ') name[len++] = dir[i].name[j];
+                }
+                /* Extract Ext */
+                if(dir[i].name[8] != ' ') {
+                    name[len++] = '.';
+                    for(int j=0; j<3; j++) {
+                        if(dir[i].name[8+j] != ' ') name[len++] = dir[i].name[8+j];
+                    }
+                }
+                name[len] = '\0';
+                
+                strcpy(dirent->name, name);
+                dirent->inode = index; /* Mock inode */
+                
+                /* Check if Directory */
+                /* Flags for dirent? VFS usually expects name. */
+                /* If we need type, we might need extended dirent struct or similar. */
+                /* w_dirent usually just has name and ino. */
+                /* Caller calls `finddir` or `stat` to check type usually, or readdir returns it? */
+                /* Assuming standard `struct dirent` usually has d_type. */
+                /* Our w_dirent definition need checking. Implicitly used in files.c */
+                
+                /* In files.c: it checks d->name. It checks type via `vfs_finddir`. */
+                
+                found = 1;
+                break;
+            }
+            count++;
+        }
+    }
+    
+    kfree(buffer);
+    
+    if (!found) {
+        kfree(dirent);
+        return NULL; /* End of directory */
+    }
+    
+    return dirent;
+}
+
 static vfs_fs_ops_t fat32_ops = {
     .read = fat32_read_vfs,
     .write = fat32_write_vfs,
     .finddir = fat32_finddir_vfs,
     .mkdir = fat32_mkdir_vfs,
     .create = fat32_create_vfs,
-    .unlink = fat32_unlink_vfs
+    .unlink = fat32_unlink_vfs,
+    .readdir = fat32_readdir_vfs
 };
 
 vfs_node_t *fat32_mount_vfs(void) {

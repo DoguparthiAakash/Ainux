@@ -34,5 +34,8 @@
 void ata_init(void);
 int ata_read_sectors(uint32_t lba, uint8_t count, uint8_t *buffer);
 int ata_write_sectors(uint32_t lba, uint8_t count, const uint8_t *buffer);
+/* New Multi-Drive Support */
+void ata_list_drives(void);
+int ata_select_drive(int index);
 
 #endif

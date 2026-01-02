@@ -26,17 +26,12 @@ static void sys_exit(int code) {
 // Entry point
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
-    // printf("Hello from Userspace! (ELF Loaded)\n");
     const char *msg = "Hello from Userspace! (ELF Loaded)\n";
-    // Calculate length logic or hardcode
     unsigned long len = 0;
     const char *p = msg;
     while (*p++) len++;
     
-    // sys_write(1, "A", 1);
-    
-    // DEBUG: Loop forever
-    // while(1);
+    sys_write(1, msg, len);
     
     return 0;
 }
