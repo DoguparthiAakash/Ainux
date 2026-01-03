@@ -1,6 +1,8 @@
 #include "timer.h"
 #include "../io.h"
 #include "../log.h"
+#include "mouse.h"
+#include "gfx/wm.h"
 
 // PIT I/O Ports
 #define PIT_CMD 0x43
@@ -36,6 +38,7 @@ uint64_t timer_get_ticks(void) {
 /* Function to call from the interrupt handler */
 void timer_handler_callback(void) {
     ticks++;
+    /* Composition now handled in thread context (init.c/shell.c) to avoid ISR starvation */
 }
 
 void timer_sleep(uint32_t ms) {

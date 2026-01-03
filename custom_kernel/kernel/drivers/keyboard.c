@@ -49,9 +49,9 @@ static const char scancode_map_upper[] = {
 
 /* Circular buffer for keyboard input */
 #define KB_BUFFER_SIZE 256
-static char kb_buffer[KB_BUFFER_SIZE];
-static int kb_read_pos = 0;
-static int kb_write_pos = 0;
+static volatile char kb_buffer[KB_BUFFER_SIZE];
+static volatile int kb_read_pos = 0;
+static volatile int kb_write_pos = 0;
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
@@ -60,14 +60,72 @@ static inline uint8_t inb(uint16_t port) {
 }
 
 void keyboard_handler(void) {
-    /* 
-     * Disable ISR logic to prevent race condition with Polling.
-     * We suspect interrupts are firing but maybe not clearing correctly,
-     * or conflicting with the aggressive polling loop.
-     * Since we are relying on polling, we ignore interrupts here.
-     * The End of Interrupt (EOI) should be handled by the IDT stub.
-     */
-    return;
+    /* Read Status */
+    uint8_t status = inb(KEYBOARD_STATUS_PORT);
+    
+    /* Check if data available */
+    if (status & 1) {
+        uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+        
+        /* Auto-repeat and E0 prefix handling state matching the Polling function */
+        /* To avoid duplicating complex state, we can simplify: 
+           Just dump into raw buffer? 
+           Or re-use the logic. 
+           
+           CRITICAL: If we are using Interrupts, we should NOT poll.
+           We should let the ISR fill the buffer.
+           
+           Let's copy the logic from keyboard_poll loop body here.
+        */
+        
+        static int e0_prefix = 0;
+        /* static int shift_pressed_local = 0; */
+        // We reuse global static vars: shift_pressed, ctrl_pressed, capslock_active
+        
+        /* Note: simplified ISR - handle essentials */
+        if (scancode == 0xE0) { e0_prefix = 1; return; }
+        
+        if (e0_prefix) {
+            e0_prefix = 0;
+            if (scancode & 0x80) return;
+            char c = 0;
+            switch (scancode) {
+                case 0x48: c = KEY_UP; break;
+                case 0x50: c = KEY_DOWN; break;
+                case 0x4B: c = KEY_LEFT; break;
+                case 0x4D: c = KEY_RIGHT; break;
+            }
+            if (c != 0) {
+                kb_buffer[kb_write_pos] = c;
+                kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
+            }
+            return;
+        }
+
+        if (scancode == KEY_LSHIFT_PRESS || scancode == KEY_RSHIFT_PRESS) { shift_pressed = 1; return; }
+        if (scancode == KEY_LSHIFT_RELEASE || scancode == KEY_RSHIFT_RELEASE) { shift_pressed = 0; return; }
+        if (scancode == KEY_LCTRL_PRESS) { ctrl_pressed = 1; return; }
+        if (scancode == KEY_LCTRL_RELEASE) { ctrl_pressed = 0; return; }
+        if (scancode == KEY_CAPSLOCK) { capslock_active = !capslock_active; return; }
+
+        if (scancode & 0x80) return; /* Break code */
+
+        char c = 0;
+        if (scancode < sizeof(scancode_map_lower)) {
+            if (shift_pressed) {
+                c = scancode_map_upper[scancode];
+                if (capslock_active && c >= 'A' && c <= 'Z') c = scancode_map_lower[scancode]; 
+            } else {
+                c = scancode_map_lower[scancode];
+                if (capslock_active && c >= 'a' && c <= 'z') c = scancode_map_upper[scancode];
+            }
+
+            if (c != 0) {
+                kb_buffer[kb_write_pos] = c;
+                kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
+            }
+        }
+    }
 }
 
 /* Serial Helper */
@@ -104,84 +162,12 @@ void keyboard_poll(void) {
     /* Poll Serial First (Headless Support) */
     poll_serial();
 
-    /* Loop to drain buffer (important for mouse bursts) */
-    while (1) {
-        uint8_t status = inb(KEYBOARD_STATUS_PORT);
-        if (!(status & 1)) break;
-        
-        if (status & 0x20) {
-             /* Mouse Data available! Poll it. */
-             extern void mouse_handler(void);
-             mouse_handler();
-             continue;
-        }
-        
-        static int e0_prefix = 0;
-        static uint8_t last_scancode = 0;
-        static int repeat_count = 0;
-
-        uint8_t scancode = inb(KEYBOARD_DATA_PORT);
-        
-        /* Auto-repeat logic: Allow same scancode after threshold */
-        if (scancode == last_scancode) {
-            repeat_count++;
-            /* After initial delay, allow repeats at a slower rate */
-            if (repeat_count < 50) {
-                continue; /* Still in delay period */
-            }
-            /* Allow repeat every 5 polls (~50ms at fast poll rate) */
-            if (repeat_count % 5 != 0) {
-                continue;
-            }
-        } else {
-            repeat_count = 0;
-            last_scancode = scancode;
-        }
-        
-        /* Copy-paste of handler logic to update buffer */
-        if (scancode == 0xE0) { e0_prefix = 1; continue; }
-        
-        if (e0_prefix) {
-            e0_prefix = 0;
-            if (scancode & 0x80) continue;
-            char c = 0;
-            switch (scancode) {
-                case 0x48: c = KEY_UP; break;
-                case 0x50: c = KEY_DOWN; break;
-                case 0x4B: c = KEY_LEFT; break;
-                case 0x4D: c = KEY_RIGHT; break;
-            }
-            if (c != 0) {
-                kb_buffer[kb_write_pos] = c;
-                kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
-            }
-            continue;
-        }
-
-        if (scancode == KEY_LSHIFT_PRESS || scancode == KEY_RSHIFT_PRESS) { shift_pressed = 1; continue; }
-        if (scancode == KEY_LSHIFT_RELEASE || scancode == KEY_RSHIFT_RELEASE) { shift_pressed = 0; continue; }
-        if (scancode == KEY_LCTRL_PRESS) { ctrl_pressed = 1; continue; }
-        if (scancode == KEY_LCTRL_RELEASE) { ctrl_pressed = 0; continue; }
-        if (scancode == KEY_CAPSLOCK) { capslock_active = !capslock_active; continue; }
-
-        if (scancode & 0x80) continue;
-
-        char c = 0;
-        if (scancode < sizeof(scancode_map_lower)) {
-            if (shift_pressed) {
-                c = scancode_map_upper[scancode];
-                if (capslock_active && c >= 'A' && c <= 'Z') c = scancode_map_lower[scancode]; 
-            } else {
-                c = scancode_map_lower[scancode];
-                if (capslock_active && c >= 'a' && c <= 'z') c = scancode_map_upper[scancode];
-            }
-
-            if (c != 0) {
-                kb_buffer[kb_write_pos] = c;
-                kb_write_pos = (kb_write_pos + 1) % KB_BUFFER_SIZE;
-            }
-        }
-    }
+    /* Disable Port 0x60 polling because we use Interrupts now! */
+    /* If we poll here, we might steal the byte before ISR sees it, or vice versa */
+    /* But checking STATUS is safe? No, if we see READY and read it, ISR won't fire (or will fire spurious). */
+    /* So we ONLY poll serial. */
+    
+    return;
 }
 
 /* New function to expose Ctrl state */

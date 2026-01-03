@@ -5,7 +5,7 @@ CC = cc
 LD = ld
 
 # Add new include paths for architecture layers
-CFLAGS = -Os -g -Wall -Wextra -pipe -I. -Ikernel -Ikernel/hal -Ikernel/hal/x86_64 -Ikernel/ke -Ikernel/ex -Ikernel/drivers -Ikernel/libc -Ikernel/crypto -ffreestanding -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
+CFLAGS = -O3 -fno-strict-aliasing -g -Wall -Wextra -pipe -I. -Ikernel -Ikernel/include -Ikernel/hal -Ikernel/hal/x86_64 -Ikernel/ke -Ikernel/ex -Ikernel/drivers -Ikernel/libc -Ikernel/crypto -ffreestanding -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone
 LDFLAGS = -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 -T kernel/hal/x86_64/linker.ld
 
 RUST_TARGET := x86_64-unknown-none

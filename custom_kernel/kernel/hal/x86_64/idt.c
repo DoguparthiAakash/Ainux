@@ -88,6 +88,19 @@ void exception_handler(struct interrupt_frame *frame) {
      __asm__ volatile ("cli; hlt");
 }
 
+/* Helper: Print Hex */
+static void kprint_hex(uint64_t val) {
+    char hex[] = "0123456789ABCDEF";
+    char str[19]; /* 0x + 16 chars + null */
+    str[0] = '0'; str[1] = 'x';
+    for (int i = 0; i < 16; i++) {
+        str[17-i] = hex[val & 0xF];
+        val >>= 4;
+    }
+    str[18] = 0;
+    kprint(str);
+}
+
 /* Division by Zero (Vector 0) */
 __attribute__((interrupt))
 void div_zero_handler(struct interrupt_frame *frame) {
@@ -122,20 +135,24 @@ void gpf_handler(struct interrupt_frame *frame, uint64_t error_code) {
     }
 
     kprint("[KERNEL PANIC] System Halted.\n");
-    __asm__ volatile ("cli; hlt");
-}
-
-/* Helper: Print Hex */
-static void kprint_hex(uint64_t val) {
-    char hex[] = "0123456789ABCDEF";
-    char str[19]; /* 0x + 16 chars + null */
-    str[0] = '0'; str[1] = 'x';
-    for (int i = 0; i < 16; i++) {
-        str[17-i] = hex[val & 0xF];
-        val >>= 4;
+    
+    /* Dump Stack Trace */
+    uint64_t rbp;
+    __asm__ volatile("mov %%rbp, %0" : "=r"(rbp));
+    
+    kprint("Stack Trace:\n");
+    struct stack_frame {
+        struct stack_frame *next;
+        uint64_t rip;
+    };
+    struct stack_frame *st_frame = (struct stack_frame*)rbp;
+    for (int i = 0; i < 10; i++) {
+        if (!st_frame || (uint64_t)st_frame < 0xFFFF800000000000) break;
+        kprint("  RIP: "); kprint_hex(st_frame->rip); kprint("\n");
+        st_frame = st_frame->next;
     }
-    str[18] = 0;
-    kprint(str);
+
+    __asm__ volatile ("cli; hlt");
 }
 
 __attribute__((interrupt))
@@ -183,7 +200,30 @@ void pf_handler(struct interrupt_frame *frame, uint64_t error_code) {
     }
 
     /* Kernel Panic */
+    /* Kernel Panic */
     kprint("[KERNEL PANIC] System Halted.\n");
+    
+    /* Dump Stack Trace */
+    uint64_t rbp;
+    __asm__ volatile("mov %%rbp, %0" : "=r"(rbp));
+    
+    kprint("Stack Trace:\n");
+    struct stack_frame {
+        struct stack_frame *next;
+        uint64_t rip;
+    };
+    
+    struct stack_frame *st_frame = (struct stack_frame*)rbp;
+    for (int i = 0; i < 10; i++) {
+        if (!st_frame) break;
+        // Simple validation: must be canonical kernel address
+        if ((uint64_t)st_frame < 0xFFFF800000000000) break; 
+        
+        kprint("  ["); kprint_hex(i); kprint("] RIP: "); kprint_hex(st_frame->rip); kprint("\n");
+        
+        st_frame = st_frame->next;
+    }
+
     __asm__ volatile ("cli; hlt");
 }
 

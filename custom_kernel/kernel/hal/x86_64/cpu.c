@@ -205,6 +205,24 @@ void cpu_init(void) {
     kprint(g_cpu_info.vendor_string);
     kprint("\n");
     
+    kprint("\n");
+    
+    /* Enable FPU / SSE (OSFXSR) */
+    /* Needed for -O3 optimizations which use XMM registers, and for fxsave/fxrstor */
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1 << 2); /* Clear EM (Emulation) */
+    cr0 |= (1 << 1);  /* Set MP (Monitor Co-processor) */
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+    
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1 << 9);  /* Set OSFXSR (FXSAVE/FXRSTOR support) */
+    cr4 |= (1 << 10); /* Set OSXMMEXCPT (Unmasked SSE exceptions) */
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+    
+    kprint("FPU/SSE Enabled (CR4.OSFXSR set).\n");
+
     /* Vendor Specific Initialization */
     // int is_amd = 0;
     // int is_intel = 0;

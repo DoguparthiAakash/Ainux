@@ -2,6 +2,7 @@
 #define SCHED_H
 
 #include <stdint.h>
+#include "spinlock.h"
 
 /* Forward declarations */
 struct file_descriptor;
@@ -31,15 +32,19 @@ struct task_struct {
     char name[32];                 /* Process name */
     
     /* Scheduling */
-    struct task_struct *next;      /* Linked list for scheduler */
+    struct task_struct *next;      /* Linked list for scheduler (within priority queue) */
     volatile int state;            /* Current state */
     int flags;                     /* TASK_KERNEL or TASK_USER */
-    int priority;                  /* Scheduling priority */
+    int priority;                  /* Scheduling priority (0-31, 0 is highest) */
     uint64_t time_slice;           /* Remaining time slice */
     
     /* Memory */
     struct vmm_address_space *address_space; /* Virtual address space */
     uint64_t brk;                  /* Program break for heap */
+
+    /* FPU/SSE State (Aligned to 16 bytes) */
+    /* 512 bytes for FXSAVE (or more for XSAVE later) */
+    uint8_t fpu_state[512] __attribute__((aligned(16))); 
     
     /* User-mode context */
     uint64_t user_rsp;             /* User stack pointer */
@@ -52,12 +57,35 @@ struct task_struct {
     struct signal_pending *signals; /* Signal state */
     
     /* Exit status */
-    /* Exit status */
     int exit_code;
     
     /* Windowing Support (Virtual Layer) */
     void *output_window; /* (Window*) - void* to avoid circular dep */
+
+    /* "Brutal" Stability: Resource Tracking */
+    struct resource *resources;
 };
+
+/* O(1) Scheduler Constants */
+#define MAX_PRIO 32
+#define DEFAULT_PRIO 16
+
+/* Priority Queue */
+struct priority_queue {
+    struct task_struct *head;
+    struct task_struct *tail;
+};
+
+
+typedef void (*resource_cleanup_t)(void *data);
+
+struct resource {
+    struct resource *next;
+    void *data;
+    resource_cleanup_t cleanup;
+    const char *desc;
+};
+
 
 /* Global task pointers */
 extern struct task_struct *current_task;

@@ -159,14 +159,70 @@ static int g_sudo_active = 0;
 void wm_add_icon(const char *label, int x, int y, void (*cb)(void));
 void wm_clear_icons(void);
 
+/* Performance Benchmark */
+static void print_num(uint64_t num);
+
+static void cmd_perf(void) {
+    kprint_color(KLOG_COLOR_CYAN, "=== Kernel Performance Benchmark (Brutal Optimization) ===\n");
+    
+    /* 1. Memory Bandwidth (Memcpy) */
+    kprint("[PERF] Measuring Memory Bandwidth (100MB Copy)...\n");
+    uint64_t size = 1024 * 1024; /* 1MB Buffer */
+    void *src = kmalloc(size);
+    void *dst = kmalloc(size);
+    if (!src || !dst) {
+        kprint("OOM for Perf Test!\n");
+        if (src) kfree(src);
+        if (dst) kfree(dst);
+        return;
+    }
+    memset(src, 0xAA, size);
+    
+    uint64_t start = timer_get_ticks();
+    for (int i = 0; i < 100; i++) { /* 100 x 1MB = 100MB */
+        memcpy(dst, src, size);
+    }
+    uint64_t end = timer_get_ticks();
+    uint64_t diff = end - start; 
+    
+    kprint(" - Time: "); print_num(diff); kprint(" ticks.\n");
+    
+    kfree(src);
+    kfree(dst);
+    
+    /* 2. Allocator Speed (Slab/Heap) */
+    kprint("[PERF] Measuring Allocator (100,000 Alloc/Free)...\n");
+    start = timer_get_ticks();
+    for (int i = 0; i < 100000; i++) {
+        void *p = kmalloc(64);
+        __asm__ volatile("" : : "r"(p));
+        kfree(p);
+    }
+    end = timer_get_ticks();
+    diff = end - start;
+    kprint(" - Time: "); print_num(diff); kprint(" ticks.\n");
+
+    /* 3. Scheduler Stress */
+    kprint("[PERF] Measuring Scheduler (Fork/Context Switch)...\n");
+    start = timer_get_ticks();
+    for (int i = 0; i < 1000; i++) {
+        struct task_struct *t = sched_create_task(sched_yield); 
+        (void)t; /* suppress unused */
+    }
+    kprint(" - [SKIPPED] Scheduler test requires wrapper function.\n");
+    
+    kprint_color(KLOG_COLOR_GREEN, "Benchmark Complete.\n");
+}
+
 /* Autocompletion Commands */
 static const char *cmd_list[] = {
     "help", "clear", "exit", "shutdown", "reboot", "date", "time", "cal", "update",
     "ls", "pwd", "cd", "mkdir", "touch", "cp", "rm", "cat", "write", "mount", 
     "lsdisk", "mkfs", "fdisk", "save", "useradd", "passwd", "meminfo", "lspci", 
     "dmesg", "whoami", "uptime", "clock", "apt", "sudo", "cc", "as", "run", 
-    "startwm", "testlibc", "beep", "view", "file", "desktop", NULL
+    "startwm", "testlibc", "beep", "view", "file", "desktop", "perf", NULL
 };
+
 
 static void shell_autocomplete(char *buf, int *pos) {
     /* 1. Extract partially typed word */
@@ -2590,6 +2646,8 @@ int exec_command(char *cmd_buffer) {
             cmd_cal(arg);
         } else if (sh_strcmp(cmd_buffer, "testlibc") == 0) {
             libc_test_run();
+        } else if (sh_strcmp(cmd_buffer, "perf") == 0) {
+            cmd_perf();
         } else if (sh_strcmp(cmd_buffer, "shutdown") == 0) {
             kprint("Shutting down...\n");
             sys_shutdown();

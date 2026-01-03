@@ -455,7 +455,13 @@ static struct boot_info limine_info_store;
 static struct multiboot_mmap_entry limine_mmap_buffer[128];
 uint64_t g_hhdm_offset = 0;
 
-/* Early serial debug - before serial_init for debugging boot issues */
+#include "ke/user.h"
+#include "drivers/mouse.h" /* Need full definition for stack allocation */
+
+/* 
+ * Helper: Early Serial Output 
+ * Used for debugging before video initialization 
+ */
 static void early_serial_putc(char c) {
     while ((inb(COM1 + 5) & 0x20) == 0);
     outb(COM1, c);
@@ -639,18 +645,28 @@ void kmain(struct boot_info *info) {
         kprint_color(KLOG_COLOR_RED, "InitRD not found!\n");
     }
 
+    kprint("Initializing PS/2 Controller...\n");
+    extern void ps2_init(void);
+    ps2_init();
+
     kprint("Initializing Keyboard...\n");
     keyboard_init();
 
     kprint("Initializing Mouse...\n");
     mouse_init();
 
-    kprint("Initializing ATA Disk...\n");
+    /* Initialize ATA */
     ata_init();
+    
+    /* Initialize USB XHCI */
+    extern void xhci_init(void);
+    xhci_init();
     
     kprint("Initializing PCI and Networking...\n");
     pci_scan_bus();
     rtl8139_init();
+    
+    /* ... (Network Init) ... */
     
     void e1000_init(void);
     e1000_init();
@@ -661,13 +677,6 @@ void kmain(struct boot_info *info) {
     udp_init();
     dns_init();
     
-    /* Filesystem Mount logic omitted from diff for brevity, kept below in full file */
-    /* Wait, I can't assume what's below. I am replacing the block ending at 648. */
-    /* Need to handle FileSystem mount BEFORE menu? Or in menu? */
-    /* Best to initialize FS first so menu can load Userspace shell. */
-    
-    /* FS Initialization Logic (Copied from lines 684-714) - REFACTORED */
-    /* We need to do this BEFORE the menu loop */
     struct mbr sector;
     mbr_read(&sector);
     if (sector.signature != 0xAA55) {
@@ -689,66 +698,118 @@ void kmain(struct boot_info *info) {
         }
     }
     
-    /* Enable Interrupts for Keyboard Input */
+    /* Enable Interrupts for Boot Menu */
+    /* Enable Interrupts for Boot Menu */
+    /* SUPERVISOR LOOP - Text Mode Selection */
+    kprint("[Init] Clearing Screen...\n");
+    term_clear();
+    kprint("[Init] Screen Cleared.\n");
+
+    /* Enable Interrupts for Boot Menu */
     kprint("Enabling Interrupts for Boot Menu...\n");
     __asm__ volatile ("sti");
+    kprint("Interrupts Enabled.\n");
 
-    /* SUPERVISOR LOOP */
-    while (1) {
-        term_clear();
-        kprint_color(KLOG_COLOR_CYAN, "\n=== Ainux Kernel Boot Menu ===\n\n");
-        kprint("1. Kernel Debug Shell (Ring 0)\n");
-        kprint("2. Network Diagnostics (Ping 10.0.2.2)\n");
-        kprint("3. Reboot\n");
-        kprint("4. Shutdown\n\n");
-        kprint("Select Option [1-4]: ");
-        
-        int selection = 0;
-        
-        while (selection == 0) {
-            if (keyboard_available()) {
-                char c = keyboard_getchar();
-                if (c >= '1' && c <= '4') {
-                    kprint_char(c);
-                    kprint("\n");
-                    selection = c - '0';
-                }
-            }
-            __asm__ volatile ("hlt");
-        }
-        
-        if (selection == 1) {
-            kprint_color(KLOG_COLOR_YELLOW, "Launching Kernel Shell...\n");
-            struct task_struct *t = sched_create_task(shell_run);
-            while (t->state != TASK_ZOMBIE) { __asm__ volatile("hlt"); }
-        }
-        
-        if (selection == 2) {
-             kprint("Pinging Gateway (10.0.2.2)...\n");
-             extern void icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq);
-             icmp_send_echo(0x0A000202, 1, 1);
-             
-             /* Wait for key to return */
-             kprint("\nPress any key to return...\n");
-             while(!keyboard_available()) __asm__ volatile("hlt");
-             keyboard_getchar();
-        }
-        
-        if (selection == 3) {
-             kprint("Rebooting...\n");
-             outb(0x64, 0xFE);
-        }
+    kprint_color(KLOG_COLOR_CYAN, "=== Ainux Boot Menu ===\n\n");
+    kprint("1. Start Kernel (Shell)\n");
+    kprint("2. Network Diagnostics\n");
+    kprint("3. Reboot\n");
+    kprint("4. Shutdown\n\n");
+    kprint("Select option [1-4]: ");
 
-        if (selection == 4) {
-             kprint("Shutting Down...\n");
-             outw(0x604, 0x2000);
-             __asm__ volatile ("hlt");
+    int choice = 0;
+    while(1) {
+        if (keyboard_available()) {
+             char c = keyboard_getchar();
+             if (c >= '1' && c <= '4') {
+                 kprint_char(c);
+                 kprint("\n");
+                 choice = c - '0';
+                 break;
+             }
         }
+        __asm__ volatile("hlt");
     }
 
-
-    /* Redundant logic removed - already handled in boot menu block */
+    if (choice == 1) {
+        kprint("\n[INIT] Launching Shell...\n");
+        extern void shell_run(void);
+        shell_run();
+    } else if (choice == 2) {
+        kprint("[INIT] Running Network Diagnostics...\n");
+        kprint("Pinging 10.0.2.2...\n");
+        extern void icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq);
+        icmp_send_echo(0x0A000202, 1, 1);
+        kprint("\nProfiling Network...\n");
+        /* Simple busy wait to show result */
+        for(volatile int i=0; i<10000000; i++);
+        kprint("Done. Launching Shell...\n");
+        extern void shell_run(void);
+        shell_run();
+    } else if (choice == 3) {
+        kprint("Rebooting...\n");
+        outb(0x64, 0xFE);
+    } else if (choice == 4) {
+        kprint("Shutting Down...\n");
+        outw(0x604, 0x2000); /* QEMU Shutdown */
+        __asm__ volatile("hlt");
+    }
     
+    while(1) { __asm__ volatile("hlt"); }
+}
+#ifdef DEAD_CODE
+        
+        frames++;
+        if (frames % 60 == 0) kprint("."); /* Debug Heartbeat */
+        
+        /* 2. Check Input */
+        char c = 0;
+        if (keyboard_available()) {
+            c = keyboard_getchar();
+        }
+        
+        /* Verify Shell Run */
+                 kprint("\n[INIT] Launching Shell...\n");
+                 extern void shell_run(void);
+                 shell_run();
+             }
+         }
+        
+        /* 3. Sleep */
+        __asm__ volatile("hlt");
+    }
+        
+
+    
+    /* Selection Made */
+    wm_set_boot_menu(0, 0); /* Disable Menu Overlay */
+    
+    /* Slight delay for visual confirmation? */
+    for(volatile int i=0; i<5000000; i++);
+
+    if (selection == 1) {
+        kprint("[INIT] Starting Debug Shell...\n");
+        // We need to ensure we don't start shell until user signals?
+        // Actually shell_start() runs the shell loop.
+        extern void shell_run(void);
+        shell_run();
+    } else if (selection == 2) {
+        kprint("[INIT] Running Network Diagnostics...\n");
+        kprint("Pinging 10.0.2.2...\n");
+        extern void icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq);
+        icmp_send_echo(0x0A000202, 1, 1);
+        
+        kprint("\nPress any key to return...\n");
+        while(!keyboard_available()) __asm__ volatile("hlt");
+        keyboard_getchar();
+    } else if (selection == 3) {
+        kprint("Rebooting...\n");
+        outb(0x64, 0xFE);
+    } else if (selection == 4) {
+        kprint("Shutting Down...\n");
+        outw(0x604, 0x2000);
+        __asm__ volatile ("hlt");
+    }
     
     kprint_color(KLOG_COLOR_GREEN, "\nBoot complete!\n");
 
@@ -760,3 +821,4 @@ void kmain(struct boot_info *info) {
     /* Should never reach here */
     hcf();
 }
+#endif
