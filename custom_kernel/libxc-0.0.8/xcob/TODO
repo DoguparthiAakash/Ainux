@@ -1,5 +1,0 @@
-TODO
-====
-
-1. xcobmgmt must be at a logically higher layer than xcob. Must
-   use xmap to store the xcob's  that are installed.

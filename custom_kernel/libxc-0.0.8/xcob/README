@@ -1,8 +1,0 @@
-xcob
-====
-
-Implementation of serializable objects. Nested objects as well as
-inheritance supported via prototyped objects (as opposed to class-
-based objects).
-
-

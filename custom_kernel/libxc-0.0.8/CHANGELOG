@@ -1,8 +1,0 @@
-
-
-Tue Mar 15 23:23:16 SAST 2016
-
-1. Reworked all the Makefiles so that it now compiles on windows
-   using mingw without needing a unix environment at all. Tested
-   using the mingw cmd.exe distribution and makefile that comes
-   with Qt5.4.

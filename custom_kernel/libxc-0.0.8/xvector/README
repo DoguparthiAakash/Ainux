@@ -1,9 +1,0 @@
-xvector (previously tsarray)
-============================
-
-(This is a re-implementation of the rsarray (resizeable array) for code
-that needs the array locked while it is being updated. The interface to
-the library hasd been simplified at the expense of flexibility in order
-to enforce consistency in the callers)
-
-

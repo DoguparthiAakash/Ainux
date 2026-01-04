@@ -1,0 +1,146 @@
+(Was previously slib, now xshare - see the new README file)
+--------------
+Shared Library
+--------------
+
+
+----------------------------------------------------------------------
+
+Introduction and Example
+------------------------
+
+   Shared  library is simply  a wrapper library that
+simplifies  writing  code that calls  shared/dynamic
+libs on both windows and unix systems.  All the code
+that calls functions in a windows .dll or a unix .so
+won't  have  to be changed when porting between  the
+platforms.
+
+   As a simple example, the following windows code:
+
+<code>
+   HMODULE lib = LoadLibrary ("mylib.dll");
+   FARPROC func = GetProcAddress (lib, "myfunc");
+   func ();
+   FreeLibrary (lib);
+</code>
+
+opens a library  called "mylib.dll",  then calls the 
+function "myfunc" within it, then closes the library
+when  it is done. The  following unix  code does the
+same thing on unix systems:
+
+<code>
+   void *lib = dlopen ("mylib.so");
+   void *func = dlsym (lib, "myfunc");
+   func ();
+   dlclose (lib);
+</code>
+
+   
+   When  porting the  code from one  platform to the
+other one would  generally have to locate and change
+all the relevant code. Once the changes are complete
+then  the changed  code will still  only run on  one
+platform.
+
+Using slib, you can do the following instead:
+
+<code>
+   slib_library_t lib = slib_open ("mylib");
+   slib_symbol_t func = slib_symbol (lib, "myfunc");
+   func ();
+   slib_close (lib);
+</code>
+
+----------------------------------------------------------------------
+Usage:
+------
+   Please read  the header file that comes with  the
+slib package for details on what each  function does
+and what each function returns.
+
+   There are two main steps to using slib; compiling
+and linking. For compilation just follow the example
+above and your code should at least compile (you may
+need to add  slib.c and slib.h to your build process
+or project).
+
+   For linking, the process differs under windows as
+compared  to unix-like  systems. In  windows, a .dll 
+file is compiled and linked  with no special  linker
+or  compiler  support needed while the program which
+uses  the .dll needs to be linked in  a certain way.
+In a unix system, it's the other way around.
+
+   The  Makefile in the slib package will work under
+unix systems  with the  gnu tools and under  windows
+with msys and mingw. Briefly, in windows you need to
+build a  static (.a)  library using  'ar'  which can 
+then be converted to a dll with 'a2dll' (included in
+the mingw distribution). In unix the normal flags to
+'ld'  will  build the  shared object ('.so') without 
+having to  do anything special  (use '-shared' as an
+ld flag).
+
+----------------------------------------------------------------------
+Contact and Licence:
+--------------------
+   This package consists of the following files:
+      Makefile       - example of cross-platform
+                       build. Demonstrates what
+                       has to be done.
+
+      README         - This file.
+
+      dynamic.cpp    - Example file containing
+                       a module that gets loaded
+                       at runtime.
+
+      dynamic.h      - Header for above module.
+
+      main.cpp       - Main file which calls both
+                       the static and runtime
+                       code.
+
+      slib.c         - The shared library
+                       implementation.
+
+      slib.h         - Header for above.
+      
+      static.cpp     - Example of a module that
+                       is loaded at compile time.
+
+      static.h       - Header for above module.
+
+All of the above files are under MyLicence; in other
+words you can use, modify or redistribute this pack-
+age either on it's own or within a larger program as
+long as you provide the source for this  package and
+the  source  for any changes you  have made to  this 
+package  to the receiver  of the distribution in the
+event that you do redistribute this package. An add-
+itional  restriction  is that this  copyright notice 
+accompanies all distributions of this  package with-
+out  exception and that  suitable credit be given to
+this package  (and it's author) in the  credits line
+of any creative work that uses it.
+
+   For example, simply adding this file to the docu-
+ments section of the software program and adding the
+following line to the  credits list will satisfy the
+last restriction:
+   "Uses slib (©L. K. Manickum, 2007)".
+Bundling  up the lib package in source form (includ-
+ing all the  changes that  were made to it) into the
+software distribution will  satisfy the rest  of the
+restrictions.
+
+   My latest contact details can be found at
+      www.lelanthran.com.
+so please  send all bug  reports to the address  you
+find there with the subject line "slib bug".
+
+Hopefully, you find as much use for this as I do :-)
+
+L. K. Manickum

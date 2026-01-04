@@ -1,0 +1,141 @@
+make -C userspace
+make[1]: Entering directory '/home/aakash/Downloads/Ainuix/custom_kernel/userspace'
+make[1]: Nothing to be done for 'all'.
+make[1]: Leaving directory '/home/aakash/Downloads/Ainuix/custom_kernel/userspace'
+cp userspace/shell.elf initrd/shell.elf
+cp userspace/hello.elf initrd/a.out
+tar -cf initrd.tar -C initrd .
+mkdir -p liminedir/boot
+cp kernel.elf liminedir/boot/
+cp initrd.tar liminedir/boot/
+cp limine.conf liminedir/
+cp limine/limine-bios-cd.bin liminedir/
+cp limine/limine-bios.sys liminedir/boot/
+cp limine/limine-uefi-cd.bin liminedir/
+xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table --efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label liminedir -o limine.iso
+xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:limine.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data, 46.4g free
+Added to ISO image: directory '/'='/home/aakash/Downloads/Ainuix/custom_kernel/liminedir'
+xorriso : UPDATE :       7 files added in 1 seconds
+xorriso : UPDATE :       7 files added in 1 seconds
+xorriso : WARNING : EFI boot equipment is provided but no directory /EFI/BOOT
+xorriso : WARNING : will emerge in the ISO filesystem. A popular method to
+xorriso : WARNING : prepare a USB stick on MS-Windows relies on having in the
+xorriso : WARNING : ISO filesystem a copy of the EFI System Partition tree.
+xorriso : UPDATE :  0.02% done
+ISO image produced: 4880 sectors
+Written to medium : 4880 sectors at LBA 0
+Writing to 'stdio:limine.iso' completed successfully.
+
+./limine/limine bios-install limine.iso
+Physical block size of 512 bytes.
+Installing to GPT. Logical block size of 512 bytes.
+Secondary header at LBA 0x4c3f.
+Secondary header valid.
+GPT partition NOT specified. Attempting GPT embedding.
+New maximum count of partition entries: 44.
+Stage 2 to be located at 0x1a00 and 0x981800.
+Reminder: Remember to copy the limine-bios.sys file in either
+          the root, /boot, /limine, or /boot/limine directories of
+          one of the partitions on the device, or boot will fail!
+Limine BIOS stages installed successfully!
+rm -rf liminedir
+qemu-system-x86_64 -cdrom limine.iso -drive file=disk.img,format=raw,if=ide -M pc -m 2G -display none -serial stdio -boot d
+[Limine] Detected Native Boot. Converting info...
+[Limine] Framebuffer found.
+[Limine] Memory Map converted.
+[Limine] InitRD module found.
+[Limine] RSDP found.
+[Limine] HHDM Offset: 0xFFFF800000000000
+[DBG] boot_info ptr: 0xFFFFFFFF8011CCC0
+[DBG] fb_addr: 0xFFFF8000FD000000 w:0000000000000500 h:0000000000000320 p:0000000000001400
+[1;36m=== Ainux Kernel ===
+[0m[1;33mBooting...
+[0mInitializing CPU Support...
+Initializing Syscalls (MSRs)...
+Syscalls Enabled.
+CPU Vendor: AuthenticAMD
+[1;36mDetected AMD CPU.
+[0mCPU Family: 15 Model: 107
+[1;32mInitializing GDT...
+[0mInitializing IDT...
+Initializing PMM...
+[PMM] Bitmap allocated at: 0xFFFF80000023C000
+[PMM] Clearing bitmap...
+[PMM] Bitmap cleared.
+[PMM] Marking bitmap used...
+[PMM] Bitmap Phys Addr: 0x000000000023C000
+[PMM] Bitmap marked.
+[PMM] Initialized
+Initializing Heap...
+Rust Heap: Initialized (Dynamic HHDM)
+Initializing VMM...
+[VMM] Initialized with boot page tables
+Initializing VFS...
+[KA][VFS] Initialized.
+Initializing Scheduler...
+[KA][SCHED] Initialized. PID 0 created.
+Initializing Timer...
+PIT initialized.
+Starting Multitasking (creating background task)...
+[KA][KA]ACPI: Initializing...
+ACPI: Enabled (Shutdown Ready).
+Initializing Graphics...
+Initializing Window Manager...
+[KA][WM] Initialized with Backbuffer
+Initializing InitRD...
+[KA][InitRD] Failed to allocate RAM buffer!
+[InitRD] Fallback to Read-Only mode
+[KA][VFS] Mounted /initrd
+VFS: Mounted InitRD at /initrd
+--- InitRD Contents ---
+[InitRD] Listing: /
+  - /
+  - shell.elf
+  - a.out
+  - hello.elf
+  - test.txt
+  - hello.c
+  - test_inc.c
+  - libs//
+  - hello.cpp
+  - hello.txt
+  - test.asm
+  - tictactoe.c
+  - init.c
+  - billing.c
+  - games//
+  - shell.c
+  - lib//
+  - ttt
+  - bin//
+  - doom.c
+-----------------------
+Initializing Keyboard...
+[KB] Initialized (US Layout + Ctrl)
+Initializing Mouse...
+Initializing ATA Disk...
+[ATA] Scanning for drives...\n[ATA] Found ATA Drive at Primary Master\nValid MBR found.
+[KA][KF][FAT32] Found MBR Partition 1 (Type 0c) at LBA 2048
+[FAT32] Mounted. Data Start: 4128, Root: 4128
+FAT32 Filesystem Initialized.
+[KA][VFS] Mounted root at /
+VFS: Mounted FAT32 at /
+Creating init process...
+[KA][KA]Enabling Interrupts...
+[KA][KA][KA][KF][KF]=== Ainux Login (Encrypted) ===
+
+Username: akash
+Password: ******
+[KA][KA][KF][KA][KA][KF][KF][KF]
+Invalid Credentials. Try again.
+[1;32m
+Boot complete!
+[0m=== Ainux Login (Encrypted) ===
+
+Username: exit
+Password: qemu-system-x86_64: terminating on signal 15 from pid 16996 ()

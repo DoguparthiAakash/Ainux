@@ -1,9 +1,0 @@
-NOTE WELL: this is not yet tested under Windows versions greater than XP
-------------------------------------------------------------------------
-
-Xsock
-
-A cross-platform wrapper around BSD sockets implementation. 
-
-
-
