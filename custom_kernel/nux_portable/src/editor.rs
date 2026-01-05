@@ -32,6 +32,25 @@ enum Mode {
     ConfirmQuit,
 }
 
+#[derive(Debug, PartialEq)]
+enum Key {
+    Char(char),
+    Esc,
+    Enter,
+    Backspace,
+    Delete,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Ctrl(char), // For Ctrl+A, Ctrl+B, etc.
+    Unknown(u8),
+}
+
 struct MiniVim {
     filename: String,
     lines: Vec<String>,
@@ -42,7 +61,7 @@ struct MiniVim {
     msg: String,
     quit: bool,
     dirty: bool,
-    esc_seq: usize, // 0=None, 1=seen Esc, 2=seen Esc+[
+    escape_state: u8, // 0=None, 1=seen Esc, 2=seen Esc+[ or Esc+O
 }
 
 impl MiniVim {
@@ -64,7 +83,7 @@ impl MiniVim {
             msg: String::from("HELP: i=Insert, Esc=Normal, :w=Save, :q=Quit"),
             quit: false,
             dirty: false,
-            esc_seq: 0,
+            escape_state: 0,
         }
     }
 
@@ -116,91 +135,92 @@ impl MiniVim {
         io::stdout().flush().unwrap();
     }
 
-    fn process_keypress(&mut self) {
-        let b = self.read_byte();
-        
-        // Escape Sequence State Machine
-        if self.esc_seq == 1 {
-            if b == 91 { // '['
-                self.esc_seq = 2; return;
-            } else {
-                self.esc_seq = 0; // Cancel logic, treat as Normal Esc + new char
-                self.mode = Mode::Normal; // Enforce normal mode if we saw Esc
-                self.handle_standard_key(b);
-                return;
-            }
-        } else if self.esc_seq == 2 {
-            self.esc_seq = 0;
-            match b {
-                65 => { if self.cy > 0 { self.cy -= 1; } }, // Up
-                66 => { if self.cy < self.lines.len().saturating_sub(1) { self.cy += 1; } }, // Down
-                67 => { // Right
-                     let len = if self.cy < self.lines.len() { self.lines[self.cy].len() } else { 0 };
-                     if self.cx < len { self.cx += 1; }
-                },
-                68 => { if self.cx > 0 { self.cx -= 1; } }, // Left
-                _ => {}
-            }
-            return;
-        }
+    fn read_key(&mut self) -> Key {
+        let mut buf = [0; 1];
+        if io::stdin().read_exact(&mut buf).is_err() { return Key::Unknown(0); }
+        let b = buf[0];
 
-        if b == 27 {
-            self.esc_seq = 1;
-            // Hack for non-blocking: We assume if it's Esc, we switch to Normal mode anyway?
-            // If we are in Insert Mode, Esc should switch to Normal.
-            // If this is start of Arrow, we will see [ next.
-            // Problem: If user types Esc then waits, we are in state 1. 
-            // Editor might look unresponsive until next key. 
-            // This is acceptable constraint for now.
-            if matches!(self.mode, Mode::Insert) || matches!(self.mode, Mode::Command) {
-                 self.mode = Mode::Normal;
-            }
-            return;
+        match self.escape_state {
+            0 => {
+                match b {
+                    27 => { // ESC
+                        // Try to read next byte non-blockingly (simulated)
+                        // If we can't peek, we simply read.
+                        // We support [ and O
+                        
+                        let mut next_buf = [0; 1];
+                        if io::stdin().read_exact(&mut next_buf).is_ok() {
+                            match next_buf[0] {
+                                b'[' => {
+                                    self.escape_state = 2; 
+                                    return self.read_escape_sequence();
+                                },
+                                b'O' => {
+                                    self.escape_state = 2; // Treat SS3 (ESC O) same as CSI (ESC [) for Arrows
+                                    return self.read_escape_sequence();
+                                },
+                                _ => {
+                                    // Unknown escape. Return Esc, lose the next char :(
+                                    // Optimization: Push back? No simple way.
+                                    return Key::Esc; 
+                                }
+                            }
+                        } else {
+                            return Key::Esc;
+                        }
+                    },
+                    127 | 8 => Key::Backspace,
+                    13 => Key::Enter,
+                    c => {
+                        if c < 32 { Key::Ctrl((c + 64) as char) } else { Key::Char(c as char) }
+                    },
+                }
+            },
+            _ => { self.escape_state = 0; Key::Unknown(b) }
         }
-        
-        self.handle_standard_key(b);
     }
     
-    fn handle_standard_key(&mut self, b: u8) {
-        match self.mode {
-            Mode::Normal => match b {
-                b'i' => self.mode = Mode::Insert,
-                b':' => {
-                    self.mode = Mode::Command;
-                    self.command_buffer.clear();
-                },
-                b'h' => if self.cx > 0 { self.cx -= 1 },
-                b'j' => if self.cy < self.lines.len() - 1 { self.cy += 1 },
-                b'k' => if self.cy > 0 { self.cy -= 1 },
-                b'l' => {
-                     let len = if self.cy < self.lines.len() { self.lines[self.cy].len() } else { 0 };
-                     if self.cx < len { self.cx += 1 }
-                },
-                b'x' => { self.delete_char(); self.dirty = true; },
-                _ => {},
-            },
-            Mode::Insert => match b {
-                13 => { self.insert_newline(); self.dirty = true; },
-                127 | 8 => { self.backspace(); self.dirty = true; },
-                c => { self.insert_char(c as char); self.dirty = true; },
-            },
-            Mode::Command => match b {
-                13 => self.execute_command(),
-                127 | 8 => { self.command_buffer.pop(); },
-                c => self.command_buffer.push(c as char),
-            },
-            Mode::ConfirmQuit => match b {
-                b'y' | b'Y' => self.quit = true,
-                _ => { self.mode = Mode::Normal; self.msg = String::from("Quit cancelled."); },
-            }
+    fn read_escape_sequence(&mut self) -> Key {
+        let mut buf = [0; 1];
+        if io::stdin().read_exact(&mut buf).is_err() {
+            self.escape_state = 0;
+            return Key::Unknown(0);
         }
+        let b = buf[0];
+        self.escape_state = 0;
+
+        match b {
+            b'A' => Key::Up,
+            b'B' => Key::Down,
+            b'C' => Key::Right,
+            b'D' => Key::Left,
+            b'H' => Key::Home, 
+            b'F' => Key::End,   
+            // Handle `3~` etc
+             b'1'..=b'6' => {
+                let mut next_buf = [0; 1];
+                if io::stdin().read_exact(&mut next_buf).is_ok() {
+                     if next_buf[0] == b'~' {
+                        match b {
+                            b'1' => Key::Home,
+                            b'3' => Key::Delete,
+                            b'4' => Key::End,
+                            b'5' => Key::PageUp,
+                            b'6' => Key::PageDown,
+                            _ => Key::Unknown(b),
+                        }
+                     } else { Key::Unknown(b) }
+                } else { Key::Unknown(b) }
+            },
+            _ => Key::Unknown(b),
+        }
+    }
+
+    fn process_keypress(&mut self) {
+        let key = self.read_key();
         
-        // Boundary Check
+        // Correct boundary check
         if !self.lines.is_empty() {
-            if self.cy >= self.lines.len() { self.cy = self.lines.len() - 1; }
-            let row_len = self.lines[self.cy].len();
-            if self.cx > row_len { self.cx = row_len; }
-        }
     }
     
     fn read_byte(&self) -> u8 {
