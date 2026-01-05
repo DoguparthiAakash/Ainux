@@ -105,10 +105,31 @@ extern "C" fn rust_mouse_handler() {
                 
                 // Print "M" to indicate movement
                  asm!("out dx, al", in("dx") 0x3F8, in("al") 0x4D as u8, options(nomem, nostack, preserves_flags));
+                 
+                 update_position(_x, _y);
             }
             _ => MOUSE_CYCLE = 0,
         }
 
         notify_eoi(12);
+    }
+}
+
+static mut MOUSE_X: isize = 400;
+static mut MOUSE_Y: isize = 300;
+
+pub fn get_position() -> (isize, isize) {
+    unsafe { (MOUSE_X, MOUSE_Y) }
+}
+
+fn update_position(dx: i8, dy: i8) {
+    unsafe {
+        MOUSE_X += dx as isize;
+        MOUSE_Y -= dy as isize; // Y is inverted usually
+        if MOUSE_X < 0 { MOUSE_X = 0; }
+        if MOUSE_Y < 0 { MOUSE_Y = 0; }
+        // Clamp to screen? Need access to Width/Height or just assume.
+        if MOUSE_X > 1024 { MOUSE_X = 1024; }
+        if MOUSE_Y > 768 { MOUSE_Y = 768; }
     }
 }

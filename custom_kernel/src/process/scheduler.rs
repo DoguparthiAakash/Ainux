@@ -2,62 +2,190 @@ use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
 
-const MAX_TASKS: usize = 32;
+pub const MAX_TASKS: usize = 32;
 
-static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([Task {
-    id: 0,
-    context: Context { rsp:0, r15:0, r14:0, r13:0, r12:0, rbx:0, rbp:0, rip:0 },
-    state: TaskState::Free,
-    stack: [0; 4096],
-    cr3: 0,
-    user_stack_top: 0,
-}; MAX_TASKS]);
+pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None }; MAX_TASKS]);
 
 static mut CURRENT_PID: usize = 0;
+static mut TICKS: u64 = 0;
 
 pub fn init() {
     let mut tasks = TASKS.lock();
     // Initialize Task 0 as the current running kernel task
-    tasks[0].id = 0;
-    tasks[0].state = TaskState::Running;
-    // Context is irrelevant for running task, it gets saved on switch
+    let mut task0 = Task::new_free();
+    task0.id = 0;
+    task0.state = TaskState::Running;
+    tasks[0] = Some(task0);
+}
+
+pub fn tick() {
+    unsafe { TICKS += 1; }
+    
+    // Account CPU Time
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    if let Some(task) = &mut tasks[current_pid] {
+        if task.state == TaskState::Running {
+            task.cpu_time_ticks += 1;
+        }
+    }
+    drop(tasks);
+    
+    // Find next task to run
+    let mut next_task_id = 0;
+    
+    schedule();
+}
+
+pub fn set_priority(pid: usize, priority: u8) -> isize {
+    let mut tasks = TASKS.lock();
+    if let Some(task) = &mut tasks[pid] {
+        task.priority = priority;
+        return 0;
+    }
+    -1
+}
+
+pub fn get_ticks() -> u64 {
+    unsafe { TICKS }
+}
+
+pub fn get_current_pid() -> usize {
+    unsafe { CURRENT_PID }
 }
 
 pub fn spawn(func: extern "C" fn()) {
     let mut tasks = TASKS.lock();
-    for (i, task) in tasks.iter_mut().enumerate() {
-        if task.state == TaskState::Free {
+    for i in 0..MAX_TASKS {
+        if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
+            let mut task = Task::new_free();
             task.id = i;
             task.state = TaskState::Ready;
             
             // Setup Stack
-            // Pointer to end of stack (stack grows down)
             let stack_top = task.stack.as_ptr() as u64 + 4096;
-            // Align 16
             let mut sp = stack_top & !0xF;
-            
-            // We need to push 'func' address as the return address for 'ret' in __switch
-            // __switch does: mov rsp, [ctx]; ret
-            // So [rsp] must be RIP.
             unsafe {
                 sp -= 8;
-                *(sp as *mut u64) = func as u64;
+                *(sp as *mut u64) = kernel_thread_entry as u64; // Return to shim
             }
-            
             task.context.rsp = sp;
-            // rip in context is unused by __switch, it relies on stack
+            task.context.r12 = func as u64; // Pass function in R12 (callee saved, restored by switch)
             
+            tasks[i] = Some(task);
             return;
         }
     }
-    // panic!("No free slots");
+}
+
+pub extern "C" fn kernel_thread_entry() {
+    unsafe {
+        // Enable Interrupts!
+        core::arch::asm!("sti");
+        
+        // Get function from R12
+        let func: extern "C" fn();
+        core::arch::asm!("mov {}, r12", out(reg) func);
+        
+        // Call it
+        func();
+    }
+    
+    // Exit
+    exit_current_task(0);
+}
+
+pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    
+    // 1. Get current task state to copy
+    let (cr3, caps, fds) = if let Some(current) = &tasks[current_pid] {
+        (current.cr3, current.caps.clone(), current.fds.clone())
+    } else {
+        return -1;
+    };
+
+    // 2. Find free slot
+    for i in 0..MAX_TASKS {
+        if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
+             let mut task = Task::new_free();
+            task.id = i;
+            task.state = TaskState::Ready;
+            task.cr3 = cr3; // Shared Memory
+            task.caps = caps; // Inherit Caps
+            task.fds = fds; // Clone FDs (Note: Separate table copy, not shared! Thread semantics vary)
+            // For true threads, FDs should be shared.
+            // But our FdTable is inline struct.
+            // We'll treat this as "Process sharing memory" (like CLONE_VM).
+            
+            task.userspace_stack_top = stack_ptr;
+            
+            // Setup Kernel Stack for Return to User
+            let kstack_top = task.stack.as_ptr() as u64 + 4096;
+            let mut sp = kstack_top & !0xF;
+            unsafe {
+                sp -= 8;
+                *(sp as *mut u64) = kernel_shim_entry as u64;
+            }
+            task.context.rsp = sp;
+            task.context.r12 = entry;   // Shim R12 -> RIP
+            task.context.r13 = stack_ptr; // Shim R13 -> RSP
+            
+            tasks[i] = Some(task);
+            return i as isize;
+        }
+    }
+    
+    -1 // No free slots
+}
+
+pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) {
+    let mut tasks = TASKS.lock();
+    for i in 0..MAX_TASKS {
+        if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
+             let mut task = Task::new_free();
+            task.id = i;
+            task.state = TaskState::Ready;
+            task.cr3 = cr3;
+            task.userspace_stack_top = rsp;
+            
+            let kstack_top = task.stack.as_ptr() as u64 + 4096;
+            let mut sp = kstack_top & !0xF;
+            unsafe {
+                sp -= 8;
+                *(sp as *mut u64) = kernel_shim_entry as u64;
+            }
+            task.context.rsp = sp;
+            task.context.r12 = rip;
+            task.context.r13 = rsp;
+            
+            tasks[i] = Some(task);
+            return;
+        }
+    }
+}
+
+pub fn kernel_shim_entry() {
+    let rip: u64;
+    let rsp: u64;
+    unsafe {
+        crate::drivers::video::put_str("Shim Entry\n");
+        core::arch::asm!("mov {}, r12", out(reg) rip);
+        core::arch::asm!("mov {}, r13", out(reg) rsp);
+        
+        crate::cpu::userspace::enter_userspace(rip, rsp);
+    }
 }
 
 pub fn schedule() {
     let mut tasks = TASKS.lock();
     let current_pid = unsafe { CURRENT_PID };
     
-    // Simple Round Robin
+    // Simple Round Robin with Priority Bias (Fake)
+    // Real implementation would look for higest priority Ready task.
+    // Here we just skip low priority tasks occasionally? 
+    // Or just simple Round Robin for now to keep it stable, but we store the priority.
     let mut next_pid = current_pid;
     loop {
         next_pid = (next_pid + 1) % MAX_TASKS;
@@ -65,8 +193,17 @@ pub fn schedule() {
             return; // No other tasks
         }
         
-        if tasks[next_pid].state == TaskState::Ready {
-            break;
+        if let Some(task) = &tasks[next_pid] {
+            if task.state == TaskState::Ready {
+               // Check Sleep
+               let current_ticks = unsafe { TICKS };
+               if task.sleep_ticks > current_ticks {
+                   // Still sleeping
+               } else {
+                   // Wake up or Ready
+                   break;
+               }
+            }
         }
     }
     
@@ -74,31 +211,49 @@ pub fn schedule() {
     let old_pid = current_pid;
     unsafe { CURRENT_PID = next_pid; }
     
-    let old_task_ptr = &mut tasks[old_pid].context as *mut Context;
-    let next_task_ptr = &tasks[next_pid].context as *const Context;
+    // We need references to contexts.
+    // Rust makes it hard to borrow two mutable items from array.
+    // But we need &mut Context.
     
-    tasks[next_pid].state = TaskState::Running;
-    if tasks[old_pid].state == TaskState::Running {
-        tasks[old_pid].state = TaskState::Ready;
+    // Safety: we know old_pid != next_pid.
+    // We can use unsafe ptr arithmetic or split_at_mut.
+    // Or just re-borrow since we have the lock guard.
+    // Wait, `tasks` is `MutexGuard`. We can't borrow mutably twice.
+    
+    // Workaround: Use raw pointers.
+    let tasks_ptr = tasks.as_mut_ptr();
+    let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
+    let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_ref().unwrap() }; // Read-only access to next is enough? Context switch needs `const *` for next.
+    
+    // Wait, `__switch` takes `*mut Context` and `*const Context`.
+    let old_task_ptr = &mut old_task.context as *mut Context;
+    let next_task_ptr = &next_task.context as *const Context;
+    
+    // We need one mutable for next task to update its state to Running?
+    // And old to Ready?
+    
+    unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap().state = TaskState::Running; }
+    if old_task.state == TaskState::Running {
+        old_task.state = TaskState::Ready;
     }
     
-    // Check CR3 / Address Space
-    let next_cr3 = tasks[next_pid].cr3;
-    
-    // Switch CR3 if user task (cr3 != 0)
-    // Note: We should technically switch even for kernel tasks if they have distinct CR3s (not implemented yet)
+    // Switch CR3
+    let next_cr3 = next_task.cr3;
     if next_cr3 != 0 {
         unsafe {
              core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
         }
-    } else {
-        // Switch to Kernel CR3 (we need to know it, or just assume we are in it?)
-        // For now, assume we stay in whatever CR3 if next is kernel task (usually running in previous user map is risky but ok for simple kernel)
-        // Better: Switch to base kernel CR3.
-        // TODO: Get kernel CR3. Assuming we don't need to switch back for simple kthreads for now.
     }
-
-    drop(tasks); // Unlock before switch!
+    
+    // Update TSS RSP0
+    // The new task's kernel stack top is at the end of its allocated stack.
+    // We didn't store "kernel_stack_top" in Task struct, but we have `stack`.
+    let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
+    unsafe {
+        crate::cpu::gdt::set_kernel_stack(kstack_top);
+    }
+    
+    drop(tasks); 
     
     unsafe {
         __switch(old_task_ptr, next_task_ptr);
@@ -109,45 +264,247 @@ pub fn yield_now() {
     schedule();
 }
 
-pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) {
+pub unsafe fn set_current_sleep(target_ticks: u64) {
     let mut tasks = TASKS.lock();
-    for (i, task) in tasks.iter_mut().enumerate() {
-        if task.state == TaskState::Free {
-            task.id = i;
-            task.state = TaskState::Ready;
-            task.cr3 = cr3;
-            task.user_stack_top = rsp;
-            
-            // Kernel Stack Top
-            let kstack_top = task.stack.as_ptr() as u64 + 4096;
-            
-            // Set shim entry
-            let mut sp = kstack_top & !0xF;
-            
-            unsafe {
-                sp -= 8;
-                *(sp as *mut u64) = kernel_shim_entry as u64; // Return address
+    if let Some(task) = &mut tasks[CURRENT_PID] {
+        task.sleep_ticks = target_ticks;
+    }
+}
+
+pub fn process_open(path: &str, _flags: u32) -> isize {
+    // 1. Lookup file in VFS (TODO: Parse path, currently just verify ROOT exists)
+    // For now, fail if not implemented.
+    // In Phase 13b, we will walk ROOT.lookup(path).
+    
+    // Stub: Always fail for now until EXT4 attached.
+    -1
+}
+
+pub fn process_read(fd: usize, buf: &mut [u8]) -> isize {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    
+    // 1. Get Handle and Offset
+    let (handle, offset) = if let Some(task) = &tasks[current_pid] {
+         match task.fds.get_entry(fd) {
+             Some(entry) => (entry.handle.clone(), entry.offset),
+             None => return -1,
+         }
+    } else {
+        return -1;
+    };
+    
+    // 2. Drop lock to perform I/O
+    drop(tasks);
+    
+    // 3. Perform Read
+    match handle.read(buf, offset) {
+        Ok(n) => {
+            // 4. Update Offset (Re-acquire lock)
+             let mut tasks = TASKS.lock();
+             if let Some(task) = &mut tasks[current_pid] {
+                 task.fds.update_offset(fd, offset + n as u64);
+             }
+             n as isize
+        },
+        Err(_) => -1
+    }
+}
+
+pub fn process_write(fd: usize, buf: &[u8]) -> isize {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    
+    // 1. Get Handle and Offset
+    let (handle, offset) = if let Some(task) = &tasks[current_pid] {
+         match task.fds.get_entry(fd) {
+             Some(entry) => (entry.handle.clone(), entry.offset),
+             None => return -1, // Invalid FD
+         }
+    } else {
+        return -1;
+    };
+    
+    // 2. Drop lock to perform I/O
+    drop(tasks);
+    
+    // 3. Perform Write
+    match handle.write(buf, offset) {
+        Ok(n) => {
+            // 4. Update Offset (Re-acquire lock)
+             let mut tasks = TASKS.lock();
+             if let Some(task) = &mut tasks[current_pid] {
+                 task.fds.update_offset(fd, offset + n as u64);
+             }
+             n as isize
+        },
+        Err(_) => -1
+    }
+}
+
+pub fn process_close(fd: usize) -> isize {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+     if let Some(task) = &mut tasks[current_pid] {
+         task.fds.free_fd(fd);
+         0
+     } else {
+         -1
+     }
+}
+
+pub fn exit_current_task(exit_code: isize) {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    
+    if let Some(task) = &mut tasks[current_pid] {
+         task.state = TaskState::Zombie;
+         task.exit_code = exit_code;
+    }
+    
+    drop(tasks);
+    schedule();
+}
+
+pub fn wait_pid(pid: usize) -> isize {
+    loop {
+        let mut tasks = TASKS.lock();
+        if let Some(child) = &tasks[pid] {
+            if child.state == TaskState::Zombie {
+                let code = child.exit_code;
+                tasks[pid] = None; // Reap
+                return code;
             }
+        } else {
+            return -1;
+        }
+        drop(tasks);
+        yield_now();
+    }
+}
+
+pub fn kill_task(pid: usize) -> isize {
+    let mut tasks = TASKS.lock();
+    if pid == 0 { return -1; } // Cannot kill kernel
+    
+    if let Some(task) = &mut tasks[pid] {
+        if task.state != TaskState::Free && task.state != TaskState::Zombie {
+             task.state = TaskState::Zombie;
+             task.exit_code = -9; // SIGKILL equivalent
+             return 0;
+        }
+    }
+    -1
+}
+
+pub fn print_task_list() {
+    let tasks = TASKS.lock();
+    crate::drivers::video::put_str("PID  State    CPU Ticks\n");
+    for i in 0..MAX_TASKS {
+        if let Some(task) = &tasks[i] {
+            let state_str = match task.state {
+                TaskState::Running => "Running",
+                TaskState::Ready => "Ready  ",
+                TaskState::Waiting => "Waiting",
+                TaskState::Free => "Free   ",
+                TaskState::Zombie => "Zombie ",
+            };
             
-            task.context.rsp = sp;
-            // Pass User RIP and RSP via R12, R13
-            task.context.r12 = rip;
-            task.context.r13 = rsp;
+            // PID
+            crate::drivers::video::put_char((b'0' + task.id as u8) as char); 
+            crate::drivers::video::put_str("    ");
+            crate::drivers::video::put_str(state_str);
+            crate::drivers::video::put_str("  ");
             
-            return;
+            // CPU Time (Very basic for now)
+            // Ideally use format macro
+            let ticks = task.cpu_time_ticks;
+            if ticks > 0 {
+                // Should print ticks, but for now just "Active" marker or a char
+                crate::drivers::video::put_char(if ticks > 100 { '+' } else { '.' });
+            }
+            crate::drivers::video::put_char('\n');
         }
     }
 }
 
-pub fn kernel_shim_entry() {
-    // We are now active kernel task.
-    // Registers R12, R13 hold User RIP, RSP.
-    let rip: u64;
-    let rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, r12", out(reg) rip);
-        core::arch::asm!("mov {}, r13", out(reg) rsp);
-        
-        crate::cpu::userspace::enter_userspace(rip, rsp);
+pub fn block_current_task() {
+    let mut tasks = TASKS.lock();
+    let current_pid = unsafe { CURRENT_PID };
+    
+    if let Some(task) = &mut tasks[current_pid] {
+        task.state = TaskState::Waiting;
     }
+    drop(tasks);
+    schedule();
+}
+
+pub fn wake_task(pid: usize) {
+    let mut tasks = TASKS.lock();
+    if let Some(task) = &mut tasks[pid] {
+         if task.state == TaskState::Waiting {
+             task.state = TaskState::Ready;
+         }
+    }
+}
+
+// --- Phase 30: Thread Management Extensions ---
+
+pub fn suspend_thread(pid: usize) {
+    let mut tasks = TASKS.lock();
+    if let Some(task) = &mut tasks[pid] {
+        if task.state == TaskState::Ready || task.state == TaskState::Running {
+            task.state = TaskState::Waiting;
+        }
+    }
+}
+
+pub fn resume_thread(pid: usize) {
+    let mut tasks = TASKS.lock();
+    if let Some(task) = &mut tasks[pid] {
+        if task.state == TaskState::Waiting {
+             task.state = TaskState::Ready;
+        }
+    }
+}
+
+pub fn bind_thread_cpu(pid: usize, _cpu: usize) {
+    // Stub for future SMP
+    // Validate PID existence
+    let tasks = TASKS.lock();
+    if tasks[pid].is_some() {
+        // Log or store affinity
+    }
+}
+
+pub fn reap_any_zombie() {
+    let mut tasks = TASKS.lock();
+    for i in 1..MAX_TASKS { // Don't reap kernel (0)
+        if let Some(task) = &tasks[i] {
+            if task.state == TaskState::Zombie {
+                // In real OS, only parent can reap.
+                // But if parent died, Init inherits.
+                // Here we just allow global cleanup for "orphan" like behavior
+                tasks[i] = None;
+            }
+        }
+    }
+}
+
+pub fn detect_starvation() {
+    // Scan for Ready tasks that are at risk
+    // Simple stub for now
+    let tasks = TASKS.lock();
+    for i in 0..MAX_TASKS {
+        if let Some(task) = &tasks[i] {
+            if task.state == TaskState::Ready {
+               // If ready and not run for long time...
+               // Needed: last_run_tick in Task struct
+            }
+        }
+    }
+}
+
+pub fn detect_priority_inversion() {
+     // Stub
 }

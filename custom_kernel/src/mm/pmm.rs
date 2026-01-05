@@ -164,6 +164,13 @@ impl BitmapPmm {
     pub fn free_frame(&mut self, phys_addr: u64) {
         let frame = (phys_addr / PAGE_SIZE as u64) as usize;
         if frame < self.total_frames {
+            // Poisoning (Debug/Security)
+            // Fill with 0xAA (Pattern for "Allocated Away" / Freed)
+            let virt = phys_addr + self.hhdm_offset;
+            unsafe {
+                core::ptr::write_bytes(virt as *mut u8, 0xAA, PAGE_SIZE);
+            }
+
             self.clear_bit(frame);
             if frame / 64 < self.last_idx {
                 self.last_idx = frame / 64;
@@ -174,5 +181,16 @@ impl BitmapPmm {
     /// Returns the HHDM offset (useful for converting Phys -> Virt)
     pub fn hhdm_offset(&self) -> u64 {
         self.hhdm_offset
+    }
+
+    pub fn get_stats(&self) -> (usize, usize) {
+        let mut used = 0;
+        for i in 0..self.total_frames {
+            if self.test_bit(i) {
+                used += 1;
+            }
+            // Optimization: iterate u64 words instead of bits for speed if needed
+        }
+        (used, self.total_frames)
     }
 }

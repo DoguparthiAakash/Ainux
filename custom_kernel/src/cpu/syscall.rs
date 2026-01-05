@@ -41,6 +41,22 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+pub unsafe fn syscall(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    let ret: u64;
+    asm!(
+        "syscall",
+        in("rax") id,
+        in("rdi") a1,
+        in("rsi") a2,
+        in("rdx") a3,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rax") ret,
+        options(nostack)
+    );
+    ret
+}
+
 #[unsafe(naked)]
 extern "C" fn syscall_handler() {
     naked_asm!(
@@ -85,51 +101,64 @@ extern "C" fn syscall_handler() {
 
 #[no_mangle]
 extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    unsafe {
+        crate::drivers::video::put_str("SC: ");
+        crate::cpu::idt::print_hex(id);
+        crate::drivers::video::put_char('\n');
+    }
     match id {
         1 => { // Write
-            // a1 = fd (ignore), a2 = ptr, a3 = len.
-            let s = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
-            if let Ok(str_slice) = core::str::from_utf8(s) {
-                video::put_str(str_slice);
-                // Also write to Serial for verification
-                for byte in str_slice.bytes() {
-                    unsafe { asm!("out dx, al", in("dx") 0x3F8, in("al") byte, options(nomem, nostack)); }
+            // a1 = fd, a2 = ptr, a3 = len.
+            let fd = a1 as usize;
+            let len = a3 as usize;
+            if len > 8192 { return 0; } // Limit for safety
+            
+            // Validate Pointer
+            if !crate::mm::user::validate_user_ptr(a2, len) {
+                 return 0; // Invalid Pointer
+            }
+
+            // Copy from User
+            let mut buf = alloc::vec![0u8; len];
+            if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf[0..len]).is_err() {
+                 return 0;
+            }
+            
+            // Simple FD map: 0,1,2 = Console. >2 = File.
+            if fd <= 2 {
+                if let Ok(s) = core::str::from_utf8(&buf) {
+                    video::put_str(s);
+                     // Also write to Serial for verification
+                    for byte in s.bytes() {
+                        unsafe { asm!("out dx, al", in("dx") 0x3F8, in("al") byte, options(nomem, nostack)); }
+                    }
+                    return a3;
                 }
-                return a3;
+            } else {
+                // File Write
+                let n = crate::process::scheduler::process_write(fd, &buf);
+                if n >= 0 { return n as u64; }
             }
             0
         }
         2 => { // Exec
             // a1 = path_ptr, a2 = path_len
-            let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, a2 as usize) };
+            let len = a2 as usize;
+            if len > 256 { return 0xFFFFFFFFFFFFFFFF; }
+            
+            if !crate::mm::user::validate_user_ptr(a1, len) {
+                 return 0xFFFFFFFFFFFFFFFF;
+            }
+
+            let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
             if let Ok(path) = core::str::from_utf8(s) {
-                // crate::kprint!("Syscall Exec: {}\n", path);
-                let _ = video::put_str("Syscall Exec: ");
-                let _ = video::put_str(path);
-                let _ = video::put_str("\n");
+                 let _ = video::put_str("Syscall Exec: ");
+                 let _ = video::put_str(path);
+                 let _ = video::put_str("\n");
                 
-                // Read file
-                // We don't have a VFS layer nicely exposed yet, usually we use fs::ext4.
-                // But ext4 reader is in main.rs logic? 
-                // Wait, ext4 implementation in `fs::ext4` expects a reader.
-                // For now, let's look at how main.rs used it.
-                // Assuming we can instantiate it or call a global?
-                // We don't have a global FS instance yet.
-                // For minimal implementation, we can just hack it or ignore exact file reading if we just want to prove flow.
-                // But goal is to run gcc-compiled binary.
+                 let _ = video::put_str("\n");
                 
-                // Let's assume we can load "hello" (hardcoded buffer check or similar) or we implement global FS.
-                // Implementing global FS is "Phase 6". It was checked as done.
-                // Let's see `src/main.rs`.
-                
-                // If I cannot easily read file in syscall handler, I'll return -1.
-                // Implementation of full file reading in interrupt context is risky (blocking).
-                // But this kernel is simple.
-                
-                // To support true integration, I need `fs::read_file(path)`.
-                // I'll assume we can use a mockup or direct ATA if available.
-                
-                 match crate::process::loader::load_elf(&[]) { // DUMMY load for now
+                 match crate::process::loader::load_elf_from_file(path) {
                      Ok(pid) => pid as u64,
                      Err(_) => 0xFFFFFFFFFFFFFFFF, // -1
                  }
@@ -137,6 +166,119 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                 0xFFFFFFFFFFFFFFFF
             }
         }
+        3 => { // IPC Send
+            // a1 = port_handle (index in cap table), a2 = msg_ptr
+            // Validate Message Pointer
+            if !crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
+                 return 1; // Invalid Pointer
+            }
+
+            // Temporary: Direct Port ID usage (a1 = port_id)
+            let msg_ptr = a2 as *const crate::ipc::port::Message;
+            // Verify alignment? validate_user_ptr does not check alignment generally, but we should.
+            if (msg_ptr as usize) % 8 != 0 { return 1; }
+
+            let msg = unsafe { (*msg_ptr).clone() };
+            if crate::ipc::port::send(a1 as usize, msg) {
+                0
+            } else {
+                1 // Fail
+            }
+        }
+        4 => { // IPC Recv
+            // a1 = port_handle, a2 = buffer ptr
+            // Validate Buffer Pointer
+            if !crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
+                 return 1;
+            }
+            if (a2 as usize) % 8 != 0 { return 1; }
+
+            if let Some(msg) = crate::ipc::port::receive(a1 as usize) {
+                 let buf = a2 as *mut crate::ipc::port::Message;
+                 unsafe { *buf = msg };
+                 0
+            } else {
+                // Return 1 (No message / Would block)
+                // Real implementation should BLOCK.
+                1
+            }
+        }
+        5 => sys_sleep(a1),
+        6 => { // Sys_open (path, flags)
+             // Need to copy path
+             let len = a2 as usize;
+             if len > 256 { return u64::MAX; }
+             
+             if !crate::mm::user::validate_user_ptr(a1, len) { return u64::MAX; }
+             
+             let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
+             if let Ok(path) = core::str::from_utf8(s) {
+                 crate::process::scheduler::process_open(path, 0) as u64
+             } else {
+                 u64::MAX // -1
+             }
+        },
+        7 => { // Sys_read (fd, buf, len)
+             let fd = a1 as usize;
+             let len = a3 as usize;
+             // Safety: Limit size
+             if len > 8192 { return u64::MAX; }
+             let mut buf = alloc::vec![0u8; len];
+             
+             let n = crate::process::scheduler::process_read(fd, &mut buf);
+             if n >= 0 {
+                  // Copy back
+                  if crate::mm::user::copy_to_user(a2 as *mut u8, &buf[0..n as usize]).is_ok() {
+                      n as u64
+                  } else {
+                      u64::MAX
+                  }
+             } else {
+                 u64::MAX
+             }
+        },
+        8 => { // Sys_close (fd)
+            crate::process::scheduler::process_close(a1 as usize) as u64
+        },
+        60 => { // sys_exit(code)
+            crate::process::scheduler::exit_current_task(a1 as isize);
+            0 // Should not return
+        },
+        61 => { // sys_wait(pid)
+            crate::process::scheduler::wait_pid(a1 as usize) as u64
+        },
+        10 => { // sys_uptime() -> ms
+             unsafe { crate::process::scheduler::get_ticks() * 10 }
+        },
+        12 => { // sys_clone(entry, stack) -> pid
+            // a1 = entry, a2 = stack
+            // Validate Stack Pointer
+             if !crate::mm::user::validate_user_ptr(a2, 8) { return 0xFFFFFFFFFFFFFFFF; }
+             // Validate Entry Point (Rough check)
+             if !crate::mm::user::validate_user_ptr(a1, 1) { return 0xFFFFFFFFFFFFFFFF; }
+             
+             crate::process::scheduler::clone_task(a1, a2) as u64
+        },
         _ => 0
     }
+}
+
+fn sys_sleep(ms: u64) -> u64 {
+    // 100 Hz = 10 ms per tick.
+    // Ticks = ms / 10.
+    let ticks_needed = ms / 10;
+    if ticks_needed == 0 {
+        crate::process::scheduler::yield_now();
+        return 0;
+    }
+    
+    let current_ticks = crate::process::scheduler::get_ticks();
+    let target_ticks = current_ticks + ticks_needed;
+    
+    unsafe {
+        crate::process::scheduler::set_current_sleep(target_ticks);
+    }
+    
+    crate::process::scheduler::yield_now();
+    0
 }

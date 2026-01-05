@@ -76,3 +76,26 @@ pub unsafe fn unmask_irq(irq: u8) {
      let mask = inb(port);
      outb(port, mask & !value);
 }
+
+pub unsafe fn mask_irq(irq: u8) {
+     let port;
+     let value;
+     if irq < 8 {
+         port = PIC1_DATA;
+         value = 1 << irq;
+     } else {
+         port = PIC2_DATA;
+         value = 1 << (irq - 8);
+     }
+     
+     let mask = inb(port);
+     outb(port, mask | value);
+}
+
+pub unsafe fn disable() {
+    asm!("cli", options(nomem, nostack, preserves_flags));
+}
+
+pub unsafe fn enable() {
+    asm!("sti", options(nomem, nostack, preserves_flags));
+}

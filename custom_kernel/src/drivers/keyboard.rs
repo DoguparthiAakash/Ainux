@@ -49,6 +49,8 @@ static mut CAPS: bool = false;
 static mut NUMLOCK: bool = true;
 static mut EXTENDED: bool = false;
 
+static mut CTRL: bool = false;
+
 pub fn init() {
     unsafe {
         crate::cpu::pic::unmask_irq(1);
@@ -57,6 +59,10 @@ pub fn init() {
 
 pub fn pop_char() -> Option<char> {
     KEY_BUFFER.lock().pop()
+}
+
+pub fn is_ctrl_active() -> bool {
+    unsafe { CTRL }
 }
 
 pub unsafe extern "C" fn keyboard_handler_addr() -> u64 {
@@ -109,6 +115,7 @@ extern "C" fn rust_keyboard_handler() {
         if released {
             match code {
                 0x2A | 0x36 => SHIFT = false,
+                0x1D => CTRL = false,
                 _ => {}
             }
             return;
@@ -116,6 +123,7 @@ extern "C" fn rust_keyboard_handler() {
 
         match code {
             0x2A | 0x36 => { SHIFT = true; return; }
+            0x1D => { CTRL = true; return; }
             0x3A => { CAPS = !CAPS; return; }
             0x45 => { NUMLOCK = !NUMLOCK; return; }
             _ => {}
@@ -137,7 +145,18 @@ extern "C" fn rust_keyboard_handler() {
                 _ => None,
             }
         } else {
-            decode_scancode(code)
+            let mut c = decode_scancode(code);
+            // Handle Ctrl+Char mapping
+            if CTRL {
+                if let Some(ch) = c {
+                    if ch >= 'a' && ch <= 'z' {
+                        c = Some((ch as u8 - b'a' + 1) as char);
+                    } else if ch >= 'A' && ch <= 'Z' {
+                         c = Some((ch as u8 - b'A' + 1) as char);
+                    }
+                }
+            }
+            c
         };
 
         if let Some(c) = ch {

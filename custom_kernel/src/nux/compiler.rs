@@ -1,0 +1,99 @@
+use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::vec;
+use alloc::format;
+
+// Import OpCodes from vm.rs logic (hardcoded here for now or shared)
+// We should ideally share them, but for modularity I'll define map here.
+
+pub fn compile(source: &str) -> Result<Vec<u8>, String> {
+    let mut ops = Vec::new();
+    let mut labels = BTreeMap::new(); // Label Name -> ByteOffset
+    let mut label_refs = Vec::new(); // (ByteOffsetToPatch, LabelName)
+
+    // Pass 1: Parse and Generate Code (with placeholder for labels)
+    // 64 Byte Header
+    ops.extend_from_slice(b"ANUX");
+    ops.extend_from_slice(&[0u8; 60]); // Padding
+    
+    // We parse line by line
+    for line in source.lines() {
+        let line = line.trim();
+        // Remove comments
+        let line = if let Some(idx) = line.find(';') {
+            &line[..idx]
+        } else {
+            line
+        }.trim();
+
+        if line.is_empty() { continue; }
+
+        // Check Label
+        if line.ends_with(':') {
+            let label_name = &line[..line.len()-1];
+            labels.insert(String::from(label_name), ops.len());
+            continue;
+        }
+
+        // Parse Instruction
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let mnemonic = parts[0].to_ascii_uppercase();
+
+        match mnemonic.as_str() {
+            "PUSH" => {
+                ops.push(0x01); // OP_PUSH
+                if parts.len() < 2 { return Err(format!("PUSH missing operand")); }
+                let val = parts[1].parse::<i64>().map_err(|_| "Invalid number")?;
+                ops.extend_from_slice(&val.to_le_bytes());
+            },
+            "POP" => ops.push(0x02),
+            "ADD" => ops.push(0x10),
+            "SUB" => ops.push(0x11),
+            "DRAW_RECT" => ops.push(0x20),
+            "SLEEP" => ops.push(0x30),
+            "PEEK" => ops.push(0x40),
+            "POKE" => ops.push(0x41),
+            "PEEK8" => ops.push(0x42),
+            "POKE8" => ops.push(0x43),
+            "DEBUG" => ops.push(0x50), // DEBUG_PRINT
+            "PRINT" => ops.push(0x51), // OP_PRINT_CHAR
+            "INPUT" => ops.push(0x52), // OP_INPUT
+            "JMP" => {
+                ops.push(0x60);
+                if parts.len() < 2 { return Err(format!("JMP missing label")); }
+                label_refs.push((ops.len(), String::from(parts[1])));
+                ops.extend_from_slice(&[0u8; 8]); // Placeholder
+            },
+            "JE" => {
+                ops.push(0x61);
+                if parts.len() < 2 { return Err(format!("JE missing label")); }
+                label_refs.push((ops.len(), String::from(parts[1])));
+                ops.extend_from_slice(&[0u8; 8]);
+            },
+            "CALL" => {
+                ops.push(0x70);
+                if parts.len() < 2 { return Err(format!("CALL missing label")); }
+                label_refs.push((ops.len(), String::from(parts[1])));
+                ops.extend_from_slice(&[0u8; 8]);
+            },
+            "RET" => ops.push(0x71),
+            "EXIT" => ops.push(0xFF),
+            _ => return Err(format!("Unknown instruction: {}", mnemonic)),
+        }
+    }
+
+    // Pass 2: Patch Labels
+    for (offset, label_name) in label_refs {
+        if let Some(&target_addr) = labels.get(&label_name) {
+             let bytes = (target_addr as i64).to_le_bytes();
+             for i in 0..8 {
+                 ops[offset + i] = bytes[i];
+             }
+        } else {
+            return Err(format!("Undefined label: {}", label_name));
+        }
+    }
+
+    Ok(ops)
+}

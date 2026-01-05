@@ -5,7 +5,7 @@ use crate::mm::vmm;
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub const HEAP_START: usize = 0x_4444_4444_0000;
-pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 
 pub fn init() {
     // Map the heap pages
@@ -16,7 +16,7 @@ pub fn init() {
     let mut current_addr = HEAP_START;
     
     // Debug helper (manual serial output)
-    let mut serial = crate::SerialPort::new(0x3F8);
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     use core::fmt::Write;
     let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
     let _ = write!(serial, "Heap: Need to map {} pages at {:#x}. HHDM: {:#x}\n", pages, current_addr, hhdm);
@@ -33,7 +33,10 @@ pub fn init() {
         
         if let Some(frame) = frame {
             unsafe {
-                let _ = write!(serial, "Heap: Mapping page {}/{} (Frame {:#x})\n", i, pages, frame);
+                // Only log every 1024th page (4MB) to avoid spam
+                if i % 1024 == 0 {
+                    let _ = write!(serial, "Heap: Mapping page {}/{} (Frame {:#x})\n", i, pages, frame);
+                }
                 match vmm::map_page(current_addr as u64, frame, 0x03) {
                     Ok(_) => {},
                     Err(e) => {
@@ -60,3 +63,27 @@ pub fn init() {
 // fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
 //     panic!("allocation error: {:?}", layout)
 // }
+
+pub fn verify_heap() {
+    // Basic runtime self-test
+    // Try to allocate a small box and free it.
+    // If heap is corrupted, this might panic or hang (if deadlock).
+    use alloc::boxed::Box;
+    let b = Box::new(0xDEADBEEFu32);
+    if *b != 0xDEADBEEF {
+        panic!("Heap Corrupted: Value mismatch");
+    }
+    // Drop b -> free
+}
+
+pub fn kmalloc(size: usize, align: usize) -> *mut u8 {
+    use core::alloc::{GlobalAlloc, Layout};
+    let layout = Layout::from_size_align(size, align).unwrap();
+    unsafe { ALLOCATOR.alloc(layout) }
+}
+
+pub fn kfree(ptr: *mut u8, size: usize, align: usize) {
+    use core::alloc::{GlobalAlloc, Layout};
+    let layout = Layout::from_size_align(size, align).unwrap();
+    unsafe { ALLOCATOR.dealloc(ptr, layout) }
+}

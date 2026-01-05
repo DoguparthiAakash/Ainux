@@ -1,14 +1,16 @@
-/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/release/deps/ainux_kernel-cf0dd143199681c1.d: src/main.rs src/fs/mod.rs src/fs/ext4.rs src/fs/elf.rs src/mm/mod.rs src/mm/pmm.rs src/mm/vmm.rs src/mm/heap.rs src/cpu/mod.rs src/cpu/gdt.rs src/cpu/idt.rs src/cpu/pic.rs src/cpu/syscall.rs src/cpu/userspace.rs src/process/mod.rs src/process/task.rs src/process/switch.rs src/process/scheduler.rs src/process/loader.rs src/drivers/mod.rs src/drivers/keyboard.rs src/drivers/mouse.rs src/drivers/video.rs src/drivers/ata.rs src/drivers/rtc.rs src/shell.rs
+/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/release/deps/ainux_kernel-cf0dd143199681c1.d: src/main.rs src/fs/mod.rs src/fs/ext4.rs src/fs/elf.rs src/fs/vfs.rs src/mm/mod.rs src/mm/pmm.rs src/mm/vmm.rs src/mm/user.rs src/mm/heap.rs src/cpu/mod.rs src/cpu/gdt.rs src/cpu/idt.rs src/cpu/pic.rs src/cpu/syscall.rs src/cpu/userspace.rs src/cpu/control.rs src/process/mod.rs src/process/task.rs src/process/switch.rs src/process/scheduler.rs src/process/loader.rs src/process/fd.rs src/process/scheduler_ule.rs src/drivers/mod.rs src/drivers/keyboard.rs src/drivers/mouse.rs src/drivers/video.rs src/drivers/ata.rs src/drivers/timer.rs src/drivers/rtc.rs src/drivers/serial.rs src/drivers/manager.rs src/drivers/power.rs src/shell.rs src/gui/mod.rs src/gui/graphics.rs src/gui/window.rs src/gui/desktop.rs src/gui/compositor.rs src/engine/mod.rs src/engine/vm.rs src/engine/ai_scheduler.rs src/debug/mod.rs src/debug/invariants.rs src/debug/error.rs src/debug/diagnostics.rs src/security/mod.rs src/security/cap.rs src/ipc/mod.rs src/ipc/port.rs src/nux/mod.rs src/nux/vm.rs src/nux/compiler.rs
 
-/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/release/deps/ainux_kernel-cf0dd143199681c1: src/main.rs src/fs/mod.rs src/fs/ext4.rs src/fs/elf.rs src/mm/mod.rs src/mm/pmm.rs src/mm/vmm.rs src/mm/heap.rs src/cpu/mod.rs src/cpu/gdt.rs src/cpu/idt.rs src/cpu/pic.rs src/cpu/syscall.rs src/cpu/userspace.rs src/process/mod.rs src/process/task.rs src/process/switch.rs src/process/scheduler.rs src/process/loader.rs src/drivers/mod.rs src/drivers/keyboard.rs src/drivers/mouse.rs src/drivers/video.rs src/drivers/ata.rs src/drivers/rtc.rs src/shell.rs
+/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/release/deps/ainux_kernel-cf0dd143199681c1: src/main.rs src/fs/mod.rs src/fs/ext4.rs src/fs/elf.rs src/fs/vfs.rs src/mm/mod.rs src/mm/pmm.rs src/mm/vmm.rs src/mm/user.rs src/mm/heap.rs src/cpu/mod.rs src/cpu/gdt.rs src/cpu/idt.rs src/cpu/pic.rs src/cpu/syscall.rs src/cpu/userspace.rs src/cpu/control.rs src/process/mod.rs src/process/task.rs src/process/switch.rs src/process/scheduler.rs src/process/loader.rs src/process/fd.rs src/process/scheduler_ule.rs src/drivers/mod.rs src/drivers/keyboard.rs src/drivers/mouse.rs src/drivers/video.rs src/drivers/ata.rs src/drivers/timer.rs src/drivers/rtc.rs src/drivers/serial.rs src/drivers/manager.rs src/drivers/power.rs src/shell.rs src/gui/mod.rs src/gui/graphics.rs src/gui/window.rs src/gui/desktop.rs src/gui/compositor.rs src/engine/mod.rs src/engine/vm.rs src/engine/ai_scheduler.rs src/debug/mod.rs src/debug/invariants.rs src/debug/error.rs src/debug/diagnostics.rs src/security/mod.rs src/security/cap.rs src/ipc/mod.rs src/ipc/port.rs src/nux/mod.rs src/nux/vm.rs src/nux/compiler.rs
 
 src/main.rs:
 src/fs/mod.rs:
 src/fs/ext4.rs:
 src/fs/elf.rs:
+src/fs/vfs.rs:
 src/mm/mod.rs:
 src/mm/pmm.rs:
 src/mm/vmm.rs:
+src/mm/user.rs:
 src/mm/heap.rs:
 src/cpu/mod.rs:
 src/cpu/gdt.rs:
@@ -16,15 +18,41 @@ src/cpu/idt.rs:
 src/cpu/pic.rs:
 src/cpu/syscall.rs:
 src/cpu/userspace.rs:
+src/cpu/control.rs:
 src/process/mod.rs:
 src/process/task.rs:
 src/process/switch.rs:
 src/process/scheduler.rs:
 src/process/loader.rs:
+src/process/fd.rs:
+src/process/scheduler_ule.rs:
 src/drivers/mod.rs:
 src/drivers/keyboard.rs:
 src/drivers/mouse.rs:
 src/drivers/video.rs:
 src/drivers/ata.rs:
+src/drivers/timer.rs:
 src/drivers/rtc.rs:
+src/drivers/serial.rs:
+src/drivers/manager.rs:
+src/drivers/power.rs:
 src/shell.rs:
+src/gui/mod.rs:
+src/gui/graphics.rs:
+src/gui/window.rs:
+src/gui/desktop.rs:
+src/gui/compositor.rs:
+src/engine/mod.rs:
+src/engine/vm.rs:
+src/engine/ai_scheduler.rs:
+src/debug/mod.rs:
+src/debug/invariants.rs:
+src/debug/error.rs:
+src/debug/diagnostics.rs:
+src/security/mod.rs:
+src/security/cap.rs:
+src/ipc/mod.rs:
+src/ipc/port.rs:
+src/nux/mod.rs:
+src/nux/vm.rs:
+src/nux/compiler.rs:

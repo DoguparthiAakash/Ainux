@@ -2,4 +2,8 @@ pub mod keyboard;
 pub mod mouse;
 pub mod video;
 pub mod ata;
+pub mod timer;
 pub mod rtc;
+pub mod serial;
+pub mod manager;
+pub mod power;

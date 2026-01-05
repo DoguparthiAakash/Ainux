@@ -50,6 +50,15 @@ pub unsafe fn flush_tlb(addr: u64) {
     asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags));
 }
 
+pub unsafe fn flush_tlb_local(addr: u64) {
+    flush_tlb(addr);
+}
+
+pub unsafe fn flush_tlb_global() {
+    let cr3 = read_cr3();
+    write_cr3(cr3);
+}
+
 pub fn init() {
     // Phase 2 VMM stub
 }
@@ -72,6 +81,17 @@ unsafe fn active_pml4() -> &'static mut PageTable {
 
 unsafe fn get_next_table(entry: &mut u64) -> Option<&'static mut PageTable> {
     let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    
+    // Always clear NX bit to allow execution (Compromise for now)
+    // If Limine set NX, we unset it so we can execute code we map.
+    if *entry & crate::mm::vmm::NX != 0 {
+         *entry &= !crate::mm::vmm::NX;
+    }
+    
+    // Enforce USER bit to allow Ring 3 access to this path
+    if *entry & crate::mm::vmm::USER == 0 {
+        *entry |= crate::mm::vmm::USER;
+    }
     
     if *entry & PRESENT == 0 {
         // Allocate a new table
@@ -147,8 +167,7 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     if pml4[p4_idx] & 1 == 0 {
         let mut pmm_lock = PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
-             let frame = pmm.alloc_frame().unwrap();
-             let frame_addr = frame * 4096;
+             let frame_addr = pmm.alloc_frame().unwrap();
              core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
              pml4[p4_idx] = frame_addr | 0x7; // Present, RW, User
         }
@@ -160,8 +179,7 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     if pdpt[p3_idx] & 1 == 0 {
         let mut pmm_lock = PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
-             let frame = pmm.alloc_frame().unwrap();
-             let frame_addr = frame * 4096;
+             let frame_addr = pmm.alloc_frame().unwrap();
              core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
              pdpt[p3_idx] = frame_addr | 0x7;
         }
@@ -173,8 +191,7 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     if pd[p2_idx] & 1 == 0 {
         let mut pmm_lock = PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
-             let frame = pmm.alloc_frame().unwrap();
-             let frame_addr = frame * 4096;
+             let frame_addr = pmm.alloc_frame().unwrap();
              core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
              pd[p2_idx] = frame_addr | 0x7;
         }

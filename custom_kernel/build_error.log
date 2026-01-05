@@ -1,0 +1,422 @@
+warning: unused variable: `out_dir`
+ --> build.rs:6:9
+  |
+6 | ...et out_dir = ...
+  |       ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_out_dir`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ainux_kernel` (build script) generated 1 warning
+    Checking ainux_kernel v0.1.0 (/home/aakash/Downloads/Ainuix/custom_kernel)
+warning: unused import: `self`
+ --> src/main.rs:8:17
+  |
+8 | use core::fmt::{self, Write};
+  |                 ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `core::mem::transmute`
+ --> src/fs/ext4.rs:2:5
+  |
+2 | use core::mem::transmute;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+   --> src/fs/ext4.rs:120:22
+    |
+120 | use crate::fs::vfs::{self, FileSystem, Inode, FileHandle, VfsResult, VfsError, FileType, FileStat};
+    |                      ^^^^
+
+warning: unused import: `alloc::vec::Vec`
+ --> src/fs/elf.rs:1:5
+  |
+1 | use alloc::vec::Vec;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `core::fmt`
+ --> src/fs/elf.rs:2:5
+  |
+2 | use core::fmt;
+  |     ^^^^^^^^^
+
+warning: unused import: `AtomicUsize`
+ --> src/mm/pmm.rs:3:26
+  |
+3 | use core::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+  |                          ^^^^^^^^^^^
+
+warning: unused import: `PAGE_SIZE`
+ --> src/mm/vmm.rs:2:22
+  |
+2 | use crate::mm::pmm::{PAGE_SIZE, PMM, HHDM_OFFSET};
+  |                      ^^^^^^^^^
+
+warning: unused import: `core::slice`
+ --> src/mm/user.rs:1:5
+  |
+1 | use core::slice;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `naked_asm`
+ --> src/cpu/userspace.rs:1:23
+  |
+1 | use core::arch::{asm, naked_asm};
+  |                       ^^^^^^^^^
+
+warning: unused imports: `TaskState` and `Task`
+ --> src/process/loader.rs:1:19
+  |
+1 | use super::task::{Task, TaskState};
+  |                   ^^^^  ^^^^^^^^^
+
+warning: unused imports: `PF_W` and `PF_X`
+ --> src/process/loader.rs:3:57
+  |
+3 | use crate::fs::elf::{ElfHeader, ProgramHeader, PT_LOAD, PF_W, PF_X};
+  |                                                         ^^^^  ^^^^
+
+warning: unused import: `alloc::vec::Vec`
+ --> src/process/loader.rs:6:5
+  |
+6 | use alloc::vec::Vec;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `core::slice`
+ --> src/process/loader.rs:7:5
+  |
+7 | use core::slice;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `spin::Mutex`
+ --> src/drivers/video.rs:1:5
+  |
+1 | use spin::Mutex;
+  |     ^^^^^^^^^^^
+
+warning: unused imports: `FRAMEBUFFER_ADDR`, `FRAMEBUFFER_BPP`, `FRAMEBUFFER_HEIGHT`, `FRAMEBUFFER_PITCH`, and `FRAMEBUFFER_WIDTH`
+ --> src/gui/graphics.rs:2:35
+  |
+2 | use crate::drivers::video::{self, FRAMEBUFFER_ADDR, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PITCH, FRAMEBUFFER_BPP};
+  |                                   ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `spin::Mutex`
+ --> src/engine/vm.rs:3:5
+  |
+3 | use spin::Mutex;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `alloc::vec::Vec`
+ --> src/engine/ai_scheduler.rs:1:5
+  |
+1 | use alloc::vec::Vec;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `spin::Mutex`
+ --> src/engine/ai_scheduler.rs:2:5
+  |
+2 | use spin::Mutex;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `alloc::string::String`
+ --> src/nux/vm.rs:2:5
+  |
+2 | use alloc::string::String;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: type `i32` cannot be used with this register class
+  --> src/drivers/rtc.rs:36:57
+   |
+36 |         asm!("out dx, al", in("dx") CMOS_ADDR, in("al") 0x0A, options(nomem, nostack, preserves_flags));
+   |                                                         ^^^^
+   |
+   = note: register class `reg_byte` supports these types: i8
+
+warning: unused variable: `group`
+   --> src/fs/ext4.rs:270:23
+    |
+270 |     fn get_bgd(&self, group: u32) -> BlockGroupDescriptor {
+    |                       ^^^^^ help: if this is intentional, prefix it with an underscore: `_group`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `group`
+   --> src/fs/ext4.rs:283:26
+    |
+283 |     fn update_bgd(&self, group: u32, bgd: BlockGroupDescriptor) {
+    |                          ^^^^^ help: if this is intentional, prefix it with an underscore: `_group`
+
+warning: unused variable: `real_len`
+   --> src/fs/ext4.rs:795:18
+    |
+795 |              let real_len = (8 + entry.name_len as u16 + 3) & !3;
+    |                  ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_real_len`
+
+warning: unused variable: `a1`
+  --> src/cpu/pic.rs:26:9
+   |
+26 |     let a1 = inb(PIC1_DATA);
+   |         ^^ help: if this is intentional, prefix it with an underscore: `_a1`
+
+warning: unused variable: `a2`
+  --> src/cpu/pic.rs:27:9
+   |
+27 |     let a2 = inb(PIC2_DATA);
+   |         ^^ help: if this is intentional, prefix it with an underscore: `_a2`
+
+warning: unnecessary `unsafe` block
+   --> src/cpu/syscall.rs:251:14
+    |
+251 |              unsafe { crate::process::scheduler::get_ticks() * 10 }
+    |              ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src/process/scheduler.rs:35:9
+   |
+35 |     let mut next_task_id = 0;
+   |         ----^^^^^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `next_task_id`
+  --> src/process/scheduler.rs:35:9
+   |
+35 |     let mut next_task_id = 0;
+   |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_next_task_id`
+
+warning: unnecessary `unsafe` block
+   --> src/process/scheduler.rs:252:5
+    |
+252 |     unsafe {
+    |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `path`
+   --> src/process/scheduler.rs:274:21
+    |
+274 | pub fn process_open(path: &str, _flags: u32) -> isize {
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: variable does not need to be mutable
+   --> src/process/scheduler.rs:284:9
+    |
+284 |     let mut tasks = TASKS.lock();
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/process/scheduler.rs:315:9
+    |
+315 |     let mut tasks = TASKS.lock();
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unnecessary `unsafe` block
+   --> src/process/loader.rs:122:21
+    |
+122 |                     unsafe {
+    |                     ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `flags`
+   --> src/drivers/mouse.rs:102:21
+    |
+102 |                 let flags = MOUSE_BYTE[0];
+    |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_flags`
+
+warning: unnecessary `unsafe` block
+  --> src/drivers/ata.rs:56:5
+   |
+56 |     unsafe {
+   |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+  --> src/drivers/ata.rs:86:5
+   |
+86 |     unsafe {
+   |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+  --> src/drivers/manager.rs:32:14
+   |
+32 |              unsafe { crate::drivers::video::put_str("Health Check: Driver Failed: "); }
+   |              ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `mhz`
+ --> src/drivers/power.rs:6:28
+  |
+6 | pub fn scale_cpu_frequency(mhz: u32) {
+  |                            ^^^ help: if this is intentional, prefix it with an underscore: `_mhz`
+
+warning: unused variable: `state`
+  --> src/drivers/power.rs:11:26
+   |
+11 | pub fn enter_sleep_state(state: u8) {
+   |                          ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+
+warning: unreachable pattern
+   --> src/shell.rs:131:22
+    |
+130 |                      "ssh" => cmd_stub("ssh"),
+    |                      ----- matches all the relevant values
+131 |                      "ssh" => cmd_stub("ssh"),
+    |                      ^^^^^ no value can reach this
+    |
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/shell.rs:432:9
+    |
+432 |     let mut pmm_lock = crate::mm::pmm::PMM.lock();
+    |         ----^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `tens`
+   --> src/shell.rs:580:9
+    |
+580 |     let tens = val / 10;
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_tens`
+
+warning: unused variable: `e`
+   --> src/shell.rs:711:13
+    |
+711 |         Err(e) => {
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `args`
+   --> src/shell.rs:960:11
+    |
+960 | fn cmd_ip(args: &[&str]) {
+    |           ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
+
+warning: variable does not need to be mutable
+    --> src/shell.rs:1009:9
+     |
+1009 |     let mut prio = 128;
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: unused variable: `prio_str`
+    --> src/shell.rs:1002:9
+     |
+1002 |     let prio_str = args[1];
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prio_str`
+
+warning: unused variable: `args`
+    --> src/shell.rs:1057:15
+     |
+1057 | fn cmd_umount(args: &[&str]) {
+     |               ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
+
+warning: unused variable: `width`
+    --> src/shell.rs:1136:12
+     |
+1136 |        let width = *video::FRAMEBUFFER_WIDTH.lock();
+     |            ^^^^^ help: if this is intentional, prefix it with an underscore: `_width`
+
+warning: unused variable: `current_load`
+  --> src/engine/ai_scheduler.rs:25:21
+   |
+25 |                 let current_load = if task.state == crate::process::task::TaskState::Running { 0.1 } else { 0.0 };
+   |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current_load`
+
+warning: variable `rflags` is assigned to, but never used
+ --> src/debug/invariants.rs:4:9
+  |
+4 |     let rflags: u64;
+  |         ^^^^^^
+  |
+  = note: consider using `_rflags` instead
+
+warning: value assigned to `rflags` is never read
+ --> src/debug/invariants.rs:9:9
+  |
+9 |         asm!("pushfq; pop {}", out(reg) rflags);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: maybe it is overwritten before being read?
+  = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary `unsafe` block
+ --> src/debug/diagnostics.rs:5:5
+  |
+5 |     unsafe { crate::drivers::video::put_str("Diagnostics: Restarting Subsystem: "); }
+  |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+ --> src/debug/diagnostics.rs:6:5
+  |
+6 |     unsafe { crate::drivers::video::put_str(name); }
+  |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+ --> src/debug/diagnostics.rs:7:5
+  |
+7 |     unsafe { crate::drivers::video::put_char('\n'); }
+  |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+  --> src/debug/diagnostics.rs:13:5
+   |
+13 |     unsafe { crate::drivers::video::put_str("Diagnostics: Generating Crash Dump...\n"); }
+   |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `id`
+  --> src/debug/diagnostics.rs:18:22
+   |
+18 | pub fn trace_syscall(id: u64) {
+   |                      ^^ help: if this is intentional, prefix it with an underscore: `_id`
+
+warning: unused variable: `handle`
+  --> src/security/cap.rs:70:29
+   |
+70 |     fn audit_failure(&self, handle: usize, required: u8) {
+   |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_handle`
+
+warning: unused variable: `required`
+  --> src/security/cap.rs:70:44
+   |
+70 |     fn audit_failure(&self, handle: usize, required: u8) {
+   |                                            ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_required`
+
+warning: unused variable: `msg`
+  --> src/security/cap.rs:77:18
+   |
+77 | pub fn cap_audit(msg: &str) {
+   |                  ^^^ help: if this is intentional, prefix it with an underscore: `_msg`
+
+warning: unused variable: `size`
+ --> src/ipc/mod.rs:5:30
+  |
+5 |     pub fn map_shared_memory(size: usize) -> Option<u64> {
+  |                              ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `val`
+   --> src/nux/vm.rs:103:26
+    |
+103 |                      let val = self.pop();
+    |                          ^^^ help: if this is intentional, prefix it with an underscore: `_val`
+
+warning: unnecessary `unsafe` block
+  --> src/main.rs:75:5
+   |
+75 |     unsafe { mm::pmm::BitmapPmm::init(); }
+   |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> src/main.rs:191:22
+    |
+189 |                  unsafe {
+    |                  ------ because it's nested under this `unsafe` block
+190 |                      // Unmap first just in case
+191 |                      unsafe { mm::vmm::unmap_page(user_base); }
+    |                      ^^^^^^ unnecessary `unsafe` block
+
+warning: `ainux_kernel` (bin "ainux_kernel") generated 62 warnings
+error: could not compile `ainux_kernel` (bin "ainux_kernel") due to 1 previous error; 62 warnings emitted

@@ -45,7 +45,7 @@ pub fn load_elf(data: &[u8]) -> Result<usize, LoadError> {
     // Create Valid User Page Table
     // 1. Allocate a PMM frame for PML4
     let pml4_frame = alloc_frame_safe()?;
-    let pml4_addr = pml4_frame * 4096; // Physical
+    let pml4_addr = pml4_frame; // Physical
     
     // 2. We need to initialize this PML4. 
     // It must map the KERNEL (upper half) identically to current kernel PML4.
@@ -96,8 +96,7 @@ pub fn load_elf(data: &[u8]) -> Result<usize, LoadError> {
             for j in 0..page_count {
                 let vaddr = start_page + j * 4096;
                 // Alloc frame
-                let frame = alloc_frame_safe()?;
-                let frame_phys = frame * 4096;
+                let frame_phys = alloc_frame_safe()?;
                 
                 // Map to User Table
                 unsafe {
@@ -110,6 +109,7 @@ pub fn load_elf(data: &[u8]) -> Result<usize, LoadError> {
                 if segment_offset < ph.p_filesz {
                     let copy_len = core::cmp::min(4096, ph.p_filesz - segment_offset);
                     
+
                     // Destination in HHDM
                     let dest_phys = frame_phys;
                     let hhdm_offset = vmm::VMM_HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
@@ -117,6 +117,33 @@ pub fn load_elf(data: &[u8]) -> Result<usize, LoadError> {
                     
                     let dest_ptr = dest_virt as *mut u8;
                     let src_ptr = unsafe { data.as_ptr().add(offset + segment_offset as usize) };
+                    
+                    // DEBUG: Unconditional
+                    unsafe {
+                       crate::drivers::video::put_str("ELF Load: Phys ");
+                       if frame_phys < 0x100000000 {
+                           let mb = frame_phys / 1024 / 1024;
+                           let d1 = (mb / 10) as u8;
+                           let d2 = (mb % 10) as u8;
+                           crate::drivers::video::put_char((b'0' + d1) as char);
+                           crate::drivers::video::put_char((b'0' + d2) as char);
+                           crate::drivers::video::put_str("MB ");
+                       }
+                       crate::drivers::video::put_str("\n");
+                    }
+                    
+                    if frame_phys > 0x80000000 { // 2GB limit safety
+                         crate::drivers::video::put_str("BAD FRAME\n");
+                         return Err(LoadError::MemoryError);
+                    }
+                    
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, copy_len as usize);
+                        
+                        if copy_len < 4096 {
+                             core::ptr::write_bytes(dest_ptr.add(copy_len as usize), 0, 4096 - copy_len as usize);
+                        }
+                    }
                     
                     unsafe {
                         core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, copy_len as usize);
@@ -144,12 +171,40 @@ pub fn load_elf(data: &[u8]) -> Result<usize, LoadError> {
     
     for i in 0..4 {
          let vaddr = stack_bottom + i * 4096;
-         let frame = alloc_frame_safe()?;
-         unsafe { vmm::map_page_in_pml4(pml4_addr, vaddr, frame * 4096, 0x07); }
+         let frame_phys = alloc_frame_safe()?;
+         unsafe { vmm::map_page_in_pml4(pml4_addr, vaddr, frame_phys, 0x07); }
     }
     
     // Create Task
     scheduler::spawn_user(header.entry, stack_top, pml4_addr);
 
+    // Return PID
+    let tasks = scheduler::TASKS.lock();
+    for i in 0..scheduler::MAX_TASKS {
+        if let Some(ref t) = tasks[i] {
+            if t.cr3 == pml4_addr {
+                return Ok(t.id);
+            }
+        }
+    }
+    
     Ok(0)
+}
+
+pub fn load_elf_from_file(path: &str) -> Result<usize, LoadError> {
+    let root = crate::fs::vfs::ROOT.lock();
+    if let Some(root_inode) = root.as_ref() {
+        if let Ok(inode) = root_inode.lookup(path) {
+            if let Ok(handle) = inode.open(0) {
+                // Read everything (Limit 1MB for now)
+                let mut buf = alloc::vec![0u8; 1024 * 1024]; 
+                if let Ok(n) = handle.read(&mut buf, 0) {
+                    // Resize to actual read size
+                    buf.truncate(n);
+                    return load_elf(&buf);
+                }
+            }
+        }
+    }
+    Err(LoadError::InvalidElf) // Or NotFound
 }
