@@ -1,4 +1,4 @@
 print("Hello High Level Nux");
 {
-    print("this is just test");
+    println("this is just test");
 }

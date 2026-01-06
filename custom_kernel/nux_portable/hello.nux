@@ -1,14 +1,1 @@
-; Hello World (Portable)
-PUSH 72 ; H
-PRINT
-PUSH 101 ; e
-PRINT
-PUSH 108 ; l
-PRINT
-PUSH 108 ; l
-PRINT
-PUSH 111 ; o
-PRINT
-PUSH 10 ; \n
-PRINT
-EXIT
+print("Hello World:");

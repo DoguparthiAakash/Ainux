@@ -12,11 +12,23 @@ pub enum Token {
     Else,
     While,
     For,
+    Do,
     Asm,
+    Spawn, // NEW: Multi-threading
+    Lock,  // NEW: Synchronization
+    Unlock, // NEW: Synchronization
+    Import, // NEW: Standard Library Includes
+    Peek,   // NEW: Memory Access
+    Poke,   // NEW: Memory Access
+    Break,  // NEW: Loop Control
+    Continue, // NEW: Loop Control
     Identifier(String),
     String(String),
-
+    Float(f64), // NEW: Float Literal
     Number(i64),
+    
+    // Type Keywords
+    KwInt, KwFloat, KwByte, KwShort, KwLong, KwChar, KwString,
     LParen,
     RParen,
     LBrace,
@@ -140,14 +152,28 @@ impl Lexer {
         }
     }
 
-
     fn lex_number(&mut self, start_span: Span) -> (Token, Span) {
         let mut s = String::new();
-        while self.pos < self.input.len() && self.input[self.pos].is_digit(10) {
-            s.push(self.input[self.pos]);
-            self.advance_pos();
+        let mut is_float = false;
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos];
+            if c.is_digit(10) {
+                s.push(c);
+                self.advance_pos();
+            } else if c == '.' && !is_float {
+                is_float = true;
+                s.push(c);
+                self.advance_pos();
+            } else {
+                break;
+            }
         }
-        (Token::Number(s.parse().unwrap_or(0)), start_span)
+        
+        if is_float {
+            (Token::Float(s.parse().unwrap_or(0.0)), start_span)
+        } else {
+            (Token::Number(s.parse().unwrap_or(0)), start_span)
+        }
     }
 
     fn lex_identifier(&mut self, start_span: Span) -> (Token, Span) {
@@ -169,7 +195,26 @@ impl Lexer {
             "else" => Token::Else,
             "while" => Token::While,
             "for" => Token::For,
+            "do" => Token::Do,
             "asm" => Token::Asm,
+            "spawn" => Token::Spawn,
+            "lock" => Token::Lock,
+            "unlock" => Token::Unlock,
+            "import" => Token::Import,
+            "peek" => Token::Peek,
+            "poke" => Token::Poke,
+            "break" => Token::Break,
+            "continue" => Token::Continue,
+            
+            // Types
+            "int" => Token::KwInt,
+            "float" => Token::KwFloat,
+            "byte" => Token::KwByte,
+            "short" => Token::KwShort,
+            "long" => Token::KwLong,
+            "char" => Token::KwChar,
+            "string" => Token::KwString,
+            
             _ => Token::Identifier(text),
         };
         (token, start_span)

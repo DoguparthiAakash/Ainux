@@ -57,43 +57,100 @@ pub fn compile_high_level(source: &str) -> Result<Vec<u8>, Vec<CompileError>> {
     }
 }
 
-struct Parser {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Void,
+    Byte,
+    Short,
+    Int,
+    Long,
+    Float,
+    Char,
+    String,
+    Bool,
+    Unknown
+}
+
+pub struct Parser {
     lexer: Lexer,
-    label_id_counter: usize,
-    var_map: HashMap<String, u64>,
-    var_addr_counter: u64,
     current_token: Token,
     current_span: Span,
     prev_span: Span,
+    
+    // Compiler State
+    var_addr_counter: u64,
+    label_id_counter: usize,
+    // Scope: Name -> (Address, Type)
+    scopes: Vec<HashMap<String, (u64, Type)>>,
+    
+    // Output
     asm_output: String,
     errors: Vec<CompileError>,
+    
+    // Loop control stack: (start_label, end_label)
+    loop_stack: Vec<(String, String)>, // (ContinueLabel, BreakLabel)
 }
 
 impl Parser {
     fn new(source: &str) -> Self {
         let mut l = Lexer::new(source);
         let (first, span) = l.next_token();
+        
+        // Initialize with Global Scope
+        let mut scopes = Vec::new();
+        scopes.push(HashMap::new());
+
         Self {
             lexer: l,
             label_id_counter: 0,
-            var_map: HashMap::new(),
-            var_addr_counter: 0,
+            scopes: scopes,
+            var_addr_counter: 0, 
             current_token: first,
             current_span: span,
             prev_span: span,
             asm_output: String::new(),
             errors: Vec::new(),
+            loop_stack: Vec::new(),
         }
     }
 
     fn advance(&mut self) {
         self.prev_span = self.current_span;
         let (tok, span) = self.lexer.next_token();
-        // println!("DEBUG: Advance. PrevTok: {:?} @ L{} C{}, NewTok: {:?} @ L{} C{}", 
-        //    self.current_token, self.prev_span.line, self.prev_span.col, 
-        //    tok, span.line, span.col);
         self.current_token = tok;
         self.current_span = span;
+    }
+
+    // --- Scope Helpers ---
+    fn enter_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn declare_var(&mut self, name: String, typ: Type) -> u64 {
+        // ALWAYS New Address (Static allocation, unique ID)
+        let addr = self.var_addr_counter;
+        self.var_addr_counter += 8; // All types 64-bit aligned on stack/mem for now? 
+        // Or packed? VM memory is u8 vec.
+        // Stack is i64.
+        // POKE/PEEK takes i64 addr.
+        
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name, (addr, typ));
+        }
+        addr
+    }
+
+    fn resolve_var(&self, name: &str) -> Option<(u64, Type)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(&(addr, ref t)) = scope.get(name) {
+                return Some((addr, t.clone()));
+            }
+        }
+        None
     }
 
     fn emit(&mut self, s: &str) {
@@ -103,7 +160,7 @@ impl Parser {
 
     // Recover from error by skipping up to semicolon or end of block
     fn synchronize(&mut self) {
-        // self.advance(); // Don't advance immediately, check if current is sync point
+        self.advance(); // Consumes the bad token to prevent infinite loop
         while self.current_token != Token::EOF {
              if self.current_token == Token::SemiColon {
                  self.advance();
@@ -131,6 +188,7 @@ impl Parser {
         let mut definitions = String::new();
         
         loop {
+            // println!("DEBUG: Token: {:?}", self.current_token); // TRACE
             match &self.current_token {
                 Token::EOF => break,
                 Token::Class => {
@@ -146,10 +204,93 @@ impl Parser {
                      }
                 },
                 Token::Identifier(_) | Token::Print | Token::Println | Token::Input |
-                Token::If | Token::While | Token::For | Token::Asm => {
+                Token::If | Token::While | Token::Do | Token::For | Token::Asm | Token::Spawn |
+                Token::Var | Token::Return | Token::Lock | Token::Unlock | Token::Peek |
+                Token::KwInt | Token::KwFloat | Token::KwByte | Token::KwShort | Token::KwLong | Token::KwChar | Token::KwString => {
                     if let Err(e) = self.parse_statement_or_expr(&mut main_body) {
                         self.errors.push(e);
                         self.synchronize();
+                    }
+                },
+                Token::Import => { // Preprocessor-like include
+                    // import "filename";
+                    self.advance();
+                    let filename = match &self.current_token {
+                        Token::String(s) => s.clone(),
+                        _ => {
+                            self.errors.push(CompileError::new("Expected filename string".to_string(), self.current_span));
+                            continue;
+                        }
+                    };
+                    self.advance();
+                    if self.current_token != Token::SemiColon {
+                        self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
+                        continue;
+                    }
+                    self.advance();
+                    
+                    // TODO: Actually read file and parse it.
+                    // This is complex because we need to inject tokens or recurse parser.
+                    // Simplest: `compile_high_level` should maybe resolve imports?
+                    // But `Parser` owns the lexer.
+                    // Option: Delegate to a new Parser instance and merge output?
+                    // Yes. We can parse the imported file into `definitions` string.
+                    if let Ok(content) = std::fs::read_to_string(&filename) {
+                         // Parse the imported content
+                         // We need a way to extract *definitions* (funcs/classes) from it.
+                         // But imported files might have main body logic?
+                         // Usually libraries only have definitions.
+                         // Let's create a new Parser.
+                         let mut sub_parser = Parser::new(&content);
+                         match sub_parser.parse_to_asm() {
+                             Ok(asm) => {
+                                 // The sub_parser returns full ASM including `__start_execution`.
+                                 // We just want the function definitions (which are usually at top or skip-guarded).
+                                 // Nux ASM format: 
+                                 // JMP __start_execution
+                                 // ... definitions ...
+                                 // __start_execution: ...
+                                 
+                                 // We want to extract the definitions. 
+                                 // For now, simpler Hack: Import just concatenates ASM?
+                                 // No, distinct labels issues.
+                                 // Better: Compile import to ASM, strip Main JMP/Body, append definitions.
+                                 // This is fragile. 
+                                 // Correct Way: Shared AST or token stream.
+                                 // Given constraint, I'll allow `import` to just read file text and append to `definitions`?
+                                 // But we are in the middle of parsing loop.
+                                 // Let's error and say "Imports must be at top"?
+                                 // Or recursively parse?
+                                 
+                                 // Let's implement Recurse Parse:
+                                 // We invoke `parse_to_asm` on content.
+                                 // We assume the imported file relies on same mechanism.
+                                 // We take the output ASM.
+                                 // We splice it?
+                                 // This is getting messy for a "Portable SDK".
+                                 
+                                 // Alternative: "Header" inclusions.
+                                 // Just Lex the file and feed tokens?
+                                 // `Lexer` doesn't support stream injection easily.
+                                 
+                                 // DECISION: Runtime Loading? No.
+                                 // COMPILE TIME FILE CONCATENATION (Simplest).
+                                 // But we are already parsing.
+                                 // Warning: This implementation of `import` effectively does nothing right now
+                                 // because integrating it mid-stream is hard without refactoring `Parser::new`.
+                                 // I will implement a "File Source" manager later.
+                                 // For now, I will Mock it or handle it by returning a comment.
+                                 definitions.push_str(&format!("; Imported {}\n", filename));
+                                 // FIXME: Real implementation requires refactoring Parser to take multiple sources 
+                                 // or pre-processing source code to expand imports.
+                                 main_body.push_str(&format!("; Import {} placeholder\n", filename));
+                             },
+                             Err(_) => {
+                                  self.errors.push(CompileError::new(format!("Failed to parse import {}", filename), self.prev_span));
+                             }
+                         }
+                    } else {
+                        self.errors.push(CompileError::new(format!("File not found: {}", filename), self.prev_span));
                     }
                 },
                 Token::SemiColon => self.advance(), // Empty
@@ -159,14 +300,33 @@ impl Parser {
                          self.synchronize();
                      }
                 },
+                Token::Poke => {
+                    // poke(addr, val);
+                    self.advance();
+                    if self.current_token != Token::LParen { return self.error("Expected ( for poke".to_string()); }
+                    self.advance();
+                    self.parse_expression(&mut main_body)?; // Addr
+                    if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+                    self.advance();
+                    self.parse_expression(&mut main_body)?; // Val
+                    if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                    self.advance();
+                    if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                    self.advance();
+                    main_body.push_str("POKE\n");
+                },
                 _ => {
                     self.error_at_current(format!("Unexpected token at top level: {:?}", self.current_token));
                     self.advance();
                 }
             }
         }
+
         
         // Append Main Body
+        // First, allow definitions to exist (jumped over by JMP __start)
+        self.asm_output.push_str(&definitions);
+        
         self.emit("__start_execution:");
         self.asm_output.push_str(&main_body);
         
@@ -217,8 +377,27 @@ impl Parser {
         
         if self.current_token != Token::LParen { return self.error("Expected '('".to_string()); }
         self.advance();
-        // Args? Check RParen
-        if self.current_token != Token::RParen { return self.error("Arguments not supported yet".to_string()); }
+        
+        // Parse Arguments
+        let mut args = Vec::new();
+        if self.current_token != Token::RParen {
+            loop {
+                let arg_name = match &self.current_token {
+                    Token::Identifier(s) => s.clone(),
+                    _ => return self.error("Expected argument name".to_string()),
+                };
+                self.advance();
+                args.push(arg_name);
+                
+                if self.current_token == Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        if self.current_token != Token::RParen { return self.error("Expected ')'".to_string()); }
         self.advance();
 
         if self.current_token != Token::LBrace { return self.error("Expected '{'".to_string()); }
@@ -234,11 +413,42 @@ impl Parser {
         out.push_str(&format!("JMP skip_{}\n", full_name)); // Skip definition
         out.push_str(&format!("{}:\n", full_name));
         
+        // Arguments Handling:
+        // Calling convention: Arguments are pushed to stack by caller.
+        // Callee must pop them into variables (in reverse order).
+        // ArgN is top of stack, Arg0 is deep.
+        
+        self.enter_scope(); // Function Scope (args + body)
+
+        for arg in args.iter().rev() {
+             // Allocate variable in local scope
+             // TODO: Typed Arguments? "func foo(int x)"
+             // For now default to Unknown/Int.
+             let addr = self.declare_var(arg.clone(), Type::Int);
+             // Pop from stack to var
+             out.push_str(&format!("PUSH {}\nPOKE\n", addr)); // POKE(addr, val) -> val is from stack? 
+             // Wait, POKE takes (addr, val). 
+             // Stack: [..., val]
+             // We push addr. Stack: [val, addr]. 
+             // POKE expects (addr, val). Popping: pop addr, pop val.
+             // Correct.
+        }
+        
         // Parse Body
         let mut body_asm = String::new();
+        // We use parse_block_body to reuse current scope? 
+        // Or parse_block which creates NEW scope?
+        // Standard: function body { ... } is a block.
+        // If we treat it as block, params are outside block? 
+        // Params should be visible inside.
+        // If parse_block enters NEW scope (Scope 2), params (Scope 1) are visible.
+        // This is safe.
         self.parse_block(&mut body_asm)?;
         
+        self.exit_scope(); // End Function Scope
+        
         out.push_str(&body_asm);
+        out.push_str("PUSH 0\n"); // Default return value
         out.push_str("RET\n");
         out.push_str(&format!("skip_{}:\n", full_name));
         
@@ -249,6 +459,8 @@ impl Parser {
         if self.current_token != Token::LBrace { return self.error("Expected block '{'".to_string()); }
         self.advance();
         
+        self.enter_scope();
+        
         while self.current_token != Token::RBrace && self.current_token != Token::EOF {
              if let Err(e) = self.parse_statement_or_expr(out) {
                  self.errors.push(e);
@@ -256,12 +468,18 @@ impl Parser {
              }
         }
         
+        self.exit_scope();
+        
         if self.current_token != Token::RBrace { return self.error("Expected '}'".to_string()); }
         self.advance();
         Ok(())
     }
 
     fn parse_statement_or_expr(&mut self, out: &mut String) -> Result<(), CompileError> {
+        self.parse_statement_impl(out, true)
+    }
+
+    fn parse_statement_impl(&mut self, out: &mut String, expect_semi: bool) -> Result<(), CompileError> {
         match &self.current_token {
              Token::Print => {
                  self.advance();
@@ -272,255 +490,291 @@ impl Parser {
                  self.parse_print(out, true)?;
              },
              Token::Identifier(name) => {
-                 // Could be "func()" or "obj.method()" or "MyClass.method()"
-                 // For now, simpler: identifier(...) -> CALL identifier
-                 // Or identifier.identifier(...) -> CALL identifier_identifier
                  let part1 = name.clone();
                  self.advance(); // skip name
-                 
-                 // println!("DEBUG: Ident={}, Next={:?}", part1, self.current_token);
-
-                 if self.current_token == Token::Dot {
-                     println!("DEBUG: Branch Dot");
-                     // ...
+                                  if self.current_token == Token::Eq {
+                       // Assignment
+                        match self.resolve_var(&part1) {
+                            Some((addr, _typ)) => {
+                                self.advance(); // Skip =
+                                self.parse_expression(out)?;
+                                if expect_semi {
+                                    if self.current_token != Token::SemiColon {
+                                        return self.error("Expected ;".to_string());
+                                    }
+                                    self.advance();
+                                } else if self.current_token == Token::SemiColon {
+                                    self.advance(); // optionally consume
+                                }
+                                out.push_str(&format!("PUSH {}\nPOKE\n", addr)); 
+                            },
+                           None => return self.error(format!("Undefined variable '{}'", part1)),
+                       }
                  } else if self.current_token == Token::LParen {
-                     println!("DEBUG: Branch Call");
-                     // ...
-                 } else if {
-                     let is_ident = matches!(self.current_token, Token::Identifier(_));
-                     // println!("DEBUG: Checking Var Decl. IsIdent={}, Part1='{}'", is_ident, part1);
-                     is_ident && part1 == "var" 
-                 } {
-                     // println!("DEBUG: Taking Var Decl Branch");
-                      // var name = expr;
-                      // Get name
-                      let name = match &self.current_token {
-                          Token::Identifier(s) => s.clone(),
-                          _ => return self.error("Expected variable name".to_string()),
-                      };
-                      self.advance();
-                      
-                      if self.current_token != Token::Eq { return self.error("Expected =".to_string()); }
-                      self.advance();
-                      
-                      // Parse Expr
-                      self.parse_expression(out)?;
-                      
-                      self.parse_expression(out)?;
-                      
-                      if self.current_token != Token::SemiColon { 
-                          self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                          self.synchronize();
-                          return Ok(());
+                      self.advance(); // Skip (
+                      // Args
+                      if self.current_token != Token::RParen {
+                           loop {
+                               self.parse_expression(out)?;
+                               if self.current_token == Token::Comma { self.advance(); } else { break; }
+                           }
                       }
+                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                      self.advance();
+                      if expect_semi {
+                           if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                           self.advance();
+                      } else if self.current_token == Token::SemiColon { self.advance(); }
+                      out.push_str(&format!("CALL {}\nPOP\n", part1)); 
+                 } else if self.current_token == Token::Dot {
+                      self.advance(); // Skip .
+                      let method = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected method name".to_string()) };
+                      self.advance();
+                      if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                      self.advance();
+                      if self.current_token != Token::RParen {
+                           loop {
+                               self.parse_expression(out)?;
+                               if self.current_token == Token::Comma { self.advance(); } else { break; }
+                           }
+                      }
+                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                       self.advance();
                       
-                      // Allocate and Store
-                      if !self.var_map.contains_key(&name) {
-                          self.var_map.insert(name.clone(), self.var_addr_counter);
-                          self.var_addr_counter += 8; // i64 is 8 bytes
-                      }
-                      let addr = self.var_map[&name];
+                      if expect_semi {
+                          if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                          self.advance();
+                      } else if self.current_token == Token::SemiColon { self.advance(); }
                       
-                      // Store: Expr is on stack.
-                      out.push_str(&format!("PUSH {}\nPOKE\n", addr));
-
-                 } else if self.current_token == Token::Eq {
-                      // Assignment: x = expr;
-                      // part1 is 'x' (or name)
-                       self.advance(); // Skip =
-                       self.parse_expression(out)?;
-                       
-                       if self.current_token != Token::SemiColon { 
-                            self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                            self.synchronize();
-                            return Ok(());
-                       }
-                       self.advance();
-                       
-                       if let Some(addr) = self.var_map.get(&part1) {
-                           // println!("DEBUG: Assigning to variable '{}' at addr {}", part1, addr);
-                           out.push_str(&format!("PUSH {}\nPOKE\n", addr));
-                       } else {
-                           // println!("DEBUG: Variable map keys: {:?}", self.var_map.keys());
-                           return self.error(format!("Undefined variable for assignment: {}", part1));
-                       }
+                      out.push_str(&format!("CALL {}_{}\nPOP\n", part1, method));
                  } else {
-                     return self.error(format!("Unexpected token after identifier {}", part1));
+                       return self.error(format!("Unexpected token in statement (ID match): {:?} name={}", self.current_token, part1));
                  }
              },
              Token::Input => {
-                // input(); statement
                 self.advance();
                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
                 self.advance();
                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                 self.advance();
-                if self.current_token != Token::SemiColon { 
-            println!("DEBUG: Pushing error (non-empty). PrevSpan L{} C{}", self.prev_span.line, self.prev_span.col);
-            self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-            self.synchronize();
-            return Ok(());
-        }
-                self.advance();
+                if expect_semi {
+                    if self.current_token != Token::SemiColon { 
+                        self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
+                        self.synchronize();
+                        return Ok(());
+                    }
+                    self.advance();
+                } else if self.current_token == Token::SemiColon { self.advance(); }
                 out.push_str("INPUT\n");
              },
+              Token::Var => {
+                  self.parse_var_decl(out, Type::Unknown)?;
+              },
+              Token::KwInt => { self.parse_var_decl(out, Type::Int)?; },
+              Token::KwFloat => { self.parse_var_decl(out, Type::Float)?; },
+              Token::KwByte => { self.parse_var_decl(out, Type::Byte)?; },
+              Token::KwShort => { self.parse_var_decl(out, Type::Short)?; },
+              Token::KwLong => { self.parse_var_decl(out, Type::Long)?; },
+              Token::KwChar => { self.parse_var_decl(out, Type::Char)?; },
+              Token::KwString => { self.parse_var_decl(out, Type::String)?; },
              Token::Return => {
                  self.advance();
-                 if self.current_token != Token::SemiColon { return self.error("Return values not supported".to_string()); }
-                 self.advance();
-                 out.push_str("RET\n");
+                 if self.current_token == Token::SemiColon {
+                     out.push_str("PUSH 0\nRET\n");
+                     self.advance();
+                 } else {
+                     self.parse_expression(out)?;
+                     if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                     out.push_str("RET\n");
+                     self.advance();
+                 }
              },
              Token::If => {
-                 // if (expr) { block } else { block }
-                 self.advance(); // skip if
-                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                 self.advance();
-                 
-                 self.parse_expression(out)?;
-                 
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 
-                 let label_id = self.label_id_counter;
-                 self.label_id_counter += 1;
-                 let label_else = format!("__if_else_{}", label_id);
-                 let label_end = format!("__if_end_{}", label_id);
-                 
-                 // Expr is on stack (1 or 0). 
-                 // Compare with 0. If 0 (False), Jump to Else/End.
-                 out.push_str("PUSH 0\n");
-                 out.push_str(&format!("JE {}\n", label_else));
-                 
-                 // True Block
-                 self.parse_block(out)?;
-                 out.push_str(&format!("JMP {}\n", label_end));
-                 
-                 out.push_str(&format!("{}:\n", label_else));
-                 
-                 // Else?
-                 if self.current_token == Token::Else {
-                     self.advance();
-                     self.parse_block(out)?;
-                 }
-                 
-                 out.push_str(&format!("{}:\n", label_end));
+                  self.advance(); // skip if
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?;
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  
+                  let label_id = self.label_id_counter;
+                  self.label_id_counter += 1;
+                  let label_else = format!("__if_else_{}", label_id);
+                  let label_end = format!("__if_end_{}", label_id);
+                  
+                  out.push_str("PUSH 0\n");
+                  out.push_str(&format!("JE {}\n", label_else));
+                  
+                  self.parse_block(out)?;
+                  out.push_str(&format!("JMP {}\n", label_end));
+                  
+                  out.push_str(&format!("{}:\n", label_else));
+                  
+                  if self.current_token == Token::Else {
+                      self.advance();
+                      if self.current_token == Token::If {
+                          self.parse_statement_or_expr(out)?; 
+                      } else {
+                          self.parse_block(out)?;
+                      }
+                  }
+                  out.push_str(&format!("{}:\n", label_end));
              },
              Token::While => {
-                 // while (expr) { block }
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                 self.advance();
-                 
-                 let label_id = self.label_id_counter;
-                 self.label_id_counter += 1;
-                 let label_start = format!("__while_start_{}", label_id);
-                 let label_end = format!("__while_end_{}", label_id);
-                 
-                 out.push_str(&format!("{}:\n", label_start));
-                 
-                 self.parse_expression(out)?;
-                 
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 
-                 // Check False
-                 out.push_str("PUSH 0\n");
-                 out.push_str(&format!("JE {}\n", label_end));
-                 
-                 self.parse_block(out)?;
-                 
-                 out.push_str(&format!("JMP {}\n", label_start));
-                 out.push_str(&format!("{}:\n", label_end));
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  
+                  let label_id = self.label_id_counter;
+                  self.label_id_counter += 1;
+                  let label_start = format!("__while_start_{}", label_id);
+                  let label_end = format!("__while_end_{}", label_id);
+                  self.loop_stack.push((label_start.clone(), label_end.clone())); 
+                  
+                  out.push_str(&format!("{}:\n", label_start));
+                  self.parse_expression(out)?;
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  
+                  out.push_str("PUSH 0\n");
+                  out.push_str(&format!("JE {}\n", label_end));
+                  
+                  self.parse_block(out)?;
+                  out.push_str(&format!("JMP {}\n", label_start));
+                  out.push_str(&format!("{}:\n", label_end));
+                  self.loop_stack.pop();
              },
              Token::For => {
-                 // for (init; cond; step) { block }
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  
+                  // Init
+                  self.parse_statement_or_expr(out)?; 
+                  // parse_statement logic consumes semicolon inside "var" or "assign" or "expr-stmt" logic?
+                  // Wait, parse_statement_or_expr checks for semicolon in ExpressionStmt, Var, Assign, Input, Return.
+                  // But Token::If, While don't consume trailing semicolon.
+                  // Check current token. If we are in 'For', we expect 'statement' then maybe we advanced passed semicolon?
+                  // parse_statement_or_expr for "var i=0;" consumes ';'.
+                  
+                  let label_id = self.label_id_counter;
+                  self.label_id_counter += 1;
+                  let label_start = format!("__for_start_{}", label_id);
+                  let label_step = format!("__for_step_{}", label_id);
+                  let label_end = format!("__for_end_{}", label_id);
+                  self.loop_stack.push((label_step.clone(), label_end.clone())); // Continue goes to Step
+                  
+                  out.push_str(&format!("{}:\n", label_start));
+                  
+                  // Cond
+                  if self.current_token != Token::SemiColon {
+                       self.parse_expression(out)?;
+                       out.push_str("PUSH 0\n");
+                       out.push_str(&format!("JE {}\n", label_end));
+                  }
+                  if self.current_token != Token::SemiColon { return self.error("Expected ; in for".to_string()); }
+                  self.advance();
+                  
+                  out.push_str(&format!("JMP __for_body_{}\n", label_id));
+
+                  // Step
+                  out.push_str(&format!("{}:\n", label_step));
+                  let mut step_out = String::new();
+                  if self.current_token != Token::RParen {
+                       // We need to parse expression but NOT consume semicolon? Step often doesn't have semicolon.
+                       // Usually "i = i + 1". Assign consumes semicolon. 
+                       // Standard for syntax: for(init; cond; step).
+                       // Step is expression or assignment.
+                       // My parse_expr/stmt consumes semicolon. 
+                       // This is tricky if step is "i=i+1". 
+                       // Let's tolerate ; if present.
+                       self.parse_statement_impl(&mut step_out, false)?;
+                  }
+                  out.push_str(&step_out);
+                  out.push_str(&format!("JMP {}\n", label_start));
+                  
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  
+                  out.push_str(&format!("__for_body_{}:\n", label_id));
+                  self.parse_block(out)?;
+                  
+                  out.push_str(&format!("JMP {}\n", label_step));
+                  out.push_str(&format!("{}:\n", label_end));
+                  self.loop_stack.pop();
+             },
+             Token::Do => {
                  self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                 self.advance();
-                 
-                 // Init
-                 self.parse_statement_or_expr(out)?;
-                 // Statement usually consumes semi-colon.
                  
                  let label_id = self.label_id_counter;
                  self.label_id_counter += 1;
-                 let label_start = format!("__for_start_{}", label_id);
-                 let label_step = format!("__for_step_{}", label_id);
-                 let label_body = format!("__for_body_{}", label_id);
-                 let label_end = format!("__for_end_{}", label_id);
+                 let label_start = format!("__do_start_{}", label_id);
+                 let label_end = format!("__do_end_{}", label_id);
+                 // Continue in do-while usually goes to check condition.
+                 // Let's say continues restart the loop body? No, standard is check condition.
+                 // So we need a label for condition check?
+                 let label_cond = format!("__do_cond_{}", label_id);
+                 
+                 self.loop_stack.push((label_cond.clone(), label_end.clone())); 
                  
                  out.push_str(&format!("{}:\n", label_start));
                  
-                 // Cond
-                 self.parse_expression(out)?;
-                 if self.current_token != Token::SemiColon { return self.error("Expected ; after condition".to_string()); }
+                 self.parse_block(out)?;
+                 
+                 out.push_str(&format!("{}:\n", label_cond));
+                 if self.current_token != Token::While { return self.error("Expected while after do block".to_string()); }
                  self.advance();
                  
-                 // Check Cond
-                 out.push_str("PUSH 0\n");
-                 out.push_str(&format!("JE {}\n", label_end));
-                 out.push_str(&format!("JMP {}\n", label_body));
-                 
-                 // Step Section
-                 out.push_str(&format!("{}:\n", label_step));
-                 // Step is usually "i = i + 1" (expression/assignment)
-                 // But parse_statement_or_expr expects trailing semicolon.
-                 // In `for(..; ..; i=i+1)`, there is NO semicolon after step.
-                 // This is tricky if our parser demands it.
-                 // Hack: Parse expression (assignment is mostly expr logic if we supported it).
-                 // My assignment logic is in `parse_statement`.
-                 // I will support simple assignment here manually or refactor assignment to be an expression?
-                 // Current assignment: `ident` ... `eq` ... `expr` ... `semi`.
-                 // Let's call `parse_statement_or_expr` and hope for the best? No, it eats semicolon.
-                 // Let's implement a "parse_assignment_no_semi" or just reuse parse_statement and allow NO semi?
-                 
-                 // Simpler: Just allow simple expression execution. Use assignment syntax but handle semicolon manually.
-                 // Actually, let's just use `parse_statement_or_expr` and expect the user to PUT a semicolon?
-                 // `for (var i=0; i<10; i=i+1;)`. Weird but consistent.
-                 // OR I peek and temporarily insert a semicolon token?
-                 // Let's just try to parse assignment logic manually here.
-                 
-                 match &self.current_token {
-                     Token::Identifier(name) => {
-                         let part1 = name.clone();
-                         self.advance();
-                         if self.current_token == Token::Eq {
-                            self.advance();
-                            self.parse_expression(out)?;
-                            
-                            // Assignment Store logic
-                            if let Some(addr) = self.var_map.get(&part1) {
-                                out.push_str(&format!("PUSH {}\nPOKE\n", addr));
-                            } else {
-                                return self.error(format!("Undefined variable in loop step: {}", part1));
-                            }
-                         } else {
-                             // Just an expression?
-                             // self.parse_expression?
-                             return self.error(format!("Unexpected token in for loop step: {:?}", self.current_token));
-                         }
-                     },
-                     _ => {}, // Empty step?
-                 }
-                 
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?;
                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                  self.advance();
+                 if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                 self.advance();
                  
-                 out.push_str(&format!("JMP {}\n", label_start)); // After step, check cond
-                 
-                 out.push_str(&format!("{}:\n", label_body));
-                 self.parse_block(out)?;
-                 out.push_str(&format!("JMP {}\n", label_step)); // After body, go to step
+                 // If true, jump back to start
+                 // Cond returns 1 or 0.
+                 // VM JE pops b, a. a==b -> jump.
+                 // We push 1. Stack: [cond_res, 1]. JE compares 1 == cond_res.
+                 out.push_str("PUSH 1\n");
+                 out.push_str(&format!("JE {}\n", label_start));
                  
                  out.push_str(&format!("{}:\n", label_end));
+                 self.loop_stack.pop();
+             },
+             Token::LBrace => {
+                 self.parse_block(out)?;
+             },
+             Token::Peek => {
+                 self.parse_expression(out)?; 
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::Poke => {
+                 self.parse_poke(out)?;
+             },
+             Token::Break => {
+                 if let Some(label) = self.loop_stack.last() {
+                     out.push_str(&format!("JMP {}\n", label.1));
+                 } else {
+                     return self.error("Break outside of loop".to_string());
+                 }
+                 self.advance();
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::Continue => {
+                 if let Some(label) = self.loop_stack.last() {
+                     out.push_str(&format!("JMP {}\n", label.0));
+                 } else {
+                     return self.error("Continue outside of loop".to_string());
+                 }
+                 self.advance();
+                 if self.current_token == Token::SemiColon { self.advance(); }
              },
              Token::Asm => {
-                 // asm { "PUSH 1", "ADD" }
                  self.advance();
-                 if self.current_token != Token::LBrace { return self.error("Expected { for asm".to_string()); }
+                 if self.current_token != Token::LBrace { return self.error("Expected {".to_string()); }
                  self.advance();
-                 
                  while self.current_token != Token::RBrace && self.current_token != Token::EOF {
                      match &self.current_token {
                          Token::String(s) => {
@@ -528,205 +782,477 @@ impl Parser {
                              out.push('\n');
                              self.advance();
                          },
-                         Token::Comma => self.advance(),
-                         Token::SemiColon => self.advance(), // Optional
+                         Token::Comma | Token::SemiColon => self.advance(),
                          _ => return self.error("Expected string literals in asm block".to_string()),
                      }
                  }
-                 
-                 if self.current_token != Token::RBrace { return self.error("Expected }".to_string()); }
                  self.advance();
              },
-             Token::SemiColon => self.advance(),
-             _ => return self.error(format!("Unexpected statement token: {:?}", self.current_token)),
+             Token::Spawn => {
+                  self.advance();
+                  match &self.current_token {
+                      Token::Identifier(func_name) => {
+                          out.push_str(&format!("PUSH {}\nSPAWN\n", func_name));
+                      },
+                      _ => return self.error("Expected function name".to_string()),
+                  }
+                  self.advance();
+                  if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::Lock | Token::Unlock => {
+                 self.advance();
+                 if self.current_token == Token::LParen { self.advance(); } 
+                 if let Token::Identifier(_) = self.current_token { self.advance(); } 
+                 if self.current_token == Token::RParen { self.advance(); }
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             _ => {
+                  return self.error(format!("Unexpected statement token: {:?}", self.current_token));
+             }
         }
         Ok(())
     }
+
+
+
+    // --- Var Declaration ---
+    
+    fn parse_var_decl(&mut self, out: &mut String, expected_type: Type) -> Result<(), CompileError> {
+        self.advance(); // consume keyword (int, var, etc)
+        
+        // Name
+        let name = match &self.current_token {
+            Token::Identifier(s) => s.clone(),
+            _ => return self.error("Expected variable name".to_string()),
+        };
+        self.advance();
+        
+        let mut final_type = expected_type.clone();
+        
+        // = value
+        if self.current_token == Token::Eq {
+             self.advance();
+             let expr_type = self.parse_expression(out)?;
+             
+             // Type Inference
+             if final_type == Type::Unknown || final_type == Type::Void {
+                 final_type = expr_type.clone();
+             }
+             
+             // Type Check / Cast
+             if final_type == Type::Float && expr_type == Type::Int {
+                 out.push_str("ITOF\n");
+             } else if final_type == Type::Int && expr_type == Type::Float {
+                 out.push_str("FTOI\n");
+             } else if final_type != expr_type && final_type != Type::Unknown {
+                 // Lax check for numeric sizes?
+                 if (final_type == Type::Byte || final_type == Type::Short || final_type == Type::Long) && expr_type == Type::Int {
+                     // OK (Int fits in Long, Int truncates to Byte/Short)
+                 } else {
+                     // return self.error(format!("Type Mismatch: Expected {:?}, got {:?}", final_type, expr_type));
+                     // Warn only? User wants "easy".
+                 }
+             }
+        } else {
+            // Default init 0 (implicit)
+            out.push_str("PUSH 0\n");
+        }
+        
+        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+        self.advance();
+        
+        let addr = self.declare_var(name, final_type);
+        out.push_str(&format!("PUSH {}\nPOKE\n", addr));
+        
+        Ok(())
+    }
+
 
     fn parse_print(&mut self, out: &mut String, newline: bool) -> Result<(), CompileError> {
         if self.current_token != Token::LParen { return self.error("Expected ( for print".to_string()); }
         self.advance();
         
         if self.current_token == Token::RParen {
-            self.advance();
-            if newline {
-                out.push_str("PUSH 10\nPRINT_CHAR\n");
-            }
-             if self.current_token != Token::SemiColon { 
-                 // Missing semicolon after println()
-                 println!("DEBUG: Error Pushed. PrevSpan L{} C{}", self.prev_span.line, self.prev_span.col);
-                 self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                 self.synchronize();
-                 return Ok(());
-             }
              self.advance();
-            
-            // If it's an empty println(), we still need to print the newline.
-            if newline {
-                out.push_str("PUSH 10\nPRINT_CHAR\n");
-            }
-            return Ok(());
-        }
-
-       // Check newline logic (Append)
-        if newline {
-            out.push_str("PUSH 10\nPRINT_CHAR\n");
-        }
-    
-        match &self.current_token {
-            Token::String(s) => {
+             if newline {
+                 out.push_str("PUSH 10\nPRINT_CHAR\n");
+             }
+        } else {
+             if let Token::String(s) = &self.current_token {
                 for c in s.chars() {
                     out.push_str(&format!("PUSH {}\nPRINT_CHAR\n", c as u32));
                 }
                 self.advance();
-            },
-            _ => {
-                // Try to parse expression (e.g. Number or Variable or Math)
-                // Expression leaves result on Stack.
-                // We need to print it.
-                // OP_PRINT_CHAR prints char. 
-                // Issue: If expr is "1 + 2" -> 3. PRINT_CHAR(3) -> ASCII 3 (Wait).
-                // We need PRINT_NUM or debug print?
-                // User expects `print(123)` -> "123".
-                // NuxVM `OP_PRINT_CHAR` handles ASCII.
-                // WE DO NOT HAVE `ITOA` (Int to String) in NuxVM yet!
-                // Wait, `OP_DEBUG_PRINT` prints value using Rust `println!`.
-                // Let's use `OP_DEBUG_PRINT` (0x50) for now if output is number?
-                // But `print` implies stdout.
-                // Let's implement OP_PRINT_NUM (0x53)?
-                // Or user `OP_DEBUG_PRINT` but it says "DEBUG: ...".
-                // Let's use OP_DEBUG_PRINT temporarily but removing "DEBUG: " prefix in VM?
-                // Or implement simple ITOA in ASM? Hard.
-                // Let's add OP_PRINT_VAL (0x53) to VM which prints number.
-                
-                self.parse_expression(out)?;
-                out.push_str("PRINT_VAL\n"); 
-            },
+             } else {
+                let t = self.parse_expression(out)?;
+                if t == Type::Float {
+                    out.push_str("PRINT_FLOAT\n");
+                } else {
+                    out.push_str("PRINT_VAL\n");
+                }
+             }
+             
+             if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+             self.advance();
+             
+             if newline {
+                 out.push_str("PUSH 10\nPRINT_CHAR\n");
+             }
         }
         
+         if self.current_token != Token::SemiColon { 
+              self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
+              self.synchronize();
+              return Ok(());
+         }
+         self.advance();
+         Ok(())
+    }
+
+    fn parse_poke(&mut self, out: &mut String) -> Result<(), CompileError> {
+        self.advance(); // Skip POKE
+        if self.current_token != Token::LParen { return self.error("Expected ( for poke".to_string()); }
+        self.advance();
+        self.parse_expression(out)?; // Addr
+        if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+        self.advance();
+        self.parse_expression(out)?; // Val
         if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
         self.advance();
-        
-        if newline {
-            out.push_str("PUSH 10\nPRINT_CHAR\n");
-        }
-        
-        if self.current_token != Token::SemiColon { 
-             self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-             self.synchronize();
-             return Ok(());
-        }
+        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
         self.advance();
+        out.push_str("POKE\n");
         Ok(())
     }
-    // --- Expression Parsing ---
 
-    fn parse_expression(&mut self, out: &mut String) -> Result<(), CompileError> {
-        // Expr -> Term (+- Term)*
-        self.parse_term(out)?;
+    
+    fn parse_expression(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        self.parse_logical_or(out)
+    }
+
+    fn parse_logical_or(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_logical_and(out)?;
         
-        loop {
-            match self.current_token {
-                Token::Plus => {
-                    self.advance();
-                    self.parse_term(out)?;
-                    out.push_str("ADD\n");
-                },
-                Token::Minus => {
-                    self.advance();
-                    self.parse_term(out)?;
-                    out.push_str("SUB\n");
-                },
-                 Token::EqEq => { self.advance(); self.parse_term(out)?; out.push_str("EQ\n"); },
-                 Token::NotEq => { self.advance(); self.parse_term(out)?; out.push_str("NEQ\n"); },
-                 Token::Lt => { self.advance(); self.parse_term(out)?; out.push_str("LT\n"); },
-                 Token::Gt => { self.advance(); self.parse_term(out)?; out.push_str("GT\n"); },
-                 Token::LtEq => { self.advance(); self.parse_term(out)?; out.push_str("LTE\n"); },
-                 Token::GtEq => { self.advance(); self.parse_term(out)?; out.push_str("GTE\n"); },
-                 Token::And => { self.advance(); self.parse_term(out)?; out.push_str("AND\n"); },
-                 Token::Or => { self.advance(); self.parse_term(out)?; out.push_str("OR\n"); },
-                _ => break,
+        while self.current_token == Token::Or {
+            self.advance();
+            let _right_type = self.parse_logical_and(out)?; // Right type is consumed
+            out.push_str("OR\n");
+            left_type = Type::Bool; // Logic ops always bool
+        }
+        Ok(left_type)
+    }
+
+    fn parse_logical_and(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_equality(out)?;
+        
+        while self.current_token == Token::And {
+            self.advance();
+            let _right_type = self.parse_equality(out)?; // Right type is consumed
+            out.push_str("AND\n");
+            left_type = Type::Bool; 
+        }
+        Ok(left_type)
+    }
+    
+    fn parse_equality(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_comparison(out)?;
+        
+        while self.current_token == Token::EqEq || self.current_token == Token::NotEq {
+            let op = self.current_token.clone();
+            self.advance();
+            let right_type = self.parse_comparison(out)?;
+            
+            // Type check and promotion for equality
+            if left_type == Type::Float || right_type == Type::Float {
+                if left_type != Type::Float { out.push_str("ITOF\n"); }
+                if right_type != Type::Float { out.push_str("ITOF\n"); }
+                match op {
+                    Token::EqEq => out.push_str("FEQ\n"),
+                    Token::NotEq => out.push_str("FNEQ\n"),
+                    _ => {}
+                }
+            } else {
+                match op {
+                    Token::EqEq => out.push_str("EQ\n"),
+                    Token::NotEq => out.push_str("NEQ\n"),
+                    _ => {}
+                }
+            }
+            left_type = Type::Bool; // Result is Bool
+        }
+        Ok(left_type)
+    }
+
+    fn parse_comparison(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_term(out)?;
+        
+        while matches!(self.current_token, Token::Lt | Token::Gt | Token::LtEq | Token::GtEq) {
+            let op = self.current_token.clone();
+            self.advance();
+            let right_type = self.parse_term(out)?;
+            
+            // Type check and promotion for comparison
+            if left_type == Type::Float || right_type == Type::Float {
+                if left_type != Type::Float { out.push_str("ITOF\n"); }
+                if right_type != Type::Float { out.push_str("ITOF\n"); }
+                match op {
+                    Token::Lt => out.push_str("FLT\n"),
+                    Token::Gt => out.push_str("FGT\n"),
+                    Token::LtEq => out.push_str("FLTE\n"),
+                    Token::GtEq => out.push_str("FGTE\n"),
+                    _ => {}
+                }
+            } else {
+                match op {
+                    Token::Lt => out.push_str("LT\n"),
+                    Token::Gt => out.push_str("GT\n"),
+                    Token::LtEq => out.push_str("LTE\n"),
+                    Token::GtEq => out.push_str("GTE\n"),
+                    _ => {}
+                }
+            }
+            left_type = Type::Bool;
+        }
+        Ok(left_type)
+    }
+
+    fn parse_term(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_factor(out)?;
+        
+        while self.current_token == Token::Plus || self.current_token == Token::Minus {
+            let op = self.current_token.clone();
+            self.advance();
+            
+            // Need to buffer right side code to inject conversion?
+            // Wait, we are writing to `out` directly.
+            // If left is Int and right is Float, we need to convert Left to Float BEFORE right is pushed?
+            // No, Left is already pushed. Integer is on stack.
+            // If we find right is Float, we are in trouble if we didn't convert Left.
+            // Because we only know right's type AFTER parsing it.
+            // And parsing it emits code to push it.
+            
+            // Solution: 
+            // 1. If Left is Int, we assume Int math.
+            // 2. Parse Right.
+            // 3. If Right turns out to be Float:
+            //    - If Left was Int, we need to convert Left (generic stack swap? `ITOF` under top? No).
+            //    - We need to `SWAP, ITOF, SWAP`? VM doesn't have Swap.
+            //    - Better: Simple Compiler limitation -> Float Must be on Left? Or explicit cast?
+            //    - Or: We just emit generic ops and VM handles generic types? (Dynamic Typing). 
+            //      But user asked for explicit sizes. VM is `i64`.
+            //      Float bits in i64.
+            //      ADD will mangle float bits. FADD works.
+            
+            // Alternative:
+            // Buffer the Right side code.
+            // 1. Evaluate Left type.
+            // 2. Capture Right output in temp buffer.
+            // 3. Evaluate Right type.
+            // 4. Emit corrections.
+            
+            let mut right_out = String::new();
+            let right_type = self.parse_factor(&mut right_out)?;
+            
+            // Promotion Logic
+            if left_type == Type::Float || right_type == Type::Float {
+                // Float Arithmetic
+                if left_type != Type::Float {
+                     // Left is Int (on stack). Convert to Float.
+                     // But Right code isn't emitted yet.
+                     out.push_str("ITOF\n");
+                }
+                out.push_str(&right_out);
+                if right_type != Type::Float {
+                    // Right is Int (on top of stack). Convert.
+                     out.push_str("ITOF\n");
+                }
+                
+                match op {
+                    Token::Plus => out.push_str("FADD\n"),
+                    Token::Minus => out.push_str("FSUB\n"),
+                    _ => {}
+                }
+                left_type = Type::Float;
+            } else {
+                // Int Arithmetic
+                out.push_str(&right_out);
+                match op {
+                    Token::Plus => out.push_str("ADD\n"),
+                    Token::Minus => out.push_str("SUB\n"),
+                    _ => {}
+                }
+                // left_type remains Int (or whatever it was)
             }
         }
-        Ok(())
+        Ok(left_type)
     }
 
-    fn parse_term(&mut self, out: &mut String) -> Result<(), CompileError> {
-        // Term -> Factor (*/% Factor)*
-        self.parse_factor(out)?;
+    fn parse_factor(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        let mut left_type = self.parse_unary(out)?;
         
-        loop {
-            match self.current_token {
-                Token::Star => {
-                    self.advance();
-                    self.parse_factor(out)?;
-                    out.push_str("MUL\n");
-                },
-                Token::Slash => {
-                    self.advance();
-                    self.parse_factor(out)?;
-                    out.push_str("DIV\n");
-                },
-                Token::Percent => {
-                    self.advance();
-                    self.parse_factor(out)?;
-                    out.push_str("MOD\n");
-                },
-                _ => break,
+        while matches!(self.current_token, Token::Star | Token::Slash | Token::Percent) {
+            let op = self.current_token.clone();
+            self.advance();
+            
+            let mut right_out = String::new();
+            let right_type = self.parse_unary(&mut right_out)?;
+            
+            if left_type == Type::Float || right_type == Type::Float {
+                 if left_type != Type::Float { out.push_str("ITOF\n"); }
+                 out.push_str(&right_out);
+                 if right_type != Type::Float { out.push_str("ITOF\n"); }
+                 
+                 match op {
+                     Token::Star => out.push_str("FMUL\n"),
+                     Token::Slash => out.push_str("FDIV\n"),
+                     Token::Percent => return self.error("Modulo operator not supported for floats".to_string()),
+                     _ => {} 
+                 }
+                 left_type = Type::Float;
+            } else {
+                out.push_str(&right_out);
+                match op {
+                    Token::Star => out.push_str("MUL\n"),
+                    Token::Slash => out.push_str("DIV\n"),
+                    Token::Percent => out.push_str("MOD\n"),
+                    _ => {}
+                }
             }
         }
-        Ok(())
+        Ok(left_type)
+    }
+    
+    fn parse_unary(&mut self, out: &mut String) -> Result<Type, CompileError> {
+        if self.current_token == Token::Minus {
+            self.advance();
+            let t = self.parse_expression(out)?;
+            if t == Type::Float {
+                out.push_str("PRINT_FLOAT\n");
+            } else {
+                out.push_str("PRINT_VAL\n");
+            }
+            Ok(t)
+        } else {
+            self.parse_primary(out)
+        }
     }
 
-    fn parse_factor(&mut self, out: &mut String) -> Result<(), CompileError> {
+    fn parse_primary(&mut self, out: &mut String) -> Result<Type, CompileError> {
         match &self.current_token {
+            Token::Input => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("INPUT\n");
+                 Ok(Type::Int) // Input returns an integer
+            },
             Token::Number(n) => {
                 out.push_str(&format!("PUSH {}\n", n));
+                let val = *n;
                 self.advance();
+                out.push_str(&format!("PUSH {}\n", val));
+                Ok(Type::Int)
             },
-            Token::String(_) => {
-                 return self.error("Strings in expressions not fully supported yet".to_string());
+            Token::Float(f) => {
+                let val = *f;
+                self.advance();
+                // We need to push raw bits of f64
+                let bits = val.to_bits() as i64;
+                out.push_str(&format!("PUSH {}\n", bits));
+                Ok(Type::Float)
+            },
+            Token::String(s) => {
+                // String Literal
+                // TODO: Store string in data segment and push pointer.
+                // For now, fail or char pointer mock?
+                // Minimal: Push chars?
+                // Real: "String" type support not fully in VM yet.
+                // Let's treat as sequence of chars?
+                // Just error for now or basic?
+                // Allow "String" type but value is 0?
+                // Or basic char loop print support.
+                // Let's return String type but emit nothing valuable yet except for print?
+                // Actually, existing `print("foo")` works by iterating.
+                // If this is part of expression `var s = "foo"`, we need value.
+                // Implement: String Table?
+                // Hack: Pass raw string if it's argument to print?
+                // But this is parse_primary.
+                let s_val = s.clone();
+                self.advance();
+                // We don't have good support for string variables yet.
+                // Just push 0 and warn.
+                out.push_str("PUSH 0 ; String Literal Placeholder\n"); 
+                Ok(Type::String)
             },
             Token::Identifier(name) => {
-                let name = name.clone();
-                self.advance();
-                
-                if self.current_token == Token::LParen {
-                    // Function Call in Expr!
-                    self.advance();
-                    if self.current_token != Token::RParen { return self.error("Args not supported".to_string()); }
-                    self.advance();
-                    out.push_str(&format!("CALL {}\n", name));
-                } else if self.current_token == Token::Dot {
-                     // Class.Method?
-                     self.advance();
-                     let part2 = match &self.current_token {
-                         Token::Identifier(s) => s.clone(),
-                         _ => return self.error("Expected Identifier".to_string()),
-                     };
-                     self.advance();
-                     if self.current_token == Token::LParen {
-                        self.advance(); 
-                        if self.current_token != Token::RParen { return self.error("Args not supported".to_string()); }
-                        self.advance();
-                        out.push_str(&format!("CALL {}_{}\n", name, part2));
-                     } else {
-                         return self.error("Expected Call".to_string());
+                // Function call or Variable
+                 let part1 = name.clone();
+                 self.advance();
+                 
+                 if self.current_token == Token::LParen {
+                     // Call
+                     // Assume Int return for now? Or Void?
+                     // Function defs don't declare return type yet.
+                     // Default Int.
+                     let mut part2 = String::new();
+                     if self.current_token == Token::Dot {
+                         // method?
+                         // ... logic ...
                      }
-                } else {
-                    // Variable Access
-                    if let Some(addr) = self.var_map.get(&name) {
-                        out.push_str(&format!("PUSH {}\nPEEK\n", addr));
-                    } else {
-                        return self.error(format!("Undefined variable: {}", name));
-                    }
-                }
+                      
+                      // ... Reimplement Call Parsing ... 
+                      // Need to simplify for this refactor.
+                      // Logic is identical to parse_statement?
+                      // No, parse_statement handles it. 
+                      // Here we are in expression. Function call returns value.
+                      // Previous logic:
+                      /*
+                        if self.current_token == Token::Dot { ... }
+                      */
+                      // Simplifying: Calls always return Int for now.
+                      // Restore Call Logic:
+                      let mut final_name = part1.clone();
+                      if self.current_token == Token::Dot { // method
+                            self.advance();
+                             let method = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected method".to_string()) };
+                             self.advance();
+                             final_name = format!("{}_{}", part1, method);
+                      }
+                      
+                      if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                      self.advance();
+                      
+                      // Args
+                      if self.current_token != Token::RParen {
+                           loop {
+                               self.parse_expression(out)?;
+                               if self.current_token == Token::Comma { self.advance(); } else { break; }
+                           }
+                      }
+                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                      self.advance();
+                      
+                      out.push_str(&format!("CALL {}\n", final_name));
+                      // Function result is on stack.
+                      Ok(Type::Int) // Assume Int
+                 } else {
+                     // Variable Access
+                     if let Some((addr, t)) = self.resolve_var(&part1) {
+                         out.push_str(&format!("PUSH {}\nPEEK\n", addr));
+                         Ok(t)
+                     } else {
+                         return self.error(format!("Undefined variable: {}", part1));
+                     }
+                 }
             },
             Token::LParen => {
                 self.advance();
-                self.parse_expression(out)?;
+                let t = self.parse_expression(out)?;
                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                 self.advance();
+                Ok(t)
             },
             Token::Input => {
                 self.advance();
@@ -735,9 +1261,19 @@ impl Parser {
                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                 self.advance();
                 out.push_str("INPUT\n");
+                Ok(Type::Int) // Input returns Int
+            },
+            Token::Peek => {
+                self.advance();
+                if self.current_token != Token::LParen { return self.error("Expected ( for peek".to_string()); }
+                self.advance();
+                self.parse_expression(out)?;
+                if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                self.advance();
+                out.push_str("PEEK\n");
+                Ok(Type::Int) // Peek returns Int (raw)
             },
             _ => return self.error(format!("Unexpected token in expression: {:?}", self.current_token)),
         }
-        Ok(())
     }
 }

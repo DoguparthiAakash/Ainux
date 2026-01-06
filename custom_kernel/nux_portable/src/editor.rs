@@ -4,37 +4,35 @@ use std::io::{self, Read, Write};
 use std::process::Command;
 
 pub fn run(filename: &str) {
-    let editors = ["vim", "vi", "nano"];
-    for editor in editors.iter() {
-        if is_executable_in_path(editor) {
-            let status = Command::new(editor).arg(filename).status();
-            if let Ok(s) = status {
-                if s.success() { return; }
-            }
-        }
-    }
-
-    println!("System editor not found. Launching Nux-Vim...");
-    let mut editor = MiniVim::new(filename);
+    // Try system editor first? User seems to want THIS specific behavior now.
+    // But keeping the fallback logic is good practice. 
+    // However, if the user explicitly asked for THESE bindings, they might be testing Nux's editor.
+    // I will comment out system delegation for testing, or keep it but assume user calls `nux edit` when they want nux.
+    // Actually, widespread behavior is `nux edit` -> `vim` is good. 
+    // I'll keep delegation but maybe user didn't have vim? 
+    // Wait, previous logs showed they had `vi`.
+    // The user explicitly tested `nux edit sample.nux`.
+    // If I delegate, they get `vi` which definitely doesn't use `Ctrl+I` for insert.
+    // **Correction**: The user WANTS these bindings. If I launch `vi`, I ignore their request.
+    // I should FORCE Nux Editor if they use `nux edit`? 
+    // Or maybe add a flag?
+    // Current instruction: "nope. fix it fully... this makes easy to develop".
+    // This implies they want the NUX editor to behave this way.
+    // I will REMOVE the delegation to `vim` so they get the Nux editor with these bindings.
+    
+    // println!("System editor not found. Launching Nux-Vim..."); 
+    // (We remove the check and always use built-in for now to satisfy the user request).
+    
+    let mut editor = MiniEditor::new(filename);
     editor.run();
 }
 
-fn is_executable_in_path(cmd: &str) -> bool {
-    Command::new("which").arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
-}
+// --- Editor Implementation ---
 
-// --- Mini Vim Implementation ---
-#[derive(PartialEq)]
-enum Mode {
-    Normal,
-    Insert,
-    Command,
-    ConfirmQuit,
-}
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum Key {
     Char(char),
+    Ctrl(char),
     Esc,
     Enter,
     Backspace,
@@ -47,24 +45,39 @@ enum Key {
     End,
     PageUp,
     PageDown,
-    Ctrl(char), // For Ctrl+A, Ctrl+B, etc.
     Unknown(u8),
 }
 
-struct MiniVim {
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum Mode {
+    View,
+    Insert,
+}
+
+#[derive(Clone)]
+struct HistoryState {
+    lines: Vec<String>,
+    cx: usize,
+    cy: usize,
+}
+
+struct MiniEditor {
     filename: String,
     lines: Vec<String>,
     cx: usize,
     cy: usize,
     mode: Mode,
-    command_buffer: String,
     msg: String,
     quit: bool,
     dirty: bool,
-    escape_state: u8, // 0=None, 1=seen Esc, 2=seen Esc+[ or Esc+O
+    escape_state: u8,
+    
+    // Undo/Redo
+    history: Vec<HistoryState>,
+    history_idx: usize, // Current position in history
 }
 
-impl MiniVim {
+impl MiniEditor {
     fn new(filename: &str) -> Self {
         let content = fs::read_to_string(filename).unwrap_or_default();
         let lines: Vec<String> = if content.is_empty() {
@@ -73,17 +86,24 @@ impl MiniVim {
             content.lines().map(|s| s.to_string()).collect()
         };
 
+        let initial_state = HistoryState {
+            lines: lines.clone(),
+            cx: 0,
+            cy: 0,
+        };
+
         Self {
             filename: filename.to_string(),
             lines,
             cx: 0,
             cy: 0,
-            mode: Mode::Normal,
-            command_buffer: String::new(),
-            msg: String::from("HELP: i=Insert, Esc=Normal, :w=Save, :q=Quit"),
+            mode: Mode::View,
+            msg: String::from("Ctrl+I: Insert | Ctrl+S: Save | Ctrl+A: Save&Exit | Ctrl+B: Exit"),
             quit: false,
             dirty: false,
             escape_state: 0,
+            history: vec![initial_state],
+            history_idx: 0,
         }
     }
 
@@ -108,30 +128,21 @@ impl MiniVim {
 
     fn refresh_screen(&self) {
         print!("\x1b[2J\x1b[H"); 
+        
         for (i, line) in self.lines.iter().enumerate() {
-            print!("{}\r\n", line);
+            print!("{}\r\n", line); // TODO: Scroll offset support (omitted for brevity)
         }
         
+        // Status Bar
         print!("\x1b[H\x1b[999B"); 
+        
         let dirty_char = if self.dirty { "[+]" } else { "" };
-        let status_text = match self.mode { 
-            Mode::Normal => "NORMAL", 
-            Mode::Insert => "INSERT", 
-            Mode::Command => "COMMAND",
-            Mode::ConfirmQuit => "CONFIRM",
-        };
+        let mode_str = match self.mode { Mode::View => "VIEW", Mode::Insert => "INSERT" };
 
-        print!("\n-- {} -- {} Pos: {},{}  {}\r\n", status_text, dirty_char, self.cx, self.cy, self.msg);
-            
-        if matches!(self.mode, Mode::Command) {
-             print!(":{}", self.command_buffer);
-        } else if matches!(self.mode, Mode::ConfirmQuit) {
-             print!("Unsaved changes! Quit anyway? (y/n) ");
-        }
-
-        if !matches!(self.mode, Mode::ConfirmQuit) {
-            print!("\x1b[{};{}H", self.cy + 1, self.cx + 1);
-        }
+        print!("\n-- {} -- {} Pos: {},{}  {}\r\n", mode_str, dirty_char, self.cx, self.cy, self.msg);
+        
+        // Cursor
+        print!("\x1b[{};{}H", self.cy + 1, self.cx + 1);
         io::stdout().flush().unwrap();
     }
 
@@ -141,40 +152,22 @@ impl MiniVim {
         let b = buf[0];
 
         match self.escape_state {
-            0 => {
-                match b {
-                    27 => { // ESC
-                        // Try to read next byte non-blockingly (simulated)
-                        // If we can't peek, we simply read.
-                        // We support [ and O
-                        
-                        let mut next_buf = [0; 1];
-                        if io::stdin().read_exact(&mut next_buf).is_ok() {
-                            match next_buf[0] {
-                                b'[' => {
-                                    self.escape_state = 2; 
-                                    return self.read_escape_sequence();
-                                },
-                                b'O' => {
-                                    self.escape_state = 2; // Treat SS3 (ESC O) same as CSI (ESC [) for Arrows
-                                    return self.read_escape_sequence();
-                                },
-                                _ => {
-                                    // Unknown escape. Return Esc, lose the next char :(
-                                    // Optimization: Push back? No simple way.
-                                    return Key::Esc; 
-                                }
-                            }
-                        } else {
-                            return Key::Esc;
+            0 => match b {
+                13 => Key::Enter,
+                127 | 8 => Key::Backspace,
+                27 => { // Esc
+                    self.escape_state = 1;
+                    let mut next = [0; 1];
+                    if io::stdin().read_exact(&mut next).is_ok() {
+                        if next[0] == b'[' || next[0] == b'O' {
+                            self.escape_state = 2; 
+                            return self.read_escape_sequence();
                         }
-                    },
-                    127 | 8 => Key::Backspace,
-                    13 => Key::Enter,
-                    c => {
-                        if c < 32 { Key::Ctrl((c + 64) as char) } else { Key::Char(c as char) }
-                    },
-                }
+                    }
+                    Key::Esc
+                },
+                1..=26 => Key::Ctrl((b + 64) as char), // Ctrl+A..Z
+                _ => Key::Char(b as char),
             },
             _ => { self.escape_state = 0; Key::Unknown(b) }
         }
@@ -182,36 +175,22 @@ impl MiniVim {
     
     fn read_escape_sequence(&mut self) -> Key {
         let mut buf = [0; 1];
-        if io::stdin().read_exact(&mut buf).is_err() {
-            self.escape_state = 0;
-            return Key::Unknown(0);
+        if io::stdin().read_exact(&mut buf).is_err() { 
+            self.escape_state = 0; return Key::Unknown(0); 
         }
         let b = buf[0];
         self.escape_state = 0;
-
+        
         match b {
             b'A' => Key::Up,
             b'B' => Key::Down,
             b'C' => Key::Right,
             b'D' => Key::Left,
-            b'H' => Key::Home, 
-            b'F' => Key::End,   
-            // Handle `3~` etc
-             b'1'..=b'6' => {
-                let mut next_buf = [0; 1];
-                if io::stdin().read_exact(&mut next_buf).is_ok() {
-                     if next_buf[0] == b'~' {
-                        match b {
-                            b'1' => Key::Home,
-                            b'3' => Key::Delete,
-                            b'4' => Key::End,
-                            b'5' => Key::PageUp,
-                            b'6' => Key::PageDown,
-                            _ => Key::Unknown(b),
-                        }
-                     } else { Key::Unknown(b) }
-                } else { Key::Unknown(b) }
-            },
+            b'H' | b'1' => Key::Home,
+            b'F' | b'4' => Key::End,
+            b'3' => Key::Delete,
+            b'5' => Key::PageUp,
+            b'6' => Key::PageDown,
             _ => Key::Unknown(b),
         }
     }
@@ -219,37 +198,107 @@ impl MiniVim {
     fn process_keypress(&mut self) {
         let key = self.read_key();
         
-        // Correct boundary check
+        // Ensure bounds
         if !self.lines.is_empty() {
+             if self.cy >= self.lines.len() { self.cy = self.lines.len() - 1; }
+             if self.cx > self.lines[self.cy].len() { self.cx = self.lines[self.cy].len(); }
+        }
+
+        match key {
+            // GLOBAL COMMANDS
+            Key::Ctrl('I') => { self.mode = Mode::Insert; self.msg = "INSERT MODE".to_string(); },
+            Key::Esc => { self.mode = Mode::View; self.msg = "VIEW MODE".to_string(); },
+            Key::Ctrl('S') => self.save_file(),
+            Key::Ctrl('A') => { self.save_file(); self.quit = true; },
+            Key::Ctrl('B') => { self.quit = true; }, // Discard and Exit
+            Key::Ctrl('Z') => self.undo(),
+            Key::Ctrl('Y') => self.redo(),
+            
+            // NAVIGATION (Always active)
+            Key::Up => if self.cy > 0 { self.cy -= 1 },
+            Key::Down => if self.cy < self.lines.len().saturating_sub(1) { self.cy += 1 },
+            Key::Left => if self.cx > 0 { self.cx -= 1 },
+            Key::Right => {
+                let len = if self.cy < self.lines.len() { self.lines[self.cy].len() } else { 0 };
+                if self.cx < len { self.cx += 1 }
+            },
+            
+            // EDITING (Only in Insert Mode)
+            Key::Char(c) if self.mode == Mode::Insert => self.insert_char(c),
+            Key::Enter if self.mode == Mode::Insert => self.insert_newline(),
+            Key::Backspace if self.mode == Mode::Insert => self.backspace(),
+            Key::Delete if self.mode == Mode::Insert => self.delete_char(),
+            
+            _ => {},
+        }
     }
     
-    fn read_byte(&self) -> u8 {
-        let mut buf = [0; 1];
-        io::stdin().read_exact(&mut buf).unwrap();
-        buf[0]
+    // --- Actions ---
+
+    fn snapshot(&mut self) {
+        // Remove redo history if we fork
+        if self.history_idx < self.history.len() - 1 {
+            self.history.truncate(self.history_idx + 1);
+        }
+        
+        self.history.push(HistoryState {
+            lines: self.lines.clone(),
+            cx: self.cx,
+            cy: self.cy,
+        });
+        self.history_idx += 1;
+        self.dirty = true;
+    }
+
+    fn undo(&mut self) {
+        if self.history_idx > 0 {
+            self.history_idx -= 1;
+            let state = &self.history[self.history_idx];
+            self.lines = state.lines.clone();
+            self.cx = state.cx;
+            self.cy = state.cy;
+            self.msg = "Undid change".to_string();
+            // Don't set dirty=true for undo itself, but technically we are modified from 'now'. 
+            // Just leaving dirty as is or setting it? 
+            // If we undo to initial state, dirty could be false? complex.
+        } else {
+            self.msg = "Already at oldest state".to_string();
+        }
+    }
+
+    fn redo(&mut self) {
+        if self.history_idx < self.history.len() - 1 {
+            self.history_idx += 1;
+            let state = &self.history[self.history_idx];
+            self.lines = state.lines.clone();
+            self.cx = state.cx;
+            self.cy = state.cy;
+            self.msg = "Redid change".to_string();
+        } else {
+            self.msg = "Already at newest state".to_string();
+        }
     }
     
     fn insert_char(&mut self, c: char) {
+        self.snapshot();
         if self.cy >= self.lines.len() { self.lines.push(String::new()); }
         let line = &mut self.lines[self.cy];
-        if self.cx >= line.len() {
-            line.push(c);
-        } else {
-            line.insert(self.cx, c);
-        }
+        if self.cx >= line.len() { line.push(c); } else { line.insert(self.cx, c); }
         self.cx += 1;
     }
-    
+
     fn insert_newline(&mut self) {
-         if self.cy >= self.lines.len() { self.lines.push(String::new()); return; }
-         let current = &mut self.lines[self.cy];
-         let rest = if self.cx < current.len() { current.split_off(self.cx) } else { String::new() };
-         self.lines.insert(self.cy + 1, rest);
-         self.cy += 1;
-         self.cx = 0;
+        self.snapshot();
+        if self.cy >= self.lines.len() { self.lines.push(String::new()); return; }
+        let current = &mut self.lines[self.cy];
+        let rest = if self.cx < current.len() { current.split_off(self.cx) } else { String::new() };
+        self.lines.insert(self.cy + 1, rest);
+        self.cy += 1;
+        self.cx = 0;
     }
     
     fn backspace(&mut self) {
+        self.snapshot();
         if self.cx > 0 {
              let line = &mut self.lines[self.cy];
              if self.cx <= line.len() { line.remove(self.cx - 1); self.cx -= 1; }
@@ -262,31 +311,13 @@ impl MiniVim {
     }
     
     fn delete_char(&mut self) {
+        self.snapshot();
         if self.cy < self.lines.len() {
             let line = &mut self.lines[self.cy];
             if self.cx < line.len() { line.remove(self.cx); }
         }
     }
-    
-    fn execute_command(&mut self) {
-        match self.command_buffer.as_str() {
-            "w" => self.save_file(),
-            "q" => {
-                if self.dirty {
-                    self.mode = Mode::ConfirmQuit;
-                    self.msg = String::new();
-                    return; 
-                }
-                self.quit = true; 
-            },
-            "q!" => self.quit = true,
-            "wq" => { self.save_file(); self.quit = true; },
-            _ => self.msg = format!("Unknown command: {}", self.command_buffer),
-        }
-        if !matches!(self.mode, Mode::ConfirmQuit) { self.mode = Mode::Normal; }
-        self.command_buffer.clear();
-    }
-    
+
     fn save_file(&mut self) {
         let content = self.lines.join("\n");
         if let Err(e) = fs::write(&self.filename, content) {
