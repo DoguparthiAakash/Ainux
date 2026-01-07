@@ -61,6 +61,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "LTE" => ops.push(0x94),
             "GTE" => ops.push(0x95),
             "DRAW_RECT" => ops.push(0x20),
+            "DRAW_IMG" => ops.push(0x21),
             "SLEEP" => ops.push(0x30),
             "PRINT_CHAR" => ops.push(0x51),
             "INPUT" => ops.push(0x52),
@@ -76,6 +77,15 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "POKE" => ops.push(0x41),
             "PEEK8" => ops.push(0x42),
             "POKE8" => ops.push(0x43),
+            
+            // Vision
+            "IMG_ALLOC" => ops.push(0xA0),
+            "IMG_FREE" => ops.push(0xA1),
+            "CAM_CAPTURE" => ops.push(0xA2),
+            "IMG_GET" => ops.push(0xA3),
+            "IMG_SET" => ops.push(0xA4),
+            "IMG_FILTER" => ops.push(0xA5),
+            
             "DEBUG" => ops.push(0x50), // DEBUG_PRINT
             "JMP" => {
                 ops.push(0x60);

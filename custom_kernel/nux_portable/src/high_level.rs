@@ -51,6 +51,7 @@ pub fn compile_to_asm_source(source: &str) -> Result<String, Vec<CompileError>> 
 pub fn compile_high_level(source: &str) -> Result<Vec<u8>, Vec<CompileError>> {
     match compile_to_asm_source(source) {
         Ok(asm) => {
+            println!("-- ASM START --\n{}\n-- ASM END --", asm);
             crate::compiler::compile(&asm).map_err(|e| vec![CompileError::new(e, Span { line: 0, col: 0 })])
         },
         Err(e) => Err(e),
@@ -88,7 +89,10 @@ pub struct Parser {
     errors: Vec<CompileError>,
     
     // Loop control stack: (start_label, end_label)
+    // Loop control stack: (start_label, end_label)
     loop_stack: Vec<(String, String)>, // (ContinueLabel, BreakLabel)
+    
+    has_main_func: bool,
 }
 
 impl Parser {
@@ -111,6 +115,7 @@ impl Parser {
             asm_output: String::new(),
             errors: Vec::new(),
             loop_stack: Vec::new(),
+            has_main_func: false,
         }
     }
 
@@ -330,6 +335,10 @@ impl Parser {
         self.emit("__start_execution:");
         self.asm_output.push_str(&main_body);
         
+        if self.has_main_func {
+            self.emit("CALL main");
+        }
+        
         // Final JMP loop or exit?
         self.emit("EXIT");
         
@@ -373,6 +382,11 @@ impl Parser {
             Token::Identifier(s) => s.clone(),
             _ => return self.error("Expected function name".to_string()),
         };
+        
+        if name == "main" && class_prefix.is_empty() {
+            self.has_main_func = true;
+        }
+        
         self.advance();
         
         if self.current_token != Token::LParen { return self.error("Expected '('".to_string()); }
@@ -510,62 +524,9 @@ impl Parser {
                             },
                            None => return self.error(format!("Undefined variable '{}'", part1)),
                        }
-                 } else if self.current_token == Token::LParen {
-                      self.advance(); // Skip (
-                      // Args
-                      if self.current_token != Token::RParen {
-                           loop {
-                               self.parse_expression(out)?;
-                               if self.current_token == Token::Comma { self.advance(); } else { break; }
-                           }
-                      }
-                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                      self.advance();
-                      if expect_semi {
-                           if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
-                           self.advance();
-                      } else if self.current_token == Token::SemiColon { self.advance(); }
-                      out.push_str(&format!("CALL {}\nPOP\n", part1)); 
-                 } else if self.current_token == Token::Dot {
-                      self.advance(); // Skip .
-                      let method = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected method name".to_string()) };
-                      self.advance();
-                      if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                      self.advance();
-                      if self.current_token != Token::RParen {
-                           loop {
-                               self.parse_expression(out)?;
-                               if self.current_token == Token::Comma { self.advance(); } else { break; }
-                           }
-                      }
-                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                      self.advance();
-                      
-                      if expect_semi {
-                          if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
-                          self.advance();
-                      } else if self.current_token == Token::SemiColon { self.advance(); }
-                      
-                      out.push_str(&format!("CALL {}_{}\nPOP\n", part1, method));
                  } else {
                        return self.error(format!("Unexpected token in statement (ID match): {:?} name={}", self.current_token, part1));
                  }
-             },
-             Token::Input => {
-                self.advance();
-                if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                self.advance();
-                if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                self.advance();
-                if expect_semi {
-                    if self.current_token != Token::SemiColon { 
-                        self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                        self.synchronize();
-                        return Ok(());
-                    }
-                    self.advance();
-                } else if self.current_token == Token::SemiColon { self.advance(); }
-                out.push_str("INPUT\n");
              },
               Token::Var => {
                   self.parse_var_decl(out, Type::Unknown)?;
@@ -589,6 +550,19 @@ impl Parser {
                      self.advance();
                  }
              },
+              
+              // Allow Intrinsics as Statements (Expression Statement)
+              Token::ImgAlloc | Token::ImgFree | Token::ImgDraw | Token::CamCapture | Token::ImgFilter => {
+                  self.parse_expression(out)?;
+                  // Pop the result if it's used as a statement to keep stack clean?
+                  // Intrinsic returns Int (Handle or Void/0). 
+                  // If we use it as statement `cam_capture(h);`, it pushes 0.
+                  // We should POP it.
+                  out.push_str("POP\n");
+                  if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                  self.advance();
+              },
+
              Token::If => {
                   self.advance(); // skip if
                   if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
@@ -1272,6 +1246,64 @@ impl Parser {
                 self.advance();
                 out.push_str("PEEK\n");
                 Ok(Type::Int) // Peek returns Int (raw)
+            },
+            
+            // Vision Intrinsics (Expression Context)
+            Token::ImgAlloc => {
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // Width
+                  if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // Height
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  out.push_str("IMG_ALLOC\n");
+                  Ok(Type::Int) // Returns Handle
+            },
+            Token::ImgFree => {
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // Handle
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  out.push_str("IMG_FREE\n"); // Free returns void (0) from VM
+                  Ok(Type::Int) 
+            },
+            Token::CamCapture => {
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // Handle
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  out.push_str("CAM_CAPTURE\n"); // Returns void from VM
+                  Ok(Type::Int)
+            },
+            Token::ImgDraw => {
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // Handle
+                  if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                  self.advance();
+                  out.push_str("DRAW_IMG\n"); // Returns void from VM
+                  Ok(Type::Int)
+            },
+            Token::ImgFilter => {
+                  self.advance();
+                   if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                   self.advance();
+                   self.parse_expression(out)?; // Handle
+                   if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+                   self.advance();
+                   self.parse_expression(out)?; // Filter ID
+                   if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                   self.advance();
+                   out.push_str("IMG_FILTER\n"); // Returns void from VM
+                   Ok(Type::Int)
             },
             _ => return self.error(format!("Unexpected token in expression: {:?}", self.current_token)),
         }
