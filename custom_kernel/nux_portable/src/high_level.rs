@@ -92,6 +92,10 @@ pub struct Parser {
     
     // Function State
     local_offset: i64, 
+    
+    // Advanced Types
+    // Name -> (Start, End) (Inclusive)
+    bound_types: HashMap<String, (i64, i64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +125,7 @@ impl Parser {
             errors: Vec::new(),
             loop_stack: Vec::new(),
             local_offset: 0,
+            bound_types: HashMap::new(),
         }
     }
 
@@ -398,8 +403,69 @@ impl Parser {
         Ok(())
     }
 
+    // --- Advanced Types ---
+    fn parse_bound_type_decl(&mut self) -> Result<(), CompileError> {
+        let name = match &self.current_token {
+            Token::Identifier(s) => s.clone(),
+            _ => return self.error("Expected type name after 'func var'".to_string()),
+        };
+        self.advance();
+        
+        if self.current_token != Token::LBrace { return self.error("Expected {".to_string()); }
+        self.advance();
+        
+        let mut start_val = i64::MIN;
+        let mut end_val = i64::MAX;
+        
+        // Parse Definitions: start = x; end = y;
+        while self.current_token != Token::RBrace && self.current_token != Token::EOF {
+            let key = match &self.current_token {
+                Token::Identifier(s) => s.clone(),
+                _ => return self.error("Expected 'start' or 'end'".to_string()),
+            };
+            self.advance();
+            
+            if self.current_token != Token::Eq { return self.error("Expected =".to_string()); }
+            self.advance();
+            
+            // For now, we only support constant expressions for bounds!
+            let val = match &self.current_token {
+                Token::Number(n) => *n,
+                Token::Minus => {
+                    self.advance();
+                    match &self.current_token {
+                         Token::Number(n) => -n,
+                         _ => return self.error("Expected number after -".to_string()),
+                    }
+                },
+                _ => return self.error("Expected constant number/char for bound".to_string()),
+            };
+            self.advance();
+            
+            if self.current_token == Token::SemiColon { self.advance(); }
+            
+            if key == "start" { start_val = val; }
+            else if key == "end" { end_val = val; }
+            else { return self.error(format!("Unknown property '{}'", key)); }
+        }
+        
+        if self.current_token != Token::RBrace { return self.error("Expected }".to_string()); }
+        self.advance();
+        
+        self.bound_types.insert(name, (start_val, end_val));
+        Ok(())
+    }
+
     fn parse_func(&mut self, out: &mut String, class_prefix: &str) -> Result<(), CompileError> {
         self.advance(); // consume 'func'
+        
+        if self.current_token == Token::Var {
+             self.advance(); // consume 'var'
+             // Parse Bound Type Declaration
+             // func var MyType { start=...; end=...; }
+             return self.parse_bound_type_decl();
+        }
+
         let name = match &self.current_token {
             Token::Identifier(s) => s.clone(),
             _ => return self.error("Expected function name".to_string()),
@@ -875,6 +941,86 @@ impl Parser {
                  if self.current_token == Token::RParen { self.advance(); }
                  if self.current_token == Token::SemiColon { self.advance(); }
              },
+             
+             // --- VISION STATEMENTS ---
+             Token::CamCapture => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for cam_capture".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_CAM_CAPTURE\n");
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgDraw => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_draw".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_DRAW\n");
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgFree => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_free".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_FREE\n");
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgFilter => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_filter".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Mode
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_FILTER\n");
+                 if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgSet => {
+                 self.advance();
+                 // img_set(handle, x, y, color)
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // handle
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // x
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // y
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // color
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 // OP_IMG_SET not defined in VM yet, but let's leave it out or implement strict?
+                 // User didn't ask for set. Let's just comment it out or emit panic?
+                 // Wait, I declared the token. I should likely emit nothing or error.
+                 // Actually I'll implement it as placeholder or error to avoid crash.
+                 return self.error("img_set not implemented yet".to_string());
+             },
+             Token::ImgGet => {
+                  // If used as statement: img_get(h,x,y); -> pop result
+                  self.advance();
+                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                  self.advance();
+                  self.parse_expression(out)?; // h
+                  self.advance(); // ,
+                  self.parse_expression(out)?; // x
+                  self.advance(); // ,
+                  self.parse_expression(out)?; // y
+                  self.advance(); // )
+                  out.push_str("OP_IMG_GET\nPOP\n"); // Discard result
+                  if self.current_token == Token::SemiColon { self.advance(); }
+             },
+
              _ => {
                   return self.error(format!("Unexpected statement token: {:?}", self.current_token));
              }
@@ -896,12 +1042,34 @@ impl Parser {
         };
         self.advance();
         
+        // Optional Type Constraint
+        let mut constraint = None;
+        if self.current_token == Token::Colon {
+             self.advance(); // skip :
+             match &self.current_token {
+                 Token::Identifier(s) => {
+                     if let Some(bounds) = self.bound_types.get(s) {
+                         constraint = Some(*bounds);
+                     }
+                 },
+                 _ => {}
+             }
+             self.advance(); // consume type
+        }
+        
         let mut final_type = expected_type.clone();
         
         // = value
         if self.current_token == Token::Eq {
              self.advance();
              let expr_type = self.parse_expression(out)?;
+             
+             // Inject Range Check
+             if let Some((min, max)) = constraint {
+                 out.push_str("OP_CHECK_RANGE\n");
+                 out.push_str(&format!("{}\n", min));
+                 out.push_str(&format!("{}\n", max));
+             }
              
              // Type Inference
              if final_type == Type::Unknown || final_type == Type::Void {
@@ -1253,6 +1421,55 @@ impl Parser {
                  out.push_str("INPUT\n");
                  Ok(Type::Int) // Input returns an integer
             },
+            
+            // --- VISION EXPRESSIONS ---
+            Token::ImgAlloc => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // width
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // height
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_ALLOC\n");
+                 Ok(Type::Int) // Returns Handle ID
+            },
+            Token::UpperCase => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // value
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_TO_UPPER\n");
+                 Ok(Type::Int)
+            },
+            Token::LowerCase => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // value
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_TO_LOWER\n");
+                 Ok(Type::Int)
+            },
+            Token::ImgGet => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // handle
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // x
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // y
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_GET\n");
+                 Ok(Type::Int) // Returns Pixel Value
+            },
+
             Token::Number(n) => {
                 let val = *n;
                 self.advance();

@@ -29,11 +29,23 @@ const OP_DRAW_RECT: u8 = 0x20;
 const OP_DRAW_IMG: u8 = 0x21; // Unused
 const OP_SLEEP: u8 = 0x30;
 
+// Vision/Camera Ops
+const OP_IMG_ALLOC: u8 = 0x31;
+const OP_IMG_FREE: u8 = 0x32;
+const OP_IMG_DRAW: u8 = 0x33;   // Draw to screen
+const OP_CAM_CAPTURE: u8 = 0x34; // Capture to buffer
+const OP_IMG_FILTER: u8 = 0x35;
+const OP_IMG_GET: u8 = 0x36; // Get pixel (r,g,b) packed or separate? Packed int.
+
 const OP_DEBUG_PRINT: u8 = 0x50;
 const OP_PRINT_CHAR: u8 = 0x51;
 const OP_INPUT: u8 = 0x52;
 const OP_PRINT_VAL: u8 = 0x53; // Prints i64
 const OP_PRINT_FLOAT: u8 = 0x54; // Prints f64
+const OP_TO_UPPER: u8 = 0x55;
+const OP_TO_LOWER: u8 = 0x56;
+
+const OP_CHECK_RANGE: u8 = 0x57;
 
 // Float Ops
 const OP_FADD: u8 = 0x1A;
@@ -129,6 +141,11 @@ struct SharedState {
     locks: std::collections::HashMap<u64, Arc<SpinLock<()>>>, 
     // Actually simpler: One Big Lock for critical sections if requested?
     // Or users provide lock ID.
+    
+    // Vision System State
+    // Handle ID -> (Width, Height, Data[ARGB])
+    images: std::collections::HashMap<i64, (i64, i64, Vec<u32>)>,
+    next_handle: i64,
 }
 
 #[derive(Clone)]
@@ -157,6 +174,8 @@ impl NuxVm {
             shared: Arc::new(SpinLock::new(SharedState {
                 memory: vec![0u8; 1024 * 64], // 64KB Shared Memory
                 locks: std::collections::HashMap::new(),
+                images: std::collections::HashMap::new(),
+                next_handle: 1,
             })),
         }
     }
@@ -302,6 +321,28 @@ impl NuxVm {
                     print!("{}", val);
                     io::stdout().flush().unwrap();
                 },
+                OP_TO_UPPER => {
+                    let val = self.pop();
+                    let c = (val as u8) as char;
+                    let upper = c.to_ascii_uppercase();
+                    self.push(upper as u8 as i64);
+                },
+                OP_TO_LOWER => {
+                    let val = self.pop();
+                    let c = (val as u8) as char;
+                    let lower = c.to_ascii_lowercase();
+                    self.push(lower as u8 as i64);
+                },
+                OP_CHECK_RANGE => {
+                    let min = self.read_i64_code();
+                    let max = self.read_i64_code();
+                    let val = self.pop();
+                    if val < min || val > max {
+                        println!("Runtime Error: Value {} out of range [{}, {}]", val, min, max);
+                        self.running = false;
+                    }
+                    self.push(val);
+                },
                 
                 OP_EQ => { let b = self.pop(); let a = self.pop(); self.push(if a == b {1} else {0}); },
                 OP_NEQ => { let b = self.pop(); let a = self.pop(); self.push(if a != b {1} else {0}); },
@@ -402,6 +443,155 @@ impl NuxVm {
                      }
                 },
                 
+                // --- VISION OPS ---
+                OP_IMG_ALLOC => {
+                     let h = self.pop();
+                     let w = self.pop();
+                     let shared = self.shared.clone();
+                     let handle = {
+                         let mut state = shared.lock();
+                         let id = state.next_handle;
+                         state.next_handle += 1;
+                         // Initialize with black (0)
+                         let size = (w * h) as usize;
+                         state.images.insert(id, (w, h, vec![0; size]));
+                         id
+                     };
+                     self.push(handle);
+                },
+                OP_IMG_FREE => {
+                     let handle = self.pop();
+                     let shared = self.shared.clone();
+                     shared.lock().images.remove(&handle);
+                },
+                OP_CAM_CAPTURE => {
+                     let handle = self.pop();
+                     let shared = self.shared.clone();
+                     let mut state = shared.lock();
+                     if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                         let bridge_path = "/tmp/nux_cam.bin";
+                         let mut success = false;
+                         
+                         // Try to read from bridge
+                         if let Ok(mut file) = std::fs::File::open(bridge_path) {
+                             use std::io::Read;
+                             // Just read the whole thing into a buffer
+                             let mut buffer = Vec::new();
+                             if file.read_to_end(&mut buffer).is_ok() && buffer.len() >= 12 {
+                                 // Parse Header
+                                 let file_w = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) as i64;
+                                 let file_h = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) as i64;
+                                 let _ctr = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
+                                 
+                                 let offset = 12;
+                                 let expected_len = (file_w * file_h * 4) as usize;
+                                 
+                                 if buffer.len() >= offset + expected_len {
+                                     // Resample / Copy logic
+                                     // Simplest: If dimensions match, direct copy.
+                                     // If not, simplistic scale or just crop/center or just fail over to noise
+                                     // For this demo, we assume bridge outputs what we want OR we iterate UV
+                                     
+                                     // Let's do nearest neighbor sampling from file_buffer to state image
+                                     for y in 0..*h {
+                                         for x in 0..*w {
+                                             // Map (x,y) in target to (src_x, src_y) in source
+                                             let src_x = (x * file_w) / *w;
+                                             let src_y = (y * file_h) / *h;
+                                             
+                                             if src_x < file_w && src_y < file_h {
+                                                 let src_idx = offset + ((src_y * file_w + src_x) as usize) * 4;
+                                                 let px_bytes = &buffer[src_idx..src_idx+4];
+                                                 let val = u32::from_le_bytes(px_bytes.try_into().unwrap());
+                                                 
+                                                 data[(y * *w + x) as usize] = val;
+                                             }
+                                         }
+                                     }
+                                     success = true;
+                                 }
+                             }
+                         }
+
+                         if !success {
+                             // Fallback: Simulate Camera (Gradient + Noise)
+                             let mut rng = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100) as u32;
+                             for y in 0..*h {
+                                 for x in 0..*w {
+                                     let idx = (y * *w + x) as usize;
+                                     let r = (x * 255 / *w) as u32;
+                                     let g = (y * 255 / *h) as u32;
+                                     let b = rng * 2; 
+                                     data[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                                     rng = (rng.wrapping_mul(1103515245).wrapping_add(12345)) % 256;
+                                 }
+                             }
+                         }
+                     }
+                },
+                OP_IMG_DRAW => {
+                    let handle = self.pop();
+                    let shared = self.shared.clone();
+                    let state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get(&handle) {
+                        println!("Displaying Image ({}x{}):", w, h);
+                        for y in 0..*h {
+                            for x in 0..*w {
+                                let idx = (y * *w + x) as usize;
+                                let px = data[idx];
+                                let r = (px >> 16) & 0xFF;
+                                let g = (px >> 8) & 0xFF;
+                                let b = px & 0xFF;
+                                // Simple ASCII approximation
+                                let brightness = (r + g + b) / 3;
+                                let char = if brightness > 200 { '#' } 
+                                           else if brightness > 100 { '+' } 
+                                           else if brightness > 50 { '.' } 
+                                           else { ' ' };
+                                print!("{}", char);
+                            }
+                            println!("");
+                        }
+                    } else {
+                        println!("Runtime Error: Invalid Image Handle {}", handle);
+                    }
+                },
+                OP_IMG_FILTER => {
+                    let mode = self.pop();
+                    let handle = self.pop();
+                    let shared = self.shared.clone();
+                    let mut state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                         for i in 0..data.len() {
+                             let px = data[i];
+                             let r = (px >> 16) & 0xFF;
+                             let g = (px >> 8) & 0xFF;
+                             let b = px & 0xFF;
+                             if mode == 1 { 
+                                 // Grayscale / Threshold
+                                 let avg = (r + g + b) / 3;
+                                 let v = if avg > 128 { 255 } else { 0 };
+                                 data[i] = 0xFF000000 | (v << 16) | (v << 8) | v;
+                             }
+                         }
+                    }
+                },
+                OP_IMG_GET => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    let handle = self.pop();
+                    let shared = self.shared.clone();
+                    let val = {
+                        let state = shared.lock();
+                        if let Some((w, h, data)) = state.images.get(&handle) {
+                            if x >= 0 && x < *w && y >= 0 && y < *h {
+                                data[(y * *w + x) as usize] as i64
+                            } else { 0 }
+                        } else { 0 }
+                    };
+                    self.push(val);
+                },
+
                 // --- THREADING_OPS ---
                 OP_SPAWN => {
                     let target = self.read_i64_code(); // Function address

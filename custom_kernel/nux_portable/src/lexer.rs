@@ -31,7 +31,8 @@ pub enum Token {
     KwInt, KwFloat, KwByte, KwShort, KwLong, KwChar, KwString,
     
     // Vision
-    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter,
+    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter, ImgGet, ImgSet,
+    UpperCase, LowerCase,
     
     LParen,
     RParen,
@@ -52,6 +53,7 @@ pub enum Token {
     And,
     Or,
     SemiColon,
+    Colon,
     Dot,
     Comma,
     Plus,
@@ -118,6 +120,7 @@ impl Lexer {
             '{' => { self.advance_pos(); (Token::LBrace, start_span) },
             '}' => { self.advance_pos(); (Token::RBrace, start_span) },
             ';' => { self.advance_pos(); (Token::SemiColon, start_span) },
+            ':' => { self.advance_pos(); (Token::Colon, start_span) },
             '.' => { self.advance_pos(); (Token::Dot, start_span) },
             ',' => { self.advance_pos(); (Token::Comma, start_span) },
             '/' => {
@@ -170,6 +173,22 @@ impl Lexer {
             },
             '=' | '!' | '<' | '>' | '&' | '|' => {
                  self.lex_operator(start_span)
+            },
+            '\'' => {
+                 self.advance_pos(); // Skip open quote
+                 if self.pos < self.input.len() {
+                     let c = self.input[self.pos];
+                     self.advance_pos();
+                     if self.pos < self.input.len() && self.input[self.pos] == '\'' {
+                         self.advance_pos(); // Skip closing quote
+                         (Token::Number(c as i64), start_span)
+                     } else {
+                          // Unterminated or empty
+                          (Token::Identifier(format!("Invalid char literal")), start_span)
+                     }
+                 } else {
+                     (Token::Identifier(format!("Unexpected EOF in char")), start_span)
+                 }
             },
             '"' => self.lex_string(start_span),
             _ if c.is_digit(10) => self.lex_number(start_span),
@@ -269,6 +288,10 @@ impl Lexer {
             "img_draw" => Token::ImgDraw,
             "cam_capture" => Token::CamCapture,
             "img_filter" => Token::ImgFilter,
+            "img_get" => Token::ImgGet,
+            "img_set" => Token::ImgSet,
+            "UpperCase" => Token::UpperCase,
+            "LowerCase" => Token::LowerCase,
             
             _ => Token::Identifier(text),
         };

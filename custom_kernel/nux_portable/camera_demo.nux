@@ -1,40 +1,40 @@
-// Camera / Vision Demo
+# Camera / Vision Demo
 
 func main() {
     println("--- Nux Vision System ---");
     println("Initializing Camera Simulation...");
     
-    // 1. Allocate Image Buffer (Type Int because handles are Ints)
-    int width = 32;
-    int height = 16;
+    # 1. Allocate Image Buffer (Type Int because handles are Ints)
+    var width = 32;
+    var height = 16;
     println("Allocating buffer (32x16)...");
-    int handle = img_alloc(width, height);
+    var handle = img_alloc(width, height);
     
     print("Handle ID: ");
     println(handle);
     
-    // 2. Capture Frame (Simulated)
+    # 2. Capture Frame (Simulated)
     println("Capturing Frame...");
     cam_capture(handle);
     
-    // 3. Display Raw
+    # 3. Display Raw
     println("--- Raw Frame ---");
     img_draw(handle);
     
-    // 4. Transform (Grayscale/Threshold)
+    # 4. Transform (Grayscale/Threshold)
     println("Applying Threshold Filter (ID: 1)...");
     img_filter(handle, 1);
     
-    // 5. Display Processed
+    # 5. Display Processed
     println("--- Processed Frame ---");
     img_draw(handle);
     
-    // 6. Loop Loop (Video Mode)
+    # 6. Loop Loop (Video Mode)
     println("Entering Video Loop (Ctrl+C to stop)...");
     while (1) {
         cam_capture(handle);
         img_draw(handle);
-        // img_filter(handle, 1); // Optional: Toggle filter?
+        # img_filter(handle, 1); # Optional: Toggle filter?
     }
     
     img_free(handle);
