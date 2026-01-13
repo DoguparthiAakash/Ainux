@@ -4,6 +4,7 @@ mod lexer;
 mod high_level;
 mod editor;
 mod transpiler;
+mod platform;
 
 use std::env;
 use std::fs;
@@ -86,7 +87,15 @@ fn main() {
                 match fs::read(path) {
                     Ok(bytes) => {
                         let mut machine = vm::NuxVm::new(bytes);
-                        machine.run();
+                        
+                        use platform::Platform;
+                        let mut platform: Box<dyn Platform> = if cfg!(feature = "gui") {
+                             Box::new(platform::desktop::DesktopPlatform::new())
+                        } else {
+                             Box::new(platform::headless::HeadlessPlatform::new())
+                        };
+                        
+                        machine.run(Some(platform.as_mut()));
                     },
                     Err(e) => println!("Error reading binary file: {}", e),
                 }
@@ -187,7 +196,15 @@ fn main() {
             // 5. Run
             println!("Running...");
             let mut machine = vm::NuxVm::new(compiled_bytes);
-            machine.run();
+            
+            use platform::Platform;
+            let mut platform: Box<dyn Platform> = if cfg!(feature = "gui") {
+                 Box::new(platform::desktop::DesktopPlatform::new())
+            } else {
+                 Box::new(platform::headless::HeadlessPlatform::new())
+            };
+            
+            machine.run(Some(platform.as_mut()));
         },
         "edit" => {
              if args.len() < 3 {

@@ -259,6 +259,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
              
              crate::process::scheduler::clone_task(a1, a2) as u64
         },
+        20 => crate::sem::sys_agent_op(a1, a2, a3),
         _ => 0
     }
 }

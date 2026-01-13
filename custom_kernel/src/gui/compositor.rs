@@ -41,18 +41,17 @@ impl Compositor {
         }
         let bb = &mut *bb_lock;
 
-        // 1. Clear / Desktop Background (Draw to BB)
-        let desk_col = Color { r: 0, g: 128, b: 128, a: 255 }.to_u32();
-        for pixel in bb.iter_mut() { *pixel = desk_col; }
+        // 1. Draw Desktop (Wallpaper)
+        crate::gui::desktop::draw_desktop(bb, w, h);
         
-        // 2. Taskbar
-        // Graphics::draw_rect_to_buffer(bb, w, 0, h - 40, w, 40, 0xFFC0C0C0);
-        
-        // 3. Draw Windows -> BB
+        // 2. Draw Windows -> BB
         let wins = WINDOWS.lock();
         for win in wins.iter() {
             win.draw(bb, w);
         }
+        
+        // 3. Draw Desktop Overlay (Dock, Top Bar)
+        crate::gui::desktop::draw_overlay(bb, w, h);
         
         // 4. Cursor -> BB
         let (mx, my) = crate::drivers::mouse::get_position();
@@ -75,5 +74,9 @@ impl Compositor {
                  }
              }
         }
+
+        
+        // 6. Draw Text Overlay (Direct to VRAM)
+        crate::gui::desktop::draw_text_overlay();
     }
 }

@@ -398,34 +398,40 @@ pub fn kill_task(pid: usize) -> isize {
 }
 
 pub fn print_task_list() {
-    let tasks = TASKS.lock();
-    crate::drivers::video::put_str("PID  State    CPU Ticks\n");
-    for i in 0..MAX_TASKS {
-        if let Some(task) = &tasks[i] {
-            let state_str = match task.state {
-                TaskState::Running => "Running",
-                TaskState::Ready => "Ready  ",
-                TaskState::Waiting => "Waiting",
-                TaskState::Free => "Free   ",
-                TaskState::Zombie => "Zombie ",
-            };
-            
-            // PID
-            crate::drivers::video::put_char((b'0' + task.id as u8) as char); 
-            crate::drivers::video::put_str("    ");
-            crate::drivers::video::put_str(state_str);
-            crate::drivers::video::put_str("  ");
-            
-            // CPU Time (Very basic for now)
-            // Ideally use format macro
-            let ticks = task.cpu_time_ticks;
-            if ticks > 0 {
-                // Should print ticks, but for now just "Active" marker or a char
-                crate::drivers::video::put_char(if ticks > 100 { '+' } else { '.' });
+    // Critical Section: Disable Interrupts to prevent deadlock with Tick
+    let flags = crate::cpu::control::save_cpu_flags();
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+
+    {
+        let tasks = TASKS.lock();
+        crate::drivers::video::put_str("PID  State    CPU Ticks\n");
+        for i in 0..MAX_TASKS {
+            if let Some(task) = &tasks[i] {
+                let state_str = match task.state {
+                    TaskState::Running => "Running",
+                    TaskState::Ready => "Ready  ",
+                    TaskState::Waiting => "Waiting",
+                    TaskState::Free => "Free   ",
+                    TaskState::Zombie => "Zombie ",
+                };
+                
+                // PID
+                crate::drivers::video::put_char((b'0' + task.id as u8) as char); 
+                crate::drivers::video::put_str("    ");
+                crate::drivers::video::put_str(state_str);
+                crate::drivers::video::put_str("  ");
+                
+                // CPU Time (Very basic for now)
+                let ticks = task.cpu_time_ticks;
+                if ticks > 0 {
+                    crate::drivers::video::put_char(if ticks > 100 { '+' } else { '.' });
+                }
+                crate::drivers::video::put_char('\n');
             }
-            crate::drivers::video::put_char('\n');
         }
-    }
+    } // Unlock matches here
+
+    unsafe { crate::cpu::control::restore_cpu_flags(flags); }
 }
 
 pub fn block_current_task() {

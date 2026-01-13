@@ -31,6 +31,7 @@ pub struct AnuxVM {
     pub memory: Vec<u8>,
     pub ip: usize, // Instruction Pointer
     pub running: bool,
+    pub images: Vec<Option<(usize, usize, Vec<u32>)>>, // (W, H, Pixels)
 }
 
 impl AnuxVM {
@@ -40,6 +41,7 @@ impl AnuxVM {
             memory: program, // Code is memory for now (Harvard Arch later?)
             ip: 64, // Skip Header
             running: true,
+            images: Vec::new(),
         }
     }
 
@@ -257,6 +259,146 @@ impl AnuxVM {
             0xFF => { // EXIT
                 self.running = false;
             },
+            0x31 => { // OP_IMG_ALLOC (w, h) -> handle
+                if let (Some(h), Some(w)) = (self.stack.pop(), self.stack.pop()) {
+                     let width = w as usize;
+                     let height = h as usize;
+                     // Alloc buffer (filled with transparent/black 0)
+                     let pixels = alloc::vec![0xFF000000; width * height]; // Black, Alpha 255
+                     // Find free slot
+                     let mut handle = -1;
+                     for (i, slot) in self.images.iter().enumerate() {
+                         if slot.is_none() {
+                             handle = i as i64;
+                             break;
+                         }
+                     }
+                     if handle == -1 {
+                         handle = self.images.len() as i64;
+                         self.images.push(None); // Placeholder
+                     }
+                     
+                     self.images[handle as usize] = Some((width, height, pixels));
+                     self.stack.push(handle);
+                }
+            },
+            0x32 => { // OP_IMG_FREE (handle)
+                if let Some(handle) = self.stack.pop() {
+                    if handle >= 0 && (handle as usize) < self.images.len() {
+                        self.images[handle as usize] = None;
+                    }
+                }
+            },
+            0x33 => { // OP_IMG_DRAW (x, y, handle)
+                 if let (Some(handle), Some(y), Some(x)) = (self.stack.pop(), self.stack.pop(), self.stack.pop()) {
+                     if handle >= 0 && (handle as usize) < self.images.len() {
+                         if let Some((w, h, ref pixels)) = self.images[handle as usize] {
+                             // Draw to screen
+                             let px = x as usize;
+                             let py = y as usize;
+                             for r in 0..h {
+                                 for c in 0..w {
+                                     let color_val = pixels[r * w + c];
+                                     // Graphics::draw_pixel(px + c, py + r, color_val);
+                                     // Using fill_rect for single pixel is slow but safe if draw_pixel not exposed
+                                     Graphics::fill_rect(px + c, py + r, 1, 1, Color::from_u32(color_val));
+                                 }
+                             }
+                         }
+                     }
+                 }
+            },
+            0x34 => { // OP_CAM_CAPTURE (cam_id) -> handle
+                 // Mock Implementation
+                 if let Some(_cam_id) = self.stack.pop() {
+                      let width = 64;
+                      let height = 64;
+                      let mut pixels = alloc::vec![0; width*height];
+                      // Generate pattern (Checkered)
+                      for y in 0..height {
+                          for x in 0..width {
+                              let col = if (x / 8 + y / 8) % 2 == 0 { 0xFFFFFFFF } else { 0xFF000000 };
+                              pixels[y*width + x] = col;
+                          }
+                      }
+                      
+                      let mut handle = -1;
+                      for (i, slot) in self.images.iter().enumerate() {
+                          if slot.is_none() { handle = i as i64; break; }
+                      }
+                      if handle == -1 {
+                          handle = self.images.len() as i64;
+                          self.images.push(None);
+                      }
+                      self.images[handle as usize] = Some((width, height, pixels));
+                      self.stack.push(handle);
+                 }
+            },
+            0x37 => { // OP_IMG_RESIZE (handle, new_w, new_h) -> new_handle
+                 if let (Some(nh), Some(nw), Some(handle)) = (self.stack.pop(), self.stack.pop(), self.stack.pop()) {
+                     let new_w = nw as usize;
+                     let new_h = nh as usize;
+                     if handle >= 0 && (handle as usize) < self.images.len() {
+                         if let Some((old_w, old_h, ref old_pixels)) = self.images[handle as usize] {
+                             let mut new_pixels = alloc::vec![0; new_w * new_h];
+                             // Nearest Neighbor
+                             for y in 0..new_h {
+                                 for x in 0..new_w {
+                                     let src_x = (x * old_w) / new_w;
+                                     let src_y = (y * old_h) / new_h;
+                                     new_pixels[y * new_w + x] = old_pixels[src_y * old_w + src_x];
+                                 }
+                             }
+                             
+                             // Store new image
+                             let mut res_handle = -1;
+                             for (i, slot) in self.images.iter().enumerate() {
+                                 if slot.is_none() { res_handle = i as i64; break; }
+                             }
+                             if res_handle == -1 {
+                                 res_handle = self.images.len() as i64;
+                                 self.images.push(None);
+                             }
+                             self.images[res_handle as usize] = Some((new_w, new_h, new_pixels));
+                             self.stack.push(res_handle);
+                         } else { self.stack.push(-1); }
+                     } else { self.stack.push(-1); }
+                 }
+            },
+            0x39 => { // OP_IMG_GRAYSCALE (handle) -> new_handle
+                 if let Some(handle) = self.stack.pop() {
+                     if handle >= 0 && (handle as usize) < self.images.len() {
+                         if let Some((w, h, ref pixels)) = self.images[handle as usize] {
+                             let mut new_pixels = alloc::vec![0; w * h];
+                             for i in 0..pixels.len() {
+                                 let p = pixels[i];
+                                 let r = ((p >> 16) & 0xFF) as u32;
+                                 let g = ((p >> 8) & 0xFF) as u32;
+                                 let b = (p & 0xFF) as u32;
+                                 // Luminosity: 0.21 R + 0.72 G + 0.07 B
+                                 let gray = (r * 21 + g * 72 + b * 7) / 100;
+                                 new_pixels[i] = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+                             }
+                             
+                             let mut res_handle = -1;
+                             for (i, slot) in self.images.iter().enumerate() {
+                                 if slot.is_none() { res_handle = i as i64; break; }
+                             }
+                             if res_handle == -1 {
+                                 res_handle = self.images.len() as i64;
+                                 self.images.push(None);
+                             }
+                             self.images[res_handle as usize] = Some((w, h, new_pixels));
+                             self.stack.push(res_handle);
+                         } else { self.stack.push(-1); }
+                     } else { self.stack.push(-1); } 
+                 }
+            },
+            
+            // Boolean/Misc Opcodes
+            0x55 => { // TO_UPPER
+            },
+             
             _ => {
                 // NOP or Invalid
             }

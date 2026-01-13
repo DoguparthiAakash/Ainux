@@ -74,8 +74,15 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "OP_IMG_FILTER" => ops.push(0x35),
             "OP_IMG_GET" => ops.push(0x36),
             
+            "OP_IMG_RESIZE" => ops.push(0x37),
+            "OP_IMG_CROP" => ops.push(0x38),
+            "OP_IMG_GRAYSCALE" => ops.push(0x39),
+            
             "OP_TO_UPPER" => ops.push(0x55),
             "OP_TO_LOWER" => ops.push(0x56),
+            
+            "OP_SYS_PLATFORM" => ops.push(0x58),
+            "OP_CAM_COUNT" => ops.push(0x59),
             
             "OP_CHECK_RANGE" => {
                 ops.push(0x57);

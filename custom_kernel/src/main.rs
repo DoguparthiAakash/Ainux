@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+#[macro_use]
 extern crate alloc;
 
 use core::panic::PanicInfo;
@@ -18,7 +19,9 @@ pub mod engine;
 pub mod debug;
 pub mod security;
 pub mod ipc;
-pub mod nux;
+pub mod nux; // Enabled (compiler only)
+pub mod sem;
+
 
 // Request a framebuffer from Limine
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
@@ -165,6 +168,7 @@ pub extern "C" fn _start() -> ! {
     
     // Initialize Scheduler
     process::scheduler::init();
+    crate::sem::init(); // Initialize Semantic Core
     let _ = write!(serial, "Scheduler Initialized.\n");
 
     // Enable Interrupts
@@ -340,15 +344,10 @@ pub extern "C" fn _start() -> ! {
     
     // Fallback if empty (e.g. VFS fail)
     if anux_code.is_empty() {
-         crate::drivers::video::put_str("Anux: Using Fallback Bytecode.\n");
-         // ... (simple rect) ...
-         anux_code.push(0x01); anux_code.extend_from_slice(&0u64.to_le_bytes()); // X=0
-         anux_code.push(0x01); anux_code.extend_from_slice(&0u64.to_le_bytes()); // Y=0
-         anux_code.push(0x01); anux_code.extend_from_slice(&100u64.to_le_bytes()); // W=100
-         anux_code.push(0x01); anux_code.extend_from_slice(&100u64.to_le_bytes()); // H=100
-         anux_code.push(0x01); anux_code.extend_from_slice(&0xFFFF0000u64.to_le_bytes()); // Color (Red)
-         anux_code.push(0x20); // DRAW
-         anux_code.push(0xFF); // EXIT
+         crate::drivers::video::put_str("Anux: Using Built-in Vision Demo.\n");
+         // Embed compiled bytecode
+         let demo_bin = include_bytes!("vision_demo.bin");
+         anux_code.extend_from_slice(demo_bin);
     }
 
     crate::drivers::video::put_str("Starting Anux Engine...\n");

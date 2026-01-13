@@ -22,6 +22,18 @@ pub enum Token {
     Poke,   // NEW: Memory Access
     Break,  // NEW: Loop Control
     Continue, // NEW: Loop Control
+    
+    // Vision
+    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter, ImgGet, ImgSet,
+    ImgResize, ImgCrop, ImgGrayscale,
+    UpperCase, LowerCase,
+    
+    // Boolean
+    True, False, Not,
+    
+    // Misc
+    Colon, // For types
+    
     Identifier(String),
     String(String),
     Float(f64), // NEW: Float Literal
@@ -114,6 +126,7 @@ impl Lexer {
             '{' => { self.advance_pos(); (Token::LBrace, start_span) },
             '}' => { self.advance_pos(); (Token::RBrace, start_span) },
             ';' => { self.advance_pos(); (Token::SemiColon, start_span) },
+            ':' => { self.advance_pos(); (Token::Colon, start_span) },
             '.' => { self.advance_pos(); (Token::Dot, start_span) },
             ',' => { self.advance_pos(); (Token::Comma, start_span) },
             '/' => {
@@ -258,6 +271,26 @@ impl Lexer {
             "long" => Token::KwLong,
             "char" => Token::KwChar,
             "string" => Token::KwString,
+            
+            "img_alloc" => Token::ImgAlloc,
+            "img_free" => Token::ImgFree,
+            "img_draw" => Token::ImgDraw,
+            "cam_capture" => Token::CamCapture,
+            "img_filter" => Token::ImgFilter,
+            "img_get" => Token::ImgGet,
+            "img_set" => Token::ImgSet,
+            "img_resize" => Token::ImgResize,
+            "img_crop" => Token::ImgCrop,
+            "img_grayscale" => Token::ImgGrayscale,
+            
+            "UpperCase" => Token::UpperCase,
+            "LowerCase" => Token::LowerCase,
+            
+            "true" => Token::True,
+            "false" => Token::False,
+            "not" => Token::Not,
+            "and" => Token::And,
+            "or" => Token::Or,
             
             _ => Token::Identifier(text),
         };

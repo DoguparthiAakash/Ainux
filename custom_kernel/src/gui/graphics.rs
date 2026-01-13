@@ -43,11 +43,41 @@ impl Color {
 pub struct Graphics;
 
 impl Graphics {
+    // Alpha Blending Helper
+    #[inline(always)]
+    pub fn blend_colors(bg: u32, fg: u32) -> u32 {
+        let alpha = (fg >> 24) & 0xFF;
+        if alpha == 255 { return fg; }
+        if alpha == 0 { return bg; }
+
+        let inv_alpha = 255 - alpha;
+
+        let r_bg = (bg >> 16) & 0xFF;
+        let g_bg = (bg >> 8) & 0xFF;
+        let b_bg = bg & 0xFF;
+
+        let r_fg = (fg >> 16) & 0xFF;
+        let g_fg = (fg >> 8) & 0xFF;
+        let b_fg = fg & 0xFF;
+
+        let r = (r_fg * alpha + r_bg * inv_alpha) / 255;
+        let g = (g_fg * alpha + g_bg * inv_alpha) / 255;
+        let b = (b_fg * alpha + b_bg * inv_alpha) / 255;
+
+        (0xFF << 24) | (r << 16) | (g << 8) | b
+    }
+
     // Generic plot to a slice (for backbuffer)
     #[inline(always)]
     pub fn plot_pixel_unchecked(buffer: &mut [u32], width: usize, x: usize, y: usize, color: u32) {
         if x < width && y * width + x < buffer.len() {
-            buffer[y * width + x] = color;
+            let idx = y * width + x;
+            // Check for alpha
+            if (color >> 24) != 0xFF {
+                buffer[idx] = Self::blend_colors(buffer[idx], color);
+            } else {
+                buffer[idx] = color;
+            }
         }
     }
 

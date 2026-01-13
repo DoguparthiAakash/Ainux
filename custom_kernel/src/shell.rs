@@ -42,36 +42,54 @@ fn resolve_path(path: &str) -> String {
 
 static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+fn redraw_line(buffer: &str, cursor_pos: usize, clear_trailing: bool) {
+    let rest = &buffer[cursor_pos..];
+    crate::drivers::video::put_str(rest);
+    let mut chars_to_move_back = rest.len();
+    if clear_trailing {
+        crate::drivers::video::put_char(' '); // Clear potential trailing char
+        chars_to_move_back += 1;
+    }
+    
+    // Move cursor back to `cursor_pos`
+    for _ in 0..chars_to_move_back {
+        crate::drivers::video::put_str("\x08");
+    }
+}
+
+fn restore_cursor(buffer: &str, cursor_pos: usize) {
+    if cursor_pos < buffer.len() {
+        let c = buffer.chars().nth(cursor_pos).unwrap();
+        crate::drivers::video::put_char(c);
+        crate::drivers::video::put_str("\x08"); // Step back visual cursor
+    } else {
+        crate::drivers::video::draw_cursor(0x00000000);
+    }
+}
+
 fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, history_index: &mut usize) {
     if c == '\n' {
         video::put_char('\n');
     } else if c == '\x08' || c == '\x7F' { // Backspace or Delete
          if *cursor_pos > 0 && input_buffer.len() > 0 {
-             // Remove char at cursor_pos - 1
              let remove_idx = *cursor_pos - 1;
              input_buffer.remove(remove_idx);
              *cursor_pos -= 1;
              
              // Redraw Line
-             // Move cursor back one
-             video::put_str("\x08"); 
-             // Print rest of string from cursor + spaces to clear
-             let rest = &input_buffer[*cursor_pos..];
-             video::put_str(rest);
-             video::put_char(' ');
-             // Move cursor back to correct position
-             for _ in 0..(rest.len() + 1) {
-                 video::put_str("\x08");
-             }
+             video::put_str("\x08"); // Move back visual cursor
+             redraw_line(input_buffer, *cursor_pos, true);
          }
     } else if c == '\u{2190}' { // Left Arrow
         if *cursor_pos > 0 {
             *cursor_pos -= 1;
+            // Use backspace to visually move left without erasing (video.rs updated)
             video::put_str("\x08");
         }
     } else if c == '\u{2192}' { // Right Arrow
         if *cursor_pos < input_buffer.len() {
             let ch = input_buffer.chars().nth(*cursor_pos).unwrap();
+            // Just re-printing the char advances the cursor
             video::put_char(ch);
             *cursor_pos += 1;
         }
@@ -82,17 +100,18 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
                  *history_index -= 1;
              }
              
-             // Clear current line on screen
-             // Move cursor to start
+             // Clear visual line
+             // 1. Move to start
              while *cursor_pos > 0 {
                  video::put_str("\x08");
                  *cursor_pos -= 1;
              }
-             // Clear text
+             // 2. Erase content
              for _ in 0..input_buffer.len() { video::put_char(' '); }
-             // Move cursor back
+             // 3. Move back to start
              for _ in 0..input_buffer.len() { video::put_str("\x08"); }
              
+             // Load history
              *input_buffer = hist[*history_index].clone();
              *cursor_pos = input_buffer.len();
              video::put_str(input_buffer);
@@ -105,7 +124,7 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
                  *history_index += 1;
              }
              
-             // Clear line
+             // Clear visual line
              while *cursor_pos > 0 { video::put_str("\x08"); *cursor_pos -= 1; }
              for _ in 0..input_buffer.len() { video::put_char(' '); }
              for _ in 0..input_buffer.len() { video::put_str("\x08"); }
@@ -120,20 +139,21 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
         }
     } else {
          // Printable char
-         if input_buffer.len() < 128 {
-             if *cursor_pos == input_buffer.len() {
-                 input_buffer.push(c);
-                 video::put_char(c);
-                 *cursor_pos += 1;
-             } else {
-                 input_buffer.insert(*cursor_pos, c);
-                 // Redraw from cursor
-                 let rest = &input_buffer[*cursor_pos..];
-                 video::put_str(rest);
-                 *cursor_pos += 1;
-                 // Move visual cursor back to position
-                 for _ in 0..rest.len() {
-                     video::put_str("\x08");
+         // Filter control chars to avoid mess
+         if c >= ' ' && c != '\x7F' { 
+             if input_buffer.len() < 128 {
+                 if *cursor_pos == input_buffer.len() {
+                     input_buffer.push(c);
+                     video::put_char(c);
+                     *cursor_pos += 1;
+                 } else {
+                     // Insert in middle
+                     input_buffer.insert(*cursor_pos, c);
+                     video::put_char(c); // Print the new char
+                     *cursor_pos += 1;
+                     
+                     // Print rest (shifted right)
+                     redraw_line(input_buffer, *cursor_pos, false);
                  }
              }
          }
@@ -164,19 +184,53 @@ pub fn run() {
         let mut history_index = HISTORY.lock().len();
         
         // Read Line Loop
+        let mut last_blink = 0;
+        let mut cursor_visible = false;
+        
         loop {
+            let current_ticks = crate::process::scheduler::get_ticks();
+            if current_ticks > last_blink + 50 { // Blink every 0.5s approx
+                 last_blink = current_ticks;
+                 cursor_visible = !cursor_visible;
+                 if cursor_visible {
+                     crate::drivers::video::draw_cursor(0xFFFFFFFF);
+                 } else {
+                     restore_cursor(&input_buffer, cursor_pos); // Erase
+                 }
+            }
+
             // Check PS/2 Keyboard
             if let Some(c) = keyboard::pop_char() {
+                // Ensure cursor is erased before moving/printing
+                 if cursor_visible { 
+                     restore_cursor(&input_buffer, cursor_pos); 
+                     cursor_visible = false; // Reset blink phase
+                     last_blink = current_ticks; // Reset timer so it stays visible for a bit
+                 }
+
                 process_char(c, &mut input_buffer, &mut cursor_pos, &mut history_index);
                 if c == '\n' { break; }
+                
+                // Force cursor visible after typing
+                crate::drivers::video::draw_cursor(0xFFFFFFFF);
+                cursor_visible = true;
             }
             
-            // Check Serial (Polled)
+            // Check Serial
             if crate::drivers::serial::SERIAL.lock().data_ready() {
+                 if cursor_visible { 
+                     restore_cursor(&input_buffer, cursor_pos); 
+                     cursor_visible = false; 
+                 }
+
                 let c = crate::drivers::serial::SERIAL.lock().read_byte() as char;
                 let c = if c == '\r' { '\n' } else { c };
                 process_char(c, &mut input_buffer, &mut cursor_pos, &mut history_index);
                 if c == '\n' { break; }
+                
+                crate::drivers::video::draw_cursor(0xFFFFFFFF);
+                cursor_visible = true;
+                last_blink = current_ticks;
             }
             
             unsafe { core::arch::asm!("hlt"); }
@@ -1103,8 +1157,12 @@ fn cmd_nux(args: &[&str]) {
         return;
     }
     
-    let mut vm = crate::nux::vm::NuxVm::new(code);
-    vm.run();
+    let mut vm = crate::engine::vm::AnuxVM::new(code);
+    while vm.running {
+        vm.step();
+        // Yield to allow other tasks? Or blocking for shell?
+        // Blocking is fine for now as shell is single task context in this cmd.
+    }
 }
 
 fn cmd_nuxc(args: &[&str]) {

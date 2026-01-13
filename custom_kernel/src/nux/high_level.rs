@@ -92,6 +92,9 @@ pub struct Parser {
     
     // Function State
     local_offset: i64, 
+    
+    // Advanced Types
+    bound_types: HashMap<String, (i64, i64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +124,7 @@ impl Parser {
             errors: Vec::new(),
             loop_stack: Vec::new(),
             local_offset: 0,
+            bound_types: HashMap::new(),
         }
     }
 
@@ -263,46 +267,24 @@ impl Parser {
                          let mut sub_parser = Parser::new(&content);
                          match sub_parser.parse_to_asm() {
                              Ok(asm) => {
-                                 // The sub_parser returns full ASM including `__start_execution`.
-                                 // We just want the function definitions (which are usually at top or skip-guarded).
-                                 // Nux ASM format: 
-                                 // JMP __start_execution
-                                 // ... definitions ...
-                                 // __start_execution: ...
-                                 
-                                 // We want to extract the definitions. 
-                                 // For now, simpler Hack: Import just concatenates ASM?
-                                 // No, distinct labels issues.
-                                 // Better: Compile import to ASM, strip Main JMP/Body, append definitions.
-                                 // This is fragile. 
-                                 // Correct Way: Shared AST or token stream.
-                                 // Given constraint, I'll allow `import` to just read file text and append to `definitions`?
-                                 // But we are in the middle of parsing loop.
-                                 // Let's error and say "Imports must be at top"?
-                                 // Or recursively parse?
-                                 
-                                 // Let's implement Recurse Parse:
-                                 // We invoke `parse_to_asm` on content.
-                                 // We assume the imported file relies on same mechanism.
-                                 // We take the output ASM.
-                                 // We splice it?
-                                 // This is getting messy for a "Portable SDK".
-                                 
-                                 // Alternative: "Header" inclusions.
-                                 // Just Lex the file and feed tokens?
-                                 // `Lexer` doesn't support stream injection easily.
-                                 
-                                 // DECISION: Runtime Loading? No.
-                                 // COMPILE TIME FILE CONCATENATION (Simplest).
-                                 // But we are already parsing.
-                                 // Warning: This implementation of `import` effectively does nothing right now
-                                 // because integrating it mid-stream is hard without refactoring `Parser::new`.
-                                 // I will implement a "File Source" manager later.
-                                 // For now, I will Mock it or handle it by returning a comment.
-                                 definitions.push_str(&format!("; Imported {}\n", filename));
-                                 // FIXME: Real implementation requires refactoring Parser to take multiple sources 
-                                 // or pre-processing source code to expand imports.
-                                 main_body.push_str(&format!("; Import {} placeholder\n", filename));
+                                 // Strip Header/Footer to extract definitions
+                                 let lines: Vec<&str> = asm.lines().collect();
+                                 let mut capture = false;
+                                 for line in lines {
+                                     if line.trim().starts_with("JMP __start_execution") {
+                                         capture = true;
+                                         continue;
+                                     }
+                                     if line.trim().starts_with("; Implicit main") || line.trim().starts_with("__start_execution:") {
+                                         capture = false;
+                                         continue; // Stop capturing
+                                     }
+                                     
+                                     if capture {
+                                         definitions.push_str(line);
+                                         definitions.push('\n');
+                                     }
+                                 }
                              },
                              Err(_) => {
                                   self.errors.push(CompileError::new(format!("Failed to parse import {}", filename), self.prev_span));
@@ -398,8 +380,76 @@ impl Parser {
         Ok(())
     }
 
+    fn parse_bound_type_decl(&mut self, _out: &mut String) -> Result<(), CompileError> {
+        self.advance(); // Consume 'var'
+        let name = match &self.current_token {
+            Token::Identifier(s) => s.clone(),
+            _ => return self.error("Expected type name".to_string()),
+        };
+        self.advance();
+        
+        if self.current_token != Token::Colon { return self.error("Expected :".to_string()); }
+        self.advance();
+        
+        // range(min, max)
+        let constraint_name = match &self.current_token {
+             Token::Identifier(s) => s.clone(),
+             _ => return self.error("Expected constraint type".to_string()),
+        };
+        
+        if constraint_name != "range" { return self.error("Only 'range' constraint supported".to_string()); }
+        self.advance();
+        
+        if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+        self.advance();
+        
+        // Parse min/max as raw numbers for now. 
+        // Expressions would require compile-time eval.
+        let min = match &self.current_token {
+            Token::Number(n) => *n,
+            _ => return self.error("Expected number for min".to_string()),
+        };
+        self.advance();
+        
+        if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
+        self.advance();
+        
+        let max = match &self.current_token {
+            Token::Number(n) => *n,
+            _ => return self.error("Expected number for max".to_string()),
+        };
+        self.advance();
+        
+        if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+        self.advance();
+        
+        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+        self.advance();
+        
+        // Register type
+        self.bound_types.insert(name, (min, max));
+        Ok(())
+    }
+
     fn parse_func(&mut self, out: &mut String, class_prefix: &str) -> Result<(), CompileError> {
+        // self.current_token is either Func (if called from top) or Identifier?
+        // Wait, parse_to_asm consumed Func.
+        // So self.current_token is the NAME or VAR.
+        
+        // No, parse_to_asm calls parse_func(&mut definitions, "") inside Token::Func block.
+        // But parse_func starts with self.advance(); // consume 'func'.
+        // So in parse_to_asm, we should NOT consume func, OR parse_to_asm consumed it?
+        // parse_to_asm:
+        // Token::Func => { if let Err(e) = self.parse_func(...) ... }
+        // It does NOT advance.
+        
         self.advance(); // consume 'func'
+        
+        // Check for 'var' (Advanced Type Declaration)
+        if self.current_token == Token::Var {
+            return self.parse_bound_type_decl(out);
+        }
+
         let name = match &self.current_token {
             Token::Identifier(s) => s.clone(),
             _ => return self.error("Expected function name".to_string()),
@@ -1228,7 +1278,12 @@ impl Parser {
     }
     
     fn parse_unary(&mut self, out: &mut String) -> Result<Type, CompileError> {
-        if self.current_token == Token::Minus {
+        if self.current_token == Token::Not {
+             self.advance();
+             self.parse_expression(out)?;
+             out.push_str("PUSH 0\nEQ\n"); // Logically NOT: (x == 0)
+             Ok(Type::Bool)
+        } else if self.current_token == Token::Minus {
             self.advance();
             let t = self.parse_expression(out)?;
             if t == Type::Float {
@@ -1366,6 +1421,85 @@ impl Parser {
                 out.push_str("PEEK\n");
                 Ok(Type::Int) // Peek returns Int (raw)
             },
+            
+            // --- VISION EXPRESSIONS ---
+            Token::CamCapture => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for cam_capture".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Cam ID
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_CAM_CAPTURE\n");
+                 Ok(Type::Int)
+            },
+            Token::ImgAlloc => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_alloc".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // W
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // H
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_ALLOC\n");
+                 Ok(Type::Int)
+            },
+            Token::ImgResize => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_resize".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // W
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // H
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_RESIZE\n");
+                 Ok(Type::Int)
+            },
+            Token::ImgCrop => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_crop".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // X
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // Y
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // W
+                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; // H
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_CROP\n");
+                 Ok(Type::Int)
+            },
+            Token::ImgGrayscale => {
+                 self.advance();
+                 if self.current_token != Token::LParen { return self.error("Expected ( for img_grayscale".to_string()); }
+                 self.advance();
+                 self.parse_expression(out)?; // Handle
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                 self.advance();
+                 out.push_str("OP_IMG_GRAYSCALE\n");
+                 Ok(Type::Int)
+            },
+            
+            // --- BOOLEAN OPS ---
+            Token::True => {
+                self.advance();
+                out.push_str("PUSH 1\n");
+                Ok(Type::Bool)
+            },
+            Token::False => {
+                self.advance();
+                out.push_str("PUSH 0\n");
+                Ok(Type::Bool)
+            },
+            
             _ => return self.error(format!("Unexpected token in expression: {:?}", self.current_token)),
         }
     }

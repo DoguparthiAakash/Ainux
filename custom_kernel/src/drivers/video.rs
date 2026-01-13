@@ -128,12 +128,9 @@ pub fn put_char(c: char) {
             *y = height - 1;
             scroll_screen();
         }
-    } else if c == '\x08' {  // Backspace
+    } else if c == '\x08' {  // Backspace (Non-destructive move left)
         if *x > 0 {
             *x -= 1;
-            unsafe {
-                c_draw_char(*x as i32, *y as i32, b' ', 0xFFFFFFFF, 0x00000000);
-            }
         }
     } else if c == '\r' {
         *x = 0;
@@ -151,6 +148,16 @@ pub fn put_char(c: char) {
             }
         }
     }
+}
+
+pub fn draw_cursor(color: u32) {
+    let x = *CONSOLE_X.lock();
+    let y = *CONSOLE_Y.lock();
+    // 8x12 font
+    let draw_x = x * 8;
+    let draw_y = y * 12;
+    // Draw 8x12 block
+    draw_rect(draw_x, draw_y, 8, 12, color);
 }
 
 pub fn put_str(s: &str) {
@@ -234,6 +241,12 @@ pub fn draw_pixel(x: i64, y: i64, color: u32) {
 pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
     // Reusing draw_rect logic but renamed/exposed properly
     draw_rect(x, y, w, h, color);
+}
+
+pub fn draw_char_raw(x: usize, y: usize, c: char, fg: u32) {
+    unsafe {
+        c_draw_char(x as i32, y as i32, c as u8, fg, 0); // Transparent BG? Assume 0 is transparent/ignored or we don't care
+    }
 }
 
 pub fn draw_line(x0: i64, y0: i64, x1: i64, y1: i64, color: u32) {

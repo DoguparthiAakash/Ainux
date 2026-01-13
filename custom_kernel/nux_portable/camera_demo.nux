@@ -2,41 +2,43 @@
 
 func main() {
     println("--- Nux Vision System ---");
-    println("Initializing Camera Simulation...");
     
-    # 1. Allocate Image Buffer (Type Int because handles are Ints)
-    var width = 32;
-    var height = 16;
-    println("Allocating buffer (32x16)...");
-    var handle = img_alloc(width, height);
+    var plat = sys_platform();
+    print("Platform ID: ");
+    println(plat);
     
-    print("Handle ID: ");
-    println(handle);
+    var cameras = cam_count();
+    print("Cameras Found: ");
+    println(cameras);
     
-    # 2. Capture Frame (Simulated)
-    println("Capturing Frame...");
-    cam_capture(handle);
+    if (plat == 0) { println("Mode: Headless / Fallback"); }
+    if (plat == 1) { println("Mode: Linux Desktop"); }
+    if (plat == 2) { println("Mode: Windows Desktop"); }
+    if (plat == 3) { println("Mode: MacOS Desktop"); }
+    if (plat == 4) { println("Mode: Ainux Native"); }
     
-    # 3. Display Raw
-    println("--- Raw Frame ---");
-    img_draw(handle);
+    println("Initializing Camera...");
+
+    # 1. Capture Frame
+    # API: cam_capture(camera_id) -> handle
+    var handle = cam_capture(0);
     
-    # 4. Transform (Grayscale/Threshold)
-    println("Applying Threshold Filter (ID: 1)...");
-    img_filter(handle, 1);
+    # 2. Display
+    # API: img_draw(handle, x, y)
+    println("Drawing Frame...");
+    img_draw(handle, 0, 0); 
     
-    # 5. Display Processed
-    println("--- Processed Frame ---");
-    img_draw(handle);
-    
-    # 6. Loop Loop (Video Mode)
-    println("Entering Video Loop (Ctrl+C to stop)...");
-    while (1) {
-        cam_capture(handle);
-        img_draw(handle);
-        # img_filter(handle, 1); # Optional: Toggle filter?
+    # 3. Video Loop
+    println("Entering Video Loop (5 frames)...");
+    var i = 0;
+    while (i < 5) { 
+        img_free(handle); 
+        handle = cam_capture(0);
+        img_draw(handle, 0, 0);
+        i = i + 1;
     }
     
-    img_free(handle);
     println("Done.");
 }
+
+main();

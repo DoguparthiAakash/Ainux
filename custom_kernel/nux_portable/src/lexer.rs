@@ -30,8 +30,17 @@ pub enum Token {
     // Type Keywords
     KwInt, KwFloat, KwByte, KwShort, KwLong, KwChar, KwString,
     
+    // Boolean
+    True, False, Not,
+    
     // Vision
     ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter, ImgGet, ImgSet,
+    ImgResize, ImgCrop, ImgGrayscale,
+
+    
+    // Introspection
+    SysPlatform, CamCount,
+    
     UpperCase, LowerCase,
     
     LParen,
@@ -290,8 +299,20 @@ impl Lexer {
             "img_filter" => Token::ImgFilter,
             "img_get" => Token::ImgGet,
             "img_set" => Token::ImgSet,
+            "img_resize" => Token::ImgResize,
+            "img_crop" => Token::ImgCrop,
+            "img_grayscale" => Token::ImgGrayscale,
             "UpperCase" => Token::UpperCase,
             "LowerCase" => Token::LowerCase,
+            
+            "sys_platform" => Token::SysPlatform,
+            "cam_count" => Token::CamCount,
+            
+            "true" => Token::True,
+            "false" => Token::False,
+            "not" => Token::Not,
+            "and" => Token::And,
+            "or" => Token::Or,
             
             _ => Token::Identifier(text),
         };

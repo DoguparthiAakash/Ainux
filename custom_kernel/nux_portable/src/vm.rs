@@ -1,12 +1,18 @@
-use std::vec::Vec;
+use crate::platform::{self, Platform};
+use std::sync::Arc;
 use std::io::{self, Write, Read};
-use std::{thread, time};
-use std::sync::{Arc};
+use std::thread;
+use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::cell::UnsafeCell;
 
 // ... constants ...
 const OP_PUSH: u8 = 0x01;
+// ... (SKIP CONSTANTS)
+
+// ...
+
+
 const OP_POP: u8 = 0x02;
 // ... arithmetic ...
 const OP_ADD: u8 = 0x10;
@@ -37,6 +43,10 @@ const OP_CAM_CAPTURE: u8 = 0x34; // Capture to buffer
 const OP_IMG_FILTER: u8 = 0x35;
 const OP_IMG_GET: u8 = 0x36; // Get pixel (r,g,b) packed or separate? Packed int.
 
+const OP_IMG_RESIZE: u8 = 0x37;
+const OP_IMG_CROP: u8 = 0x38;
+const OP_IMG_GRAYSCALE: u8 = 0x39;
+
 const OP_DEBUG_PRINT: u8 = 0x50;
 const OP_PRINT_CHAR: u8 = 0x51;
 const OP_INPUT: u8 = 0x52;
@@ -46,6 +56,9 @@ const OP_TO_UPPER: u8 = 0x55;
 const OP_TO_LOWER: u8 = 0x56;
 
 const OP_CHECK_RANGE: u8 = 0x57;
+
+const OP_SYS_PLATFORM: u8 = 0x58; // Returns u8 (0-4)
+const OP_CAM_COUNT: u8 = 0x59;    // Returns Count
 
 // Float Ops
 const OP_FADD: u8 = 0x1A;
@@ -158,9 +171,13 @@ pub struct NuxVm {
     running: bool,
     
     // Shared State
+    // Shared State
     code: Arc<Vec<u8>>,
     shared: Arc<SpinLock<SharedState>>,
 }
+
+// Manually implement Clone if needed, or remove derive.
+// fork() constructs new Self, doesn't use clone().
 
 impl NuxVm {
     pub fn new(code: Vec<u8>) -> Self {
@@ -172,7 +189,7 @@ impl NuxVm {
             running: false,
             code: Arc::new(code),
             shared: Arc::new(SpinLock::new(SharedState {
-                memory: vec![0u8; 1024 * 64], // 64KB Shared Memory
+                memory: vec![0u8; 1024 * 1024], 
                 locks: std::collections::HashMap::new(),
                 images: std::collections::HashMap::new(),
                 next_handle: 1,
@@ -219,8 +236,7 @@ impl NuxVm {
          val
     }
 
-    pub fn run(&mut self) {
-        // Only check header if starting from 0 (main thread)
+    pub fn run(&mut self, mut platform: Option<&mut dyn Platform>) {
         // Sub-threads start at specific function.
         if self.ip == 0 {
              if self.code.len() < 64 || &self.code[0..4] != b"ANUX" {
@@ -356,7 +372,7 @@ impl NuxVm {
 
                 OP_SLEEP => {
                     let ms = self.pop();
-                    if ms > 0 { thread::sleep(time::Duration::from_millis(ms as u64)); }
+                    if ms > 0 { thread::sleep(Duration::from_millis(ms as u64)); }
                 },
                 OP_DEBUG_PRINT => { let val = self.pop(); println!("[Thread {:?}] DEBUG: {}", thread::current().id(), val); },
                 OP_PRINT_CHAR => { 
@@ -465,92 +481,36 @@ impl NuxVm {
                      shared.lock().images.remove(&handle);
                 },
                 OP_CAM_CAPTURE => {
-                     let handle = self.pop();
-                     let shared = self.shared.clone();
-                     let mut state = shared.lock();
-                     if let Some((w, h, data)) = state.images.get_mut(&handle) {
-                         let bridge_path = "/tmp/nux_cam.bin";
-                         let mut success = false;
-                         
-                         // Try to read from bridge
-                         if let Ok(mut file) = std::fs::File::open(bridge_path) {
-                             use std::io::Read;
-                             // Just read the whole thing into a buffer
-                             let mut buffer = Vec::new();
-                             if file.read_to_end(&mut buffer).is_ok() && buffer.len() >= 12 {
-                                 // Parse Header
-                                 let file_w = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) as i64;
-                                 let file_h = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) as i64;
-                                 let _ctr = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
-                                 
-                                 let offset = 12;
-                                 let expected_len = (file_w * file_h * 4) as usize;
-                                 
-                                 if buffer.len() >= offset + expected_len {
-                                     // Resample / Copy logic
-                                     // Simplest: If dimensions match, direct copy.
-                                     // If not, simplistic scale or just crop/center or just fail over to noise
-                                     // For this demo, we assume bridge outputs what we want OR we iterate UV
-                                     
-                                     // Let's do nearest neighbor sampling from file_buffer to state image
-                                     for y in 0..*h {
-                                         for x in 0..*w {
-                                             // Map (x,y) in target to (src_x, src_y) in source
-                                             let src_x = (x * file_w) / *w;
-                                             let src_y = (y * file_h) / *h;
-                                             
-                                             if src_x < file_w && src_y < file_h {
-                                                 let src_idx = offset + ((src_y * file_w + src_x) as usize) * 4;
-                                                 let px_bytes = &buffer[src_idx..src_idx+4];
-                                                 let val = u32::from_le_bytes(px_bytes.try_into().unwrap());
-                                                 
-                                                 data[(y * *w + x) as usize] = val;
-                                             }
-                                         }
-                                     }
-                                     success = true;
-                                 }
-                             }
-                         }
-
-                         if !success {
-                             // Fallback: Simulate Camera (Gradient + Noise)
-                             let mut rng = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100) as u32;
-                             for y in 0..*h {
-                                 for x in 0..*w {
-                                     let idx = (y * *w + x) as usize;
-                                     let r = (x * 255 / *w) as u32;
-                                     let g = (y * 255 / *h) as u32;
-                                     let b = rng * 2; 
-                                     data[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
-                                     rng = (rng.wrapping_mul(1103515245).wrapping_add(12345)) % 256;
-                                 }
-                             }
-                         }
+                     let cam_id = self.pop();
+                     let mut new_handle = 0;
+                     if let Some(plat) = platform.as_deref_mut() {
+                          if let Some((w, h, buffer)) = plat.capture_cam(cam_id as usize) {
+                               let shared = self.shared.clone();
+                               let mut state = shared.lock();
+                               new_handle = state.next_handle;
+                               state.next_handle += 1;
+                               state.images.insert(new_handle, (w as i64, h as i64, buffer));
+                          } else {
+                               println!("Runtime Warning: Camera Capture Failed (ID {})", cam_id);
+                          }
+                     } else {
+                         println!("Runtime Error: No Platform Available");
                      }
+                     self.push(new_handle);
                 },
                 OP_IMG_DRAW => {
+                    let y = self.pop(); // unused by update_window usually
+                    let x = self.pop();
                     let handle = self.pop();
                     let shared = self.shared.clone();
                     let state = shared.lock();
                     if let Some((w, h, data)) = state.images.get(&handle) {
-                        println!("Displaying Image ({}x{}):", w, h);
-                        for y in 0..*h {
-                            for x in 0..*w {
-                                let idx = (y * *w + x) as usize;
-                                let px = data[idx];
-                                let r = (px >> 16) & 0xFF;
-                                let g = (px >> 8) & 0xFF;
-                                let b = px & 0xFF;
-                                // Simple ASCII approximation
-                                let brightness = (r + g + b) / 3;
-                                let char = if brightness > 200 { '#' } 
-                                           else if brightness > 100 { '+' } 
-                                           else if brightness > 50 { '.' } 
-                                           else { ' ' };
-                                print!("{}", char);
+                        if let Some(plat) = platform.as_deref_mut() {
+                            if let Err(e) = plat.update_window(data, *w as usize, *h as usize) {
+                                println!("Runtime Warning: Window Update Failed: {}", e);
                             }
-                            println!("");
+                        } else {
+                            println!("Runtime Error: No Platform for Display");
                         }
                     } else {
                         println!("Runtime Error: Invalid Image Handle {}", handle);
@@ -562,7 +522,7 @@ impl NuxVm {
                     let shared = self.shared.clone();
                     let mut state = shared.lock();
                     if let Some((w, h, data)) = state.images.get_mut(&handle) {
-                         for i in 0..data.len() {
+                         for i in 0usize..data.len() {
                              let px = data[i];
                              let r = (px >> 16) & 0xFF;
                              let g = (px >> 8) & 0xFF;
@@ -577,21 +537,129 @@ impl NuxVm {
                     }
                 },
                 OP_IMG_GET => {
+                     let y = self.pop();
+                     let x = self.pop();
+                     let h = self.pop(); // This 'h' is actually the handle
+                     
+                     let val = {
+                         let state = self.shared.lock();
+                         if let Some((width, height, data)) = state.images.get(&h) { // Use 'h' as handle
+                             if x >= 0 && x < *width && y >= 0 && y < *height {
+                                 let idx = (y * width + x) as usize;
+                                 data[idx] as i64
+                             } else {
+                                 0
+                             }
+                         } else {
+                             0
+                         }
+                     };
+                     self.push(val);
+                },
+                OP_IMG_RESIZE => {
+                    let new_h = self.pop();
+                    let new_w = self.pop();
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    let new_handle = {
+                        let mut state = shared.lock();
+                        if let Some((old_w, old_h, old_data)) = state.images.get(&handle).cloned() {
+                            // Nearest Neighbor
+                            let mut new_data = vec![0u32; (new_w * new_h) as usize];
+                            
+                            for y in 0..new_h {
+                                for x in 0..new_w {
+                                    // Map coords
+                                    let src_x = (x * old_w) / new_w;
+                                    let src_y = (y * old_h) / new_h;
+                                    
+                                    if src_x < old_w && src_y < old_h {
+                                        let old_idx = (src_y * old_w + src_x) as usize;
+                                        let val = old_data[old_idx];
+                                        new_data[(y * new_w + x) as usize] = val;
+                                    }
+                                }
+                            }
+                            
+                            let id = state.next_handle;
+                            state.next_handle += 1;
+                            state.images.insert(id, (new_w, new_h, new_data));
+                            id
+                        } else {
+                            -1
+                        }
+                    };
+                    self.push(new_handle);
+                },
+                OP_IMG_CROP => {
+                    let h = self.pop();
+                    let w = self.pop();
                     let y = self.pop();
                     let x = self.pop();
                     let handle = self.pop();
+                    
                     let shared = self.shared.clone();
-                    let val = {
-                        let state = shared.lock();
-                        if let Some((w, h, data)) = state.images.get(&handle) {
-                            if x >= 0 && x < *w && y >= 0 && y < *h {
-                                data[(y * *w + x) as usize] as i64
-                            } else { 0 }
-                        } else { 0 }
+                    let new_handle = {
+                        let mut state = shared.lock();
+                        if let Some((src_w, src_h, src_data)) = state.images.get(&handle).cloned() {
+                             let mut new_data = vec![0u32; (w * h) as usize];
+                             
+                             for cy in 0..h {
+                                 for cx in 0..w {
+                                     let sx = x + cx;
+                                     let sy = y + cy;
+                                     
+                                     if sx >= 0 && sx < src_w && sy >= 0 && sy < src_h {
+                                         let src_idx = (sy * src_w + sx) as usize;
+                                         new_data[(cy * w + cx) as usize] = src_data[src_idx];
+                                     }
+                                 }
+                             }
+                             
+                             let id = state.next_handle;
+                             state.next_handle += 1;
+                             state.images.insert(id, (w, h, new_data));
+                             id
+                        } else {
+                            -1
+                        }
                     };
-                    self.push(val);
+                    self.push(new_handle);
                 },
-
+                OP_IMG_GRAYSCALE => {
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    // We modify in-place or return new? 
+                    // Let's modify in-place for efficiency, or return new for immutability?
+                    // User might want to keep original. Let's return new.
+                    let new_handle = {
+                        let mut state = shared.lock();
+                        if let Some((w, h, src_data)) = state.images.get(&handle).cloned() {
+                            let mut new_data = vec![0u32; src_data.len()];
+                            
+                            for i in 0usize..src_data.len() {
+                                let pixel = src_data[i];
+                                let r = (pixel >> 16) & 0xFF;
+                                let g = (pixel >> 8) & 0xFF;
+                                let b = pixel & 0xFF;
+                                // Luminosity: 0.21 R + 0.72 G + 0.07 B
+                                let gray = ((r as f32 * 0.21) + (g as f32 * 0.72) + (b as f32 * 0.07)) as u32;
+                                let new_pixel = (0xFF << 24) | (gray << 16) | (gray << 8) | gray;
+                                new_data[i] = new_pixel;
+                            }
+                            
+                            let id = state.next_handle;
+                            state.next_handle += 1;
+                            state.images.insert(id, (w, h, new_data));
+                            id
+                        } else {
+                            -1
+                        }
+                    };
+                    self.push(new_handle);
+                },
                 // --- THREADING_OPS ---
                 OP_SPAWN => {
                     let target = self.read_i64_code(); // Function address
@@ -600,7 +668,7 @@ impl NuxVm {
                     
                     // Spawn OS Thread
                     thread::spawn(move || {
-                        child_vm.run();
+                        child_vm.run(None); // Background threads have no platform/window
                     });
                     // println!("DEBUG: Spawning thread at {}", target);
                 },
@@ -658,6 +726,15 @@ impl NuxVm {
                         println!("Runtime Error: Segfault Write {}", addr);
                         self.running = false;
                     }
+                },
+                
+                OP_SYS_PLATFORM => {
+                     let p = if let Some(plat) = &platform { plat.platform_type() } else { 0 };
+                     self.push(p as i64);
+                },
+                OP_CAM_COUNT => {
+                     let c = if let Some(plat) = &platform { plat.list_cameras().len() } else { 0 };
+                     self.push(c as i64);
                 },
                 
                 OP_EXIT => { self.running = false; },

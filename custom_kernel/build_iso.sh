@@ -15,7 +15,9 @@ cp target/x86_64-unknown-none/release/ainux_kernel iso_root/boot/
 cp limine.conf iso_root/boot/
 cp limine/limine-bios.sys iso_root/boot/
 cp limine/limine-bios-cd.bin iso_root/boot/
+cp limine/limine-bios-cd.bin iso_root/boot/
 cp limine/limine-uefi-cd.bin iso_root/boot/
+cp nux_portable/standard_vision.nux iso_root/
 
 # Create ISO
 xorriso -as mkisofs -b boot/limine-bios-cd.bin \

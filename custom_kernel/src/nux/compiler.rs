@@ -1,7 +1,7 @@
-use std::vec::Vec;
-use std::string::String;
-use std::collections::BTreeMap;
-use std::format;
+use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::collections::BTreeMap;
+use alloc::format;
 
 // Import OpCodes from vm.rs logic (hardcoded here for now or shared)
 // We should ideally share them, but for modularity I'll define map here.
@@ -17,7 +17,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
     ops.extend_from_slice(&[0u8; 60]); // Padding
     
     // We parse line by line
-    for line in source.lines() {
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
         let line = line.trim();
         // Remove comments
         let line = if let Some(idx) = line.find(';') {
@@ -63,6 +64,32 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "LTE" => ops.push(0x94),
             "GTE" => ops.push(0x95),
             "DRAW_RECT" => ops.push(0x20),
+            
+            // Vision
+            "OP_IMG_ALLOC" => ops.push(0x31),
+            "OP_IMG_FREE" => ops.push(0x32),
+            "OP_IMG_DRAW" => ops.push(0x33),
+            "OP_CAM_CAPTURE" => ops.push(0x34),
+            "OP_IMG_FILTER" => ops.push(0x35),
+            "OP_IMG_GET" => ops.push(0x36),
+            "OP_IMG_RESIZE" => ops.push(0x37),
+            "OP_IMG_CROP" => ops.push(0x38),
+            "OP_IMG_GRAYSCALE" => ops.push(0x39),
+            
+            "OP_TO_UPPER" => ops.push(0x55),
+            "OP_TO_LOWER" => ops.push(0x56),
+            
+            "OP_CHECK_RANGE" => {
+                ops.push(0x57);
+                // Consume 2 args
+                let min_line = lines.next().ok_or("OP_CHECK_RANGE missing min")?.trim();
+                let max_line = lines.next().ok_or("OP_CHECK_RANGE missing max")?.trim();
+                let min = min_line.parse::<i64>().map_err(|_| "Invalid min for check range")?;
+                let max = max_line.parse::<i64>().map_err(|_| "Invalid max for check range")?;
+                ops.extend_from_slice(&min.to_le_bytes());
+                ops.extend_from_slice(&max.to_le_bytes());
+            },
+
             "SLEEP" => ops.push(0x30),
             "PRINT_CHAR" => ops.push(0x51),
             "INPUT" => ops.push(0x52),
@@ -119,6 +146,18 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
                 };
                 ops.extend_from_slice(&num_args.to_le_bytes());
             },
+            "SPAWN" => {
+                 ops.push(0x72); // Note: kernel vm uses 0x72 for spawn? Check vm.rs.
+                 // In vm.rs: const OP_SPAWN: u8 = 0x72;
+                 // It expects a popped function pointer, not an argument?
+                 // Wait, portable used 0x3A. Kernel uses 0x72.
+                 // Lexer says `spawn func_name`.
+                 // High level parser emits `PUSH func_name \n SPAWN`.
+                 // So Compiler just sees SPAWN.
+            },
+            "LOCK" => ops.push(0x73),
+            "UNLOCK" => ops.push(0x74),
+            
             "RET" => ops.push(0x71),
             "EXIT" => ops.push(0xFF),
             _ => return Err(format!("Unknown instruction: {}", mnemonic)),
