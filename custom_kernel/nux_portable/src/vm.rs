@@ -14,6 +14,8 @@ const OP_SUB: u8 = 0x11;
 const OP_MUL: u8 = 0x12;
 const OP_DIV: u8 = 0x13;
 const OP_MOD: u8 = 0x14;
+const OP_POW: u8 = 0x15;
+const OP_FLOORDIV: u8 = 0x16;
 const OP_AND: u8 = 0x18;
 const OP_OR:  u8 = 0x19; 
 const OP_EQ: u8 = 0x90;
@@ -44,6 +46,10 @@ const OP_FTOI: u8 = 0x1F; // Float to Int
 const OP_PEEK: u8 = 0x40;
 const OP_POKE: u8 = 0x41;
 // 42/43 PEEK8/POKE8 unused
+const OP_GET_LOCAL: u8 = 0x44;
+const OP_SET_LOCAL: u8 = 0x45;
+const OP_FPOW: u8 = 0x46;
+const OP_FFLOORDIV: u8 = 0x47;
 
 const OP_JMP: u8 = 0x60;
 const OP_JE: u8 = 0x61;
@@ -130,7 +136,8 @@ pub struct NuxVm {
     // Thread-Local State
     stack: Vec<i64>,
     ip: usize,
-    call_stack: Vec<usize>,
+    fp: usize, // Frame Pointer
+    call_stack: Vec<(usize, usize)>, // (ret_ip, ret_fp)
     running: bool,
     
     // Shared State
@@ -143,6 +150,7 @@ impl NuxVm {
         Self {
             stack: Vec::with_capacity(256),
             ip: 0,
+            fp: 0,
             call_stack: Vec::with_capacity(32),
             running: false,
             code: Arc::new(code),
@@ -158,6 +166,7 @@ impl NuxVm {
         Self {
             stack: Vec::with_capacity(256),
             ip: start_ip,
+            fp: 0, 
             call_stack: Vec::with_capacity(32),
             running: true,
             code: self.code.clone(),
@@ -223,6 +232,31 @@ impl NuxVm {
                     else { self.push(a.wrapping_div(b)); }
                 },
                 OP_MOD => { let b = self.pop(); let a = self.pop(); if b!=0 { self.push(a%b); } else { self.push(0); } },
+                OP_POW => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    // Use i64::pow for positive exponents, handle negative separately
+                    if b >= 0 && b <= u32::MAX as i64 {
+                        self.push(a.pow(b as u32));
+                    } else if b < 0 {
+                        // Negative exponent: convert to float
+                        let result = (a as f64).powf(b as f64);
+                        self.push(result as i64);
+                    } else {
+                        self.push(0); // Overflow protection
+                    }
+                },
+                OP_FLOORDIV => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    if b == 0 {
+                        println!("Runtime Error: DivZero");
+                        self.running = false;
+                    } else {
+                        // Floor division: a // b = floor(a / b)
+                        self.push(a.div_euclid(b));
+                    }
+                },
                 
                 // Float Ops
                 OP_FADD => { 
@@ -244,6 +278,16 @@ impl NuxVm {
                     let b = f64::from_bits(self.pop() as u64); 
                     let a = f64::from_bits(self.pop() as u64); 
                     self.push((a / b).to_bits() as i64); 
+                },
+                OP_FPOW => {
+                    let b = f64::from_bits(self.pop() as u64);
+                    let a = f64::from_bits(self.pop() as u64);
+                    self.push(a.powf(b).to_bits() as i64);
+                },
+                OP_FFLOORDIV => {
+                    let b = f64::from_bits(self.pop() as u64);
+                    let a = f64::from_bits(self.pop() as u64);
+                    self.push((a / b).floor().to_bits() as i64);
                 },
                 OP_ITOF => {
                     let a = self.pop();
@@ -298,17 +342,64 @@ impl NuxVm {
                 
                 OP_CALL => {
                     let t = self.read_i64_code();
+                    let num_args = self.read_i64_code(); // New generic arg
+                    
                     if self.call_stack.len() >= 256 {
                         println!("Runtime Error: Call Stack Overflow (Recursion too deep)");
                         self.running = false;
                     } else {
-                        self.call_stack.push(self.ip);
-                        self.ip = t as usize;
+                        self.call_stack.push((self.ip, self.fp));
+                        // Frame starts at the first argument
+                        // Stack: [..., Arg0, Arg1] < Top
+                        // FP = Len - 2
+                        if (self.stack.len() as i64) < num_args {
+                             println!("Runtime Error: Stack Underflow on Call");
+                             self.running = false;
+                        } else {
+                             self.fp = self.stack.len() - (num_args as usize);
+                             self.ip = t as usize;
+                        }
                     }
                 },
                 OP_RET => {
-                    if let Some(ret) = self.call_stack.pop() { self.ip = ret; }
+                    if let Some((ret_ip, ret_fp)) = self.call_stack.pop() { 
+                        // Preserve return value
+                        let ret_val = self.pop();
+                        // Restore stack (discard locals)
+                        if self.stack.len() > self.fp {
+                            self.stack.truncate(self.fp);
+                        }
+                        self.push(ret_val);
+                        
+                        self.ip = ret_ip; 
+                        self.fp = ret_fp;
+                    }
                     else { self.running = false; }
+                },
+
+                OP_GET_LOCAL => {
+                     let offset = self.read_i64_code();
+                     let idx = (self.fp as i64 + offset) as usize;
+                     if idx < self.stack.len() {
+                         self.push(self.stack[idx]);
+                     } else {
+                         println!("Runtime Error: Stack Invalid Access Local {}", offset);
+                         self.running = false;
+                     }
+                },
+                OP_SET_LOCAL => {
+                     let offset = self.read_i64_code();
+                     let idx = (self.fp as i64 + offset) as usize;
+                     if idx < self.stack.len() {
+                         let val = self.pop();
+                         self.stack[idx] = val;
+                     } else {
+                         // If we are setting a local that hasn't been pushed yet (e.g. init), 
+                         // compiler should have emitted PUSH 0.
+                         // But if we are setting an ARG (negative offset), it must exist.
+                         println!("Runtime Error: Stack Invalid Write Local {}", offset);
+                         self.running = false;
+                     }
                 },
                 
                 // --- THREADING_OPS ---

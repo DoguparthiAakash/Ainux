@@ -52,6 +52,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "MUL" => ops.push(0x12),
             "DIV" => ops.push(0x13),
             "MOD" => ops.push(0x14),
+            "POW" => ops.push(0x15),
+            "FLOORDIV" => ops.push(0x16),
             "AND" => ops.push(0x18),
             "OR" => ops.push(0x19),
             "EQ" => ops.push(0x90),
@@ -72,10 +74,24 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "FDIV" => ops.push(0x1D),
             "ITOF" => ops.push(0x1E),
             "FTOI" => ops.push(0x1F),
+            "FPOW" => ops.push(0x46),
+            "FFLOORDIV" => ops.push(0x47),
             "PEEK" => ops.push(0x40),
             "POKE" => ops.push(0x41),
             "PEEK8" => ops.push(0x42),
             "POKE8" => ops.push(0x43),
+            "GET_LOCAL" => {
+                ops.push(0x44);
+                if parts.len() < 2 { return Err(format!("GET_LOCAL missing offset")); }
+                let val = parts[1].parse::<i64>().map_err(|_| "Invalid number")?;
+                ops.extend_from_slice(&val.to_le_bytes());
+            },
+            "SET_LOCAL" => {
+                ops.push(0x45);
+                if parts.len() < 2 { return Err(format!("SET_LOCAL missing offset")); }
+                let val = parts[1].parse::<i64>().map_err(|_| "Invalid number")?;
+                ops.extend_from_slice(&val.to_le_bytes());
+            },
             "DEBUG" => ops.push(0x50), // DEBUG_PRINT
             "JMP" => {
                 ops.push(0x60);
@@ -94,6 +110,14 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
                 if parts.len() < 2 { return Err(format!("CALL missing label")); }
                 label_refs.push((ops.len(), String::from(parts[1])));
                 ops.extend_from_slice(&[0u8; 8]);
+                
+                // Num Args argument
+                let num_args = if parts.len() >= 3 {
+                    parts[2].parse::<i64>().map_err(|_| "Invalid call args count")?
+                } else {
+                    0
+                };
+                ops.extend_from_slice(&num_args.to_le_bytes());
             },
             "RET" => ops.push(0x71),
             "EXIT" => ops.push(0xFF),
