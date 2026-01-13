@@ -1,0 +1,3 @@
+[submodule "custom_kernel/custom_kernel/limine"]
+	path = custom_kernel/custom_kernel/limine
+	url = https://github.com/limine-bootloader/limine.git
