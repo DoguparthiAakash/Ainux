@@ -29,6 +29,10 @@ pub enum Token {
     
     // Type Keywords
     KwInt, KwFloat, KwByte, KwShort, KwLong, KwChar, KwString,
+    
+    // Vision
+    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter,
+    
     LParen,
     RParen,
     LBrace,
@@ -258,6 +262,13 @@ impl Lexer {
             "long" => Token::KwLong,
             "char" => Token::KwChar,
             "string" => Token::KwString,
+            
+            // Vision Intrinsics
+            "img_alloc" => Token::ImgAlloc,
+            "img_free" => Token::ImgFree,
+            "img_draw" => Token::ImgDraw,
+            "cam_capture" => Token::CamCapture,
+            "img_filter" => Token::ImgFilter,
             
             _ => Token::Identifier(text),
         };

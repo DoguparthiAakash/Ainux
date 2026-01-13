@@ -10,7 +10,7 @@ use std::fs;
 use std::io::Write;
 
 fn main() {
-    println!("NUX COMPILER v0.2 (Float Support)");
+    println!("NUX COMPILER v0.3 (Vision GUI)");
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_usage();
