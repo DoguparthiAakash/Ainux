@@ -76,19 +76,20 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "OP_IMG_CROP" => ops.push(0x38),
             "OP_IMG_GRAYSCALE" => ops.push(0x39),
             
-            "OP_TO_UPPER" => ops.push(0x55),
-            "OP_TO_LOWER" => ops.push(0x56),
+            "OP_IMG_GRAYSCALE" => ops.push(0x39),
             
-            "OP_CHECK_RANGE" => {
-                ops.push(0x57);
-                // Consume 2 args
-                let min_line = lines.next().ok_or("OP_CHECK_RANGE missing min")?.trim();
-                let max_line = lines.next().ok_or("OP_CHECK_RANGE missing max")?.trim();
-                let min = min_line.parse::<i64>().map_err(|_| "Invalid min for check range")?;
-                let max = max_line.parse::<i64>().map_err(|_| "Invalid max for check range")?;
-                ops.extend_from_slice(&min.to_le_bytes());
-                ops.extend_from_slice(&max.to_le_bytes());
-            },
+            // File I/O
+            "FILE_OPEN" => ops.push(0x55),
+            "FILE_CLOSE" => ops.push(0x56),
+            "FILE_READ" => ops.push(0x57),
+            "FILE_WRITE" => ops.push(0x58),
+            "FILE_EXISTS" => ops.push(0x59),
+            "FILE_MKDIR" => ops.push(0x5A),
+            "FILE_DELETE" => ops.push(0x5C),
+            
+            "VM_STACK_COPY" => ops.push(0x5B),
+            
+            "SYSTEM" => ops.push(0x81),
 
             "SLEEP" => ops.push(0x30),
             "PRINT_CHAR" => ops.push(0x51),
@@ -105,6 +106,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "FFLOORDIV" => ops.push(0x47),
             "PEEK" => ops.push(0x40),
             "POKE" => ops.push(0x41),
+            "GFX_TEXT" => ops.push(0x3C),
+            "GFX_RECT" => ops.push(0x3D),
             "PEEK8" => ops.push(0x42),
             "POKE8" => ops.push(0x43),
             "GET_LOCAL" => {

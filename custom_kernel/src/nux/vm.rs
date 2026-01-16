@@ -1,9 +1,27 @@
-use std::vec::Vec;
-use std::io::{self, Write, Read};
-use std::{thread, time};
-use std::sync::{Arc};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::cell::UnsafeCell;
+use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::UnsafeCell;
+use crate::fs::vfs::{FileHandle, Inode}; // Import VFS types
+
+macro_rules! kprint {
+    ($($arg:tt)*) => ({
+        use core::fmt::Write;
+        let mut s = alloc::string::String::new();
+        let _ = write!(s, $($arg)*);
+        crate::drivers::video::put_str(&s);
+    });
+}
+
+macro_rules! kprintln {
+    () => (kprint!("\n"));
+    ($($arg:tt)*) => ({
+        kprint!($($arg)*);
+        kprint!("\n");
+    });
+}
 
 // ... constants ...
 const OP_PUSH: u8 = 0x01;
@@ -45,6 +63,10 @@ const OP_FTOI: u8 = 0x1F; // Float to Int
 
 const OP_PEEK: u8 = 0x40;
 const OP_POKE: u8 = 0x41;
+// Legacy GFX (Direct)
+const OP_GFX_TEXT: u8 = 0x3C;
+const OP_GFX_RECT: u8 = 0x3D;
+
 // 42/43 PEEK8/POKE8 unused
 const OP_GET_LOCAL: u8 = 0x44;
 const OP_SET_LOCAL: u8 = 0x45;
@@ -62,7 +84,16 @@ const OP_LOCK: u8 = 0x73;  // NEW: Acquire Lock (Simple Global Lock or ID?)
 const OP_UNLOCK: u8 = 0x74; // NEW: Release Lock
 
 const OP_KERNEL_OP: u8 = 0x80;
+const OP_SYSTEM: u8 = 0x81; // NEW: Execute System Command
 const OP_EXIT: u8 = 0xFF;
+
+// File I/O Ops
+const OP_FILE_OPEN: u8 = 0x55;
+const OP_FILE_CLOSE: u8 = 0x56;
+const OP_FILE_READ: u8 = 0x57;
+const OP_FILE_WRITE: u8 = 0x58;
+const OP_FILE_EXISTS: u8 = 0x59;
+const OP_FILE_MKDIR: u8 = 0x5A;
 
 // Simple SpinLock Implementation for Kernel Safety
 pub struct SpinLock<T> {
@@ -70,6 +101,7 @@ pub struct SpinLock<T> {
     data: UnsafeCell<T>,
 }
 
+// SpinLock is generic and safe
 unsafe impl<T: Send> Sync for SpinLock<T> {}
 unsafe impl<T: Send> Send for SpinLock<T> {}
 
@@ -82,14 +114,9 @@ impl<T> SpinLock<T> {
     }
 
     pub fn lock(&self) -> SpinLockGuard<T> {
-        while self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            // Spin hint could go here (std::hint::spin_loop())
-            // but might not be available in all portable contexts.
-             std::thread::yield_now(); // Be nice to scheduler
+        // Simple spin loop
+        while self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop(); 
         }
         SpinLockGuard { lock: self }
     }
@@ -99,14 +126,14 @@ pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
 }
 
-impl<'a, T> std::ops::Deref for SpinLockGuard<'a, T> {
+impl<'a, T> core::ops::Deref for SpinLockGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { &*self.lock.data.get() }
     }
 }
 
-impl<'a, T> std::ops::DerefMut for SpinLockGuard<'a, T> {
+impl<'a, T> core::ops::DerefMut for SpinLockGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.lock.data.get() }
     }
@@ -122,13 +149,9 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
 // Shared State for all threads
 struct SharedState {
     memory: Vec<u8>, // Global Virtual Memory (Heap/Globals)
-    // We could add a mutex map for fine-grained locks later.
-    // For now, implicit global lock or use atomic memory ops?
-    // User requested "thread safety". Mutex around memory is safe *access*.
-    // But logic race needs explicit locks.
-    locks: std::collections::HashMap<u64, Arc<SpinLock<()>>>, 
-    // Actually simpler: One Big Lock for critical sections if requested?
-    // Or users provide lock ID.
+    locks: BTreeMap<u64, Arc<SpinLock<()>>>,
+    files: BTreeMap<u64, FileHandle>, // Open File Handles
+    next_fd: u64,
 }
 
 #[derive(Clone)]
@@ -155,8 +178,10 @@ impl NuxVm {
             running: false,
             code: Arc::new(code),
             shared: Arc::new(SpinLock::new(SharedState {
-                memory: vec![0u8; 1024 * 64], // 64KB Shared Memory
-                locks: std::collections::HashMap::new(),
+                memory: alloc::vec![0u8; 1024 * 64], // 64KB Shared Memory
+                locks: BTreeMap::new(),
+                files: BTreeMap::new(),
+                next_fd: 1,
             })),
         }
     }
@@ -176,7 +201,7 @@ impl NuxVm {
 
     pub fn push(&mut self, val: i64) {
         if self.stack.len() >= 1024 {
-            println!("Runtime Error: Stack Overflow");
+            kprintln!("Runtime Error: Stack Overflow");
             self.running = false;
             return;
         }
@@ -185,7 +210,7 @@ impl NuxVm {
 
     pub fn pop(&mut self) -> i64 {
         if self.stack.is_empty() {
-             println!("Runtime Error: Stack Underflow");
+             kprintln!("Runtime Error: Stack Underflow");
              self.running = false;
              return 0;
         }
@@ -205,7 +230,7 @@ impl NuxVm {
         // Sub-threads start at specific function.
         if self.ip == 0 {
              if self.code.len() < 64 || &self.code[0..4] != b"ANUX" {
-                 println!("NuxVM: Invalid Binary");
+                 kprintln!("NuxVM: Invalid Binary");
                  return;
              }
              self.ip = 64; 
@@ -228,7 +253,7 @@ impl NuxVm {
                 OP_MUL => { let b = self.pop(); let a = self.pop(); self.push(a.wrapping_mul(b)); },
                 OP_DIV => { 
                     let b = self.pop(); let a = self.pop(); 
-                    if b == 0 { println!("Runtime Error: DivZero"); self.running = false; }
+                    if b == 0 { kprintln!("Runtime Error: DivZero"); self.running = false; }
                     else { self.push(a.wrapping_div(b)); }
                 },
                 OP_MOD => { let b = self.pop(); let a = self.pop(); if b!=0 { self.push(a%b); } else { self.push(0); } },
@@ -240,8 +265,10 @@ impl NuxVm {
                         self.push(a.pow(b as u32));
                     } else if b < 0 {
                         // Negative exponent: convert to float
-                        let result = (a as f64).powf(b as f64);
-                        self.push(result as i64);
+                        // let result = (a as f64).powf(b as f64);
+                        // self.push(result as i64);
+                        kprintln!("Runtime Warning: Negative POW not supported in kernel yet");
+                        self.push(0);
                     } else {
                         self.push(0); // Overflow protection
                     }
@@ -250,7 +277,7 @@ impl NuxVm {
                     let b = self.pop();
                     let a = self.pop();
                     if b == 0 {
-                        println!("Runtime Error: DivZero");
+                        kprintln!("Runtime Error: DivZero");
                         self.running = false;
                     } else {
                         // Floor division: a // b = floor(a / b)
@@ -280,14 +307,17 @@ impl NuxVm {
                     self.push((a / b).to_bits() as i64); 
                 },
                 OP_FPOW => {
-                    let b = f64::from_bits(self.pop() as u64);
-                    let a = f64::from_bits(self.pop() as u64);
-                    self.push(a.powf(b).to_bits() as i64);
+                    let _b = f64::from_bits(self.pop() as u64);
+                    let _a = f64::from_bits(self.pop() as u64);
+                    // self.push(a.powf(b).to_bits() as i64);
+                    kprintln!("Runtime Warning: FPOW not supported");
+                    self.push(0);
                 },
                 OP_FFLOORDIV => {
                     let b = f64::from_bits(self.pop() as u64);
                     let a = f64::from_bits(self.pop() as u64);
-                    self.push((a / b).floor().to_bits() as i64);
+                    // self.push((a / b).floor().to_bits() as i64);
+                    self.push(((a / b) as i64 as f64).to_bits() as i64); // Hack for no_std floor
                 },
                 OP_ITOF => {
                     let a = self.pop();
@@ -299,8 +329,9 @@ impl NuxVm {
                 },
                 OP_PRINT_FLOAT => {
                     let val = f64::from_bits(self.pop() as u64);
-                    print!("{}", val);
-                    io::stdout().flush().unwrap();
+                    // kprint!("{}", val);
+                    // io::stdout().flush().unwrap();
+                    kprintln!("FLOAT: {}", val as i64); // Todo: proper float print
                 },
                 
                 OP_EQ => { let b = self.pop(); let a = self.pop(); self.push(if a == b {1} else {0}); },
@@ -313,24 +344,68 @@ impl NuxVm {
                 OP_AND => { let b = self.pop(); let a = self.pop(); self.push(if a!=0 && b!=0 {1} else {0}); },
                 OP_OR => { let b = self.pop(); let a = self.pop(); self.push(if a!=0 || b!=0 {1} else {0}); },
 
+                // GC Ops
+                0x5B => { // OP_VM_STACK_COPY
+                    let dest_ptr = self.pop() as usize;
+                    let count = self.stack.len();
+                    
+                     let mut shared = self.shared.lock();
+                     let mem = &mut shared.memory;
+                     let max_len = mem.len();
+                     
+                     if dest_ptr + (count * 8) <= max_len {
+                         for (i, &val) in self.stack.iter().enumerate() {
+                             let addr = dest_ptr + (i * 8);
+                             // Write i64 as LE bytes
+                             let bytes = val.to_le_bytes();
+                             for j in 0..8 {
+                                 mem[addr + j] = bytes[j];
+                             }
+                         }
+                         drop(shared);
+                         self.push(count as i64); // Return count
+                     } else {
+                         drop(shared);
+                         kprintln!("VM Stack Copy Overflow: Dest {}, Count {}", dest_ptr, count);
+                         self.push(-1); 
+                     }
+                },
+
                 OP_SLEEP => {
                     let ms = self.pop();
-                    if ms > 0 { thread::sleep(time::Duration::from_millis(ms as u64)); }
+                    if ms > 0 {
+                        #[cfg(target_os = "none")]
+                        {
+                            // Kernel Mode: Use Scheduler
+                            let ticks = ms / 10; // Approx 100Hz (10ms per tick)
+                            if ticks > 0 {
+                                let current = crate::process::scheduler::get_ticks();
+                                unsafe { crate::process::scheduler::set_current_sleep(current + ticks as u64); }
+                                crate::process::scheduler::yield_now();
+                            } else {
+                                // Too small for full tick, just spin briefly?
+                                // For now, simple yield
+                                crate::process::scheduler::yield_now();
+                            }
+                        }
+                        #[cfg(not(target_os = "none"))]
+                        {
+                            // Hosted Mode: Stub
+                            // unsafe { let mut x = 0; for _ in 0..1000000 { x += 1; core::ptr::read_volatile(&x); } }
+                        }
+                    }
                 },
-                OP_DEBUG_PRINT => { let val = self.pop(); println!("[Thread {:?}] DEBUG: {}", thread::current().id(), val); },
+                OP_DEBUG_PRINT => { let val = self.pop(); kprintln!("DEBUG: {}", val); },
                 OP_PRINT_CHAR => { 
-                    let val = self.pop(); print!("{}", val as u8 as char); io::stdout().flush().unwrap(); 
+                    let val = self.pop(); 
+                    kprint!("{}", val as u8 as char);  
                 },
-                OP_PRINT_VAL => { let val = self.pop(); print!("{}", val); io::stdout().flush().unwrap(); },
+                OP_PRINT_VAL => { let val = self.pop(); kprint!("{}", val); },
                 
                 OP_INPUT => {
-                   let mut buffer = String::new();
-                   if let Ok(_) = io::stdin().read_line(&mut buffer) {
-                       let val = buffer.trim().parse::<i64>().unwrap_or(0);
-                       self.push(val); 
-                   } else { 
-                       self.push(0); 
-                   }
+                   let mut _buffer = String::new();
+                   // Kernel Input TODO
+                   self.push(0); 
                 },
 
                 OP_JMP => { let t = self.read_i64_code(); self.ip = t as usize; },
@@ -345,7 +420,7 @@ impl NuxVm {
                     let num_args = self.read_i64_code(); // New generic arg
                     
                     if self.call_stack.len() >= 256 {
-                        println!("Runtime Error: Call Stack Overflow (Recursion too deep)");
+                        kprintln!("Runtime Error: Call Stack Overflow (Recursion too deep)");
                         self.running = false;
                     } else {
                         self.call_stack.push((self.ip, self.fp));
@@ -353,7 +428,7 @@ impl NuxVm {
                         // Stack: [..., Arg0, Arg1] < Top
                         // FP = Len - 2
                         if (self.stack.len() as i64) < num_args {
-                             println!("Runtime Error: Stack Underflow on Call");
+                             kprintln!("Runtime Error: Stack Underflow on Call");
                              self.running = false;
                         } else {
                              self.fp = self.stack.len() - (num_args as usize);
@@ -383,7 +458,7 @@ impl NuxVm {
                      if idx < self.stack.len() {
                          self.push(self.stack[idx]);
                      } else {
-                         println!("Runtime Error: Stack Invalid Access Local {}", offset);
+                         kprintln!("Runtime Error: Stack Invalid Access Local {}", offset);
                          self.running = false;
                      }
                 },
@@ -397,7 +472,7 @@ impl NuxVm {
                          // If we are setting a local that hasn't been pushed yet (e.g. init), 
                          // compiler should have emitted PUSH 0.
                          // But if we are setting an ARG (negative offset), it must exist.
-                         println!("Runtime Error: Stack Invalid Write Local {}", offset);
+                         kprintln!("Runtime Error: Stack Invalid Write Local {}", offset);
                          self.running = false;
                      }
                 },
@@ -409,10 +484,11 @@ impl NuxVm {
                     let mut child_vm = self.fork(target as usize);
                     
                     // Spawn OS Thread
-                    thread::spawn(move || {
-                        child_vm.run();
-                    });
-                    // println!("DEBUG: Spawning thread at {}", target);
+                    // thread::spawn(move || {
+                    //     child_vm.run();
+                    // });
+                    kprintln!("DEBUG: Spawning thread at {} (Not Implemented)", target);
+                    child_vm.run(); // Run sync for now to avoid hang
                 },
                 // Locking ops (TODO: Implement proper ID-based locks if needed)
                 OP_LOCK => { /* Placeholder */ },
@@ -421,9 +497,69 @@ impl NuxVm {
                 OP_KERNEL_OP => {
                     let op_id = self.pop();
                     match op_id {
-                        1 => print!("\x1B[2J\x1B[1;1H"),
-                        2 => println!("NuxVM Multi-Threaded v0.4"),
+                        1 => kprint!("\x1B[2J\x1B[1;1H"),
+                        2 => kprintln!("NuxVM Kernel-Mode v0.5"),
                         _ => {},
+                    }
+                },
+                
+                OP_SYSTEM => {
+                    let ptr = self.pop();
+                    // Read string from memory
+                    let mut cmd = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        cmd.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    drop(shared); // Unlock
+                    
+                    kprintln!("System Command: {}", cmd);
+                    // In kernel, this might spawn a task. In portable, use std::process.
+                    {
+                        // Stub
+                         kprintln!("System command (Stub): {}", cmd);
+                    }
+                    self.push(0); // Return Success
+                },
+                
+                // Opcode 0xB5: Vision Detect (Mock)
+                0xB5 => {
+                    let _handle = self.pop();
+                    // Simulate processing time
+                    // Simulation delay removed for no_std compatibility
+                    // unsafe { let mut x = 0; for _ in 0..1000000 { x += 1; core::ptr::read_volatile(&x); } }
+                    
+                    self.push(1); // Found 1 object
+                },
+                
+                OP_GFX_RECT => {
+                    let col = self.pop() as u32;
+                    let h = self.pop() as usize;
+                    let w = self.pop() as usize;
+                    let y = self.pop() as usize;
+                    let x = self.pop() as usize;
+                    crate::drivers::video::draw_rect(x, y, w, h, col);
+                },
+
+                OP_GFX_TEXT => {
+                    let col = self.pop() as u32;
+                    let ptr = self.pop();
+                    let y = self.pop() as usize;
+                    let mut x = self.pop() as usize;
+                    
+                    // Read string from shared memory
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    
+                    while addr < mem.len() && mem[addr] != 0 {
+                        let c = mem[addr] as char;
+                        crate::drivers::video::draw_char_raw(x, y, c, col);
+                        x += 8; // Advance cursor 8 pixels
+                        addr += 1;
                     }
                 },
                 
@@ -444,34 +580,224 @@ impl NuxVm {
                     if let Some(val) = val_opt {
                         self.push(val);
                     } else {
-                        println!("Runtime Error: Segfault Read {}", addr); 
+                        kprintln!("Runtime Error: Segfault Read {}", addr); 
                         self.running = false;
                     }
                 },
                 OP_POKE => {
-                    let addr = self.pop();
                     let val = self.pop();
+                    let addr = self.pop();
                     let shared = self.shared.clone();
                     let success = {
                         let mut state = shared.lock();
                         if addr < 0 || addr as usize + 8 > state.memory.len() {
-                            false
+                             false
                         } else {
-                            let bytes = val.to_le_bytes();
-                            for i in 0..8 {
-                                state.memory[addr as usize + i] = bytes[i];
-                            }
-                            true
+                             let bytes = val.to_le_bytes();
+                             state.memory[addr as usize .. addr as usize + 8].copy_from_slice(&bytes);
+                             true
                         }
                     };
+                    
                     if !success {
-                        println!("Runtime Error: Segfault Write {}", addr);
+                        kprintln!("Runtime Error: Segfault Write {}", addr);
                         self.running = false;
                     }
                 },
                 
+                // File I/O Ops
+                OP_FILE_OPEN => {
+                    let ptr = self.pop();
+                    // Read path
+                    let mut path = String::new();
+                    let mut shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        path.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    
+                    if let Ok(inode) = crate::fs::vfs::root().lookup(&path) {
+                        if let Ok(handle) = inode.open() {
+                            let fd = shared.next_fd;
+                            shared.next_fd += 1;
+                            shared.files.insert(fd, handle);
+                            drop(shared);
+                            self.push(fd as i64);
+                        } else {
+                            drop(shared);
+                            self.push(-1); // Open failed
+                        }
+// ... (lookup success block above)
+                    } else {
+                         // File not found, try create
+                         if let Ok(inode) = crate::fs::vfs::root().create(&path, crate::fs::vfs::FileType::File) {
+                             if let Ok(handle) = inode.open() {
+                                 let fd = shared.next_fd;
+                                 shared.next_fd += 1;
+                                 shared.files.insert(fd, handle);
+                                 drop(shared);
+                                 self.push(fd as i64);
+                             } else {
+                                 drop(shared);
+                                 self.push(-1); // Created but failed to open
+                             }
+                         } else {
+                             drop(shared);
+                             self.push(-1); // Creation failed
+                         }
+                    }
+                },
+                OP_FILE_CLOSE => {
+                    let fd = self.pop() as u64;
+                    let mut shared = self.shared.lock();
+                    if shared.files.remove(&fd).is_some() {
+                        self.push(1); // Success
+                    } else {
+                        self.push(0); // Fail
+                    }
+                },
+                OP_FILE_READ => {
+                    let len = self.pop() as usize;
+                    let buf_ptr = self.pop() as usize;
+                    let fd = self.pop() as u64;
+                    
+                    let mut shared = self.shared.lock();
+                    if let Some(handle) = shared.files.get(&fd) {
+                        let mut temp_buf = alloc::vec![0u8; len];
+                        if let Ok(count) = handle.read(&mut temp_buf) {
+                            // Copy back to memory
+                            for i in 0..count {
+                                if buf_ptr + i < shared.memory.len() {
+                                    shared.memory[buf_ptr + i] = temp_buf[i];
+                                }
+                            }
+                            drop(shared);
+                            self.push(count as i64);
+                        } else {
+                            drop(shared);
+                            self.push(-1); // Error
+                        }
+                    } else {
+                        drop(shared);
+                        self.push(-1); // Bad FD
+                    }
+                },
+                OP_FILE_WRITE => {
+                    let len = self.pop() as usize;
+                    let buf_ptr = self.pop() as usize;
+                    let fd = self.pop() as u64;
+                    
+                    let mut shared = self.shared.lock();
+                    if let Some(handle) = shared.files.get(&fd) {
+                        // Read from memory
+                        let mut temp_buf = Vec::new(); // alloc::vec![0u8; len];
+                        for i in 0..len {
+                             if buf_ptr + i < shared.memory.len() {
+                                 temp_buf.push(shared.memory[buf_ptr + i]);
+                             } else {
+                                 temp_buf.push(0);
+                             }
+                        }
+                        
+                        if let Ok(count) = handle.write(&temp_buf) {
+                            drop(shared);
+                            self.push(count as i64);
+                        } else {
+                            drop(shared);
+                            self.push(-1); // Error
+                        }
+                    } else {
+                        drop(shared);
+                        self.push(-1); // Bad FD
+                    }
+                },
+                OP_FILE_EXISTS => {
+                    let ptr = self.pop();
+                    let mut path = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        path.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    drop(shared);
+                    
+                    if crate::fs::vfs::root().lookup(&path).is_ok() {
+                        self.push(1);
+                    } else {
+                        self.push(0);
+                    }
+                },
+                OP_FILE_MKDIR => {
+                    let ptr = self.pop();
+                    let mut path = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        path.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    drop(shared);
+                    
+                    if let Ok(_) = crate::fs::vfs::root().create(&path, crate::fs::vfs::FileType::Directory) {
+                        self.push(1);
+                    } else {
+                        self.push(0);
+                    }
+                },
+                
+                0x5C => { // OP_FILE_DELETE
+                    let ptr = self.pop();
+                    let mut path = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        path.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    drop(shared);
+                    
+                    // VFS unlink/remove not yet implemented in Inode trait
+                    // Stub:
+                    kprintln!("OP_FILE_DELETE not supported (stub)");
+                    self.push(0); // Fail
+                    
+                    /*
+                    if let Ok(_) = crate::fs::vfs::root().unlink(&path) {
+                         self.push(1);
+                    } else {
+                         self.push(0);
+                    }
+                    */
+                },
+                
+                OP_SYSTEM => {
+                    let ptr = self.pop();
+                    let mut cmd = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                        cmd.push(mem[addr] as char);
+                        addr += 1;
+                    }
+                    drop(shared);
+                    
+                    kprintln!("System Command: {}", cmd);
+                    // Actual execution?
+                    // crate::shell::execute_command(&cmd); ??
+                    // For now, logging it is enough for "demo" usage, 
+                    // or we try to chain it.
+                    self.push(0); // Success/Fail code
+                },
+
                 OP_EXIT => { self.running = false; },
-                _ => { eprintln!("Unknown Opcode: {:02X}", op); }
+                _ => { kprintln!("Unknown Opcode: {:02X}", op); }
             }
         }
     }

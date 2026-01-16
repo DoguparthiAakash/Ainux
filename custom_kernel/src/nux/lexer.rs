@@ -1,3 +1,8 @@
+use alloc::vec::Vec;
+use alloc::string::String;
+use alloc::format;
+use alloc::string::ToString;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Print,
@@ -14,33 +19,37 @@ pub enum Token {
     For,
     Do,
     Asm,
-    Spawn, // NEW: Multi-threading
-    Lock,  // NEW: Synchronization
-    Unlock, // NEW: Synchronization
-    Import, // NEW: Standard Library Includes
-    Peek,   // NEW: Memory Access
-    Poke,   // NEW: Memory Access
-    Break,  // NEW: Loop Control
-    Continue, // NEW: Loop Control
-    
-    // Vision
-    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter, ImgGet, ImgSet,
-    ImgResize, ImgCrop, ImgGrayscale,
-    UpperCase, LowerCase,
-    
-    // Boolean
-    True, False, Not,
-    
-    // Misc
-    Colon, // For types
-    
+    Spawn,
+    Lock,
+    Unlock,
+    Import,
+    Peek,
+    Poke,
+    Break,
+    Continue,
     Identifier(String),
     String(String),
-    Float(f64), // NEW: Float Literal
+    Float(f64),
     Number(i64),
     
     // Type Keywords
     KwInt, KwFloat, KwByte, KwShort, KwLong, KwChar, KwString,
+    
+    // Boolean
+    True, False, Not,
+    
+    // Vision
+    ImgAlloc, ImgFree, ImgDraw, CamCapture, ImgFilter, ImgGet, ImgSet, ImgFill,
+    ImgResize, ImgCrop, ImgGrayscale,
+
+    // Math Intrinsics
+    Sin, Cos, Sqrt,
+    
+    // Introspection
+    SysPlatform, CamCount, IsKeyDown,
+    
+    UpperCase, LowerCase,
+    
     LParen,
     RParen,
     LBrace,
@@ -60,6 +69,7 @@ pub enum Token {
     And,
     Or,
     SemiColon,
+    Colon,
     Dot,
     Comma,
     Plus,
@@ -100,14 +110,6 @@ impl Lexer {
         
         let c = self.input[self.pos];
         
-        // Helper to advance and track pos/col
-        // But wait, skip_whitespace advances too.
-        // We need centralized "advance_char" method to track line/col correctly.
-        
-        // Let's refactor slightly to just peek here and let specific handlers consume.
-        // Current implementation uses self.pos manually.
-        // I will stick to existing style but update line/col manually.
-        
         match c {
             '+' => { self.advance_pos(); (Token::Plus, start_span) },
             '-' => { self.advance_pos(); (Token::Minus, start_span) },
@@ -142,25 +144,22 @@ impl Lexer {
             '#' => {
                 self.advance_pos(); // Skip #
                 
-                // Check if it's a multi-line comment: #* ... *#
+                // Multi-line comment: #* ... *#
                 if self.pos < self.input.len() && self.input[self.pos] == '*' {
                     self.advance_pos(); // Skip *
                     
-                    // Multi-line comment with nesting support
                     let mut depth = 1;
                     
                     while self.pos < self.input.len() && depth > 0 {
                         if self.input[self.pos] == '#' {
                             self.advance_pos();
                             if self.pos < self.input.len() && self.input[self.pos] == '*' {
-                                // Found #* - increase nesting depth
                                 depth += 1;
                                 self.advance_pos();
                             }
                         } else if self.input[self.pos] == '*' {
                             self.advance_pos();
                             if self.pos < self.input.len() && self.input[self.pos] == '#' {
-                                // Found *# - decrease nesting depth
                                 depth -= 1;
                                 self.advance_pos();
                             }
@@ -179,6 +178,21 @@ impl Lexer {
             },
             '=' | '!' | '<' | '>' | '&' | '|' => {
                  self.lex_operator(start_span)
+            },
+            '\'' => {
+                 self.advance_pos(); // Skip open quote
+                 if self.pos < self.input.len() {
+                     let c = self.input[self.pos];
+                     self.advance_pos();
+                     if self.pos < self.input.len() && self.input[self.pos] == '\'' {
+                         self.advance_pos(); // Skip closing quote
+                         (Token::Number(c as i64), start_span)
+                     } else {
+                          (Token::Identifier(format!("Invalid char literal")), start_span)
+                     }
+                 } else {
+                     (Token::Identifier(format!("Unexpected EOF in char")), start_span)
+                 }
             },
             '"' => self.lex_string(start_span),
             _ if c.is_digit(10) => self.lex_number(start_span),
@@ -262,6 +276,7 @@ impl Lexer {
             "poke" => Token::Poke,
             "break" => Token::Break,
             "continue" => Token::Continue,
+            "class" => Token::Class,
             
             // Types
             "int" => Token::KwInt,
@@ -272,6 +287,7 @@ impl Lexer {
             "char" => Token::KwChar,
             "string" => Token::KwString,
             
+            // Vision Intrinsics
             "img_alloc" => Token::ImgAlloc,
             "img_free" => Token::ImgFree,
             "img_draw" => Token::ImgDraw,
@@ -279,12 +295,21 @@ impl Lexer {
             "img_filter" => Token::ImgFilter,
             "img_get" => Token::ImgGet,
             "img_set" => Token::ImgSet,
+            "img_fill" => Token::ImgFill,
             "img_resize" => Token::ImgResize,
             "img_crop" => Token::ImgCrop,
             "img_grayscale" => Token::ImgGrayscale,
-            
+
+            "sin" => Token::Sin,
+            "cos" => Token::Cos,
+            "sqrt" => Token::Sqrt,
+
             "UpperCase" => Token::UpperCase,
             "LowerCase" => Token::LowerCase,
+            
+            "sys_platform" => Token::SysPlatform,
+            "cam_count" => Token::CamCount,
+            "is_key_down" => Token::IsKeyDown,
             
             "true" => Token::True,
             "false" => Token::False,
@@ -326,7 +351,7 @@ impl Lexer {
             '=' => (Token::Eq, start_span),
             '<' => (Token::Lt, start_span),
             '>' => (Token::Gt, start_span),
-            _ => (Token::Identifier(format!("{}", c)), start_span), // Should not happen often
+            _ => (Token::Identifier(format!("{}", c)), start_span),
         }
     }
 }

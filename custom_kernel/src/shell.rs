@@ -160,6 +160,7 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
      }
 }
 
+
 pub fn run() {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     let _ = write!(serial, "Shell: Run entered.\n");
@@ -300,12 +301,10 @@ pub fn run() {
                      "lsblk" => cmd_lsblk(),
                      "uname" => cmd_uname(),
                      "grep" => cmd_grep(&args),
-                     // "cat" => cmd_cat(&args), // Removed duplicate
                      "head" => cmd_head(&args),
                      "tail" => cmd_tail(&args),
                      "wc" => cmd_wc(&args),
                      "ip" => cmd_ip(&args),
-                     // "ip" => cmd_ip(&args), // Removed duplicate
                      "netstat" => cmd_netstat(),
                      "cd" => cmd_cd(&args),
                      "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
@@ -317,6 +316,139 @@ pub fn run() {
         input_buffer.clear();
     }
 }
+
+// ... existing help ...
+
+// --- NUX COMMANDS ---
+
+fn cmd_nux(args: &[&str]) {
+    if args.len() < 2 {
+        video::put_str("Usage: nux <file.nux/.nuxi>\n");
+        return;
+    }
+    
+    // Support "nux run <file>" syntax too
+    let filename = if args[1] == "run" {
+        if args.len() < 3 { video::put_str("Usage: nux run <file>\n"); return; }
+        args[2]
+    } else {
+        args[1]
+    };
+    
+    let path = resolve_path(filename);
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    
+    // 1. Read File
+    let mut file_content = Vec::new();
+    let root = vfs::ROOT.lock();
+    if let Some(root_inode) = root.as_ref() {
+        if let Ok(inode) = root_inode.lookup(name) {
+             if let Ok(handle) = inode.open(0) {
+                  // Read entire file (limit 64KB for now)
+                  let mut buf = vec![0u8; 64 * 1024];
+                  if let Ok(n) = handle.read(&mut buf, 0) {
+                      file_content.extend_from_slice(&buf[0..n]);
+                  } else {
+                      video::put_str("Error reading file header.\n"); return;
+                  }
+             } else { video::put_str("Error opening file.\n"); return; }
+        } else { video::put_str("File not found.\n"); return; }
+    } else { video::put_str("VFS not ready.\n"); return; }
+    
+    // 2. Compile or Load
+    let bytecode = if filename.ends_with(".nux") {
+        match core::str::from_utf8(&file_content) {
+            Ok(src) => {
+                video::put_str("Compiling...\n");
+                match crate::nux::high_level::compile_high_level(src) {
+                    Ok(bc) => bc,
+                    Err(errs) => {
+                        for e in errs {
+                             video::put_str(&format!("Error: {}\n", e));
+                        }
+                        return;
+                    }
+                }
+            },
+            Err(_) => { video::put_str("Error: Source file is binary/invalid UTF8.\n"); return; }
+        }
+    } else {
+        // Assume .nuxi (bytecode)
+        file_content
+    };
+    
+    // 3. Run VM
+    video::put_str("Running Nux VM...\n");
+    let mut vm = crate::nux::vm::NuxVm::new(bytecode);
+    vm.run();
+    video::put_str("\nVM Exit.\n");
+}
+
+fn cmd_nuxc(args: &[&str]) {
+    if args.len() < 3 {
+        video::put_str("Usage: nuxc <input.nux> <output.nuxi>\n");
+        return;
+    }
+    let infile = args[1];
+    let outfile = args[2];
+    
+    // Read input
+    let path = resolve_path(infile);
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    
+    let root = vfs::ROOT.lock();
+    let root_inode = if let Some(r) = root.as_ref() { r } else { return; };
+    
+    let src = match root_inode.lookup(name) {
+        Ok(inode) => {
+             if let Ok(handle) = inode.open(0) {
+                  let mut buf = vec![0u8; 64*1024];
+                  if let Ok(n) = handle.read(&mut buf, 0) {
+                      match core::str::from_utf8(&buf[0..n]) {
+                          Ok(s) => String::from(s),
+                          Err(_) => { video::put_str("Invalid UTF8\n"); return; }
+                      }
+                  } else { String::from("") }
+             } else { String::from("") }
+        },
+        Err(_) => { video::put_str("Input file not found\n"); return; }
+    };
+    
+    // Compile
+    match crate::nux::high_level::compile_high_level(&src) {
+        Ok(bc) => {
+             // Write output
+             // Need create file logic. VFS `create`?
+             // Assuming create if not exists
+             let out_path = resolve_path(outfile);
+             let out_name = out_path.rsplit('/').next().unwrap_or(&out_path);
+             
+             match root_inode.create(out_name, vfs::FileType::File) {
+                 Ok(inode) => {
+                     if let Ok(handle) = inode.open(0) {
+                         let _ = handle.write(&bc, 0);
+                         video::put_str("Compilation Success.\n");
+                     }
+                 },
+                 Err(_) => {
+                      // Maybe exists? Try open
+                      if let Ok(inode) = root_inode.lookup(out_name) {
+                          if let Ok(handle) = inode.open(0) {
+                               let _ = handle.write(&bc, 0); // Overwrite? VFS write usually overwrites if pos=0? No, it writes at pos. Need truncate.
+                               video::put_str("Compilation Success (Overwritten).\n");
+                          }
+                      } else {
+                          video::put_str("Failed to create output file.\n");
+                      }
+                 }
+             }
+        },
+        Err(errs) => {
+            for e in errs { video::put_str(&format!("Error: {}\n", e)); }
+        }
+    }
+}
+
 
 fn cmd_help() {
     video::put_str("Available commands:\n");
@@ -361,8 +493,31 @@ fn cmd_help() {
     video::put_str("  id/su    - User Identity\n");
     video::put_str("\n--- Extra ---\n");
     video::put_str("  nux <f>  - Run Nux VM script\n");
+    video::put_str("  nuxc <f> - Compile Nux source\n");
     video::put_str("  grep/head/tail/wc - Text tools\n");
+    video::put_str("  btrfs_info - Test Btrfs Superblock\n");
 }
+
+fn cmd_btrfs_info() {
+    video::put_str("Reading Btrfs Superblock...\n");
+    match crate::fs::btrfs::read_superblock() {
+        Ok(sb) => {
+             // Copy packed fields to locals to avoid unaligned access error
+             let label = sb.label;
+             let total_bytes = sb.total_bytes;
+             let root = sb.root;
+             let chunk_root = sb.chunk_root;
+
+             video::put_str("Btrfs Superblock Found!\n");
+             video::put_str(&format!("  Label: {:?}\n", core::str::from_utf8(&label).unwrap_or("Invalid UTF8")));
+             video::put_str(&format!("  Total Bytes: {}\n", total_bytes));
+             video::put_str(&format!("  Root: {}\n", root));
+             video::put_str(&format!("  Chunk Root: {}\n", chunk_root));
+        },
+        Err(e) => video::put_str(&format!("Error: {}\n", e)),
+    }
+}
+
 
 
 
@@ -1131,95 +1286,7 @@ fn cmd_renice(args: &[&str]) {
     }
 }
 
-fn cmd_nux(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: nux <file.nuxi>\n"); return; }
-    let filename = args[1];
-    
-    // Load file
-    let mut code = Vec::new();
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         match root_inode.lookup(filename) {
-             Ok(inode) => {
-                 if let Ok(handle) = inode.open(0) {
-                     let mut buf = vec![0u8; 4096]; // 4KB limit for now
-                     if let Ok(n) = handle.read(&mut buf, 0) {
-                         for i in 0..n { code.push(buf[i]); }
-                     }
-                 }
-             },
-             Err(_) => { video::put_str("File not found.\n"); return; }
-         }
-    }
-    
-    if code.is_empty() {
-        video::put_str("Empty or unreadable file.\n");
-        return;
-    }
-    
-    let mut vm = crate::engine::vm::AnuxVM::new(code);
-    while vm.running {
-        vm.step();
-        // Yield to allow other tasks? Or blocking for shell?
-        // Blocking is fine for now as shell is single task context in this cmd.
-    }
-}
 
-fn cmd_nuxc(args: &[&str]) {
-    if args.len() < 3 {
-        video::put_str("Usage: nuxc <source.nux> <output.nuxi>\n");
-        return;
-    }
-    
-    let source_path = resolve_path(args[1]);
-    let dest_path = resolve_path(args[2]);
-    
-    // Read Source
-    let mut source_code = String::new();
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         if let Ok(inode) = root_inode.lookup(&source_path) {
-             if let Ok(handle) = inode.open(0) {
-                 let mut buf = vec![0u8; 8192]; // Max source 8KB
-                 if let Ok(n) = handle.read(&mut buf, 0) {
-                     source_code = String::from_utf8_lossy(&buf[0..n]).into_owned();
-                 }
-             }
-         } else {
-             video::put_str("Source file not found.\n");
-             return;
-         }
-    }
-    
-    // Compile
-    match crate::nux::compiler::compile(&source_code) {
-        Ok(bytecode) => {
-             video::put_str("Compilation Success!\n");
-             
-             if let Some(root_inode) = root.as_ref() {
-                 let dest_name = if dest_path.contains('/') { 
-                    dest_path.rsplit('/').next().unwrap_or(&dest_path) 
-                 } else { &dest_path };
-                 
-                 // Try create
-                 let _ = root_inode.create(dest_name, vfs::FileType::File);
-                 
-                 // Open and Write
-                 if let Ok(inode) = root_inode.lookup(dest_name) {
-                      if let Ok(handle) = inode.open(0) {
-                          let _ = handle.write(&bytecode, 0);
-                          video::put_str("Binary written: "); video::put_str(dest_name); video::put_char('\n');
-                      }
-                 }
-             }
-        },
-        Err(e) => {
-             video::put_str("Error: ");
-             video::put_str(&e);
-             video::put_char('\n');
-        }
-    }
-}
 
 fn cmd_code(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: code <filename>\n"); return; }

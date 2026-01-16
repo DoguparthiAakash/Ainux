@@ -70,7 +70,7 @@ fn main() {
                 Err(errors) => {
                     println!("❌ Compilation Failed with {} errors:", errors.len());
                     for e in errors {
-                        println!("Error: {}", e.message);
+                        println!("Error at line {}: {}", e.span.line, e.message);
                     }
                 }
             }
@@ -311,7 +311,7 @@ fn main() {
                 Err(errors) => { 
                     println!("High-Level Compilation Failed with {} errors:", errors.len()); 
                     for e in errors {
-                        println!("Error: {}", e.message);
+                        println!("Error at line {}: {}", e.span.line, e.message);
                     }
                     return; 
                 }
@@ -434,30 +434,67 @@ fn process_imports(path: &std::path::Path, visited: &mut std::collections::HashS
             // import "filename";
             let start = trimmed.find('"').ok_or("Invalid import syntax")? + 1;
             let end = trimmed.rfind('"').ok_or("Invalid import syntax")?;
-            let import_path_str = &trimmed[start..end];
+            let mut import_path_str = trimmed[start..end].to_string();
+            if !import_path_str.ends_with(".nux") {
+                import_path_str.push_str(".nux");
+            }
+            let import_param = &import_path_str;
             
-            // Resolve path relative to current file
+            // Search Paths
+            let mut resolved_path = None;
+            
+            // 1. Relative to current file
             let parent = path.parent().unwrap_or(std::path::Path::new("."));
-            let mut import_path = parent.join(import_path_str);
+            let p1 = parent.join(import_param);
+            if p1.exists() { resolved_path = Some(p1); }
             
-            // "Universal" Library Search: If local path doesn't exist, check standard locations
-            if !import_path.exists() {
+            // 2. Relative to current file's 'lib' folder (Project Lib)
+            if resolved_path.is_none() {
+                let p2 = parent.join("lib").join(import_param);
+                if p2.exists() { resolved_path = Some(p2); }
+            }
+
+            // 3. Current Working Directory (CWD)
+            if resolved_path.is_none() {
+                 if let Ok(cwd) = std::env::current_dir() {
+                     // 3a. CWD Root
+                     let p3a = cwd.join(import_param);
+                     if p3a.exists() { resolved_path = Some(p3a); }
+                     
+                     // 3b. CWD Lib
+                     if resolved_path.is_none() {
+                         let p3b = cwd.join("lib").join(import_param);
+                         if p3b.exists() { resolved_path = Some(p3b); }
+                     }
+                     
+                     // 3b. Nux Source Tree Dev Fallback (nux_portable/lib)
+                     let p3b = cwd.join("nux_portable").join("lib").join(import_param);
+                     if p3b.exists() { resolved_path = Some(p3b); }
+                 }
+            }
+            
+            // 4. System/Executable Libs
+            if resolved_path.is_none() {
                  if let Ok(exe_path) = std::env::current_exe() {
                      if let Some(exe_dir) = exe_path.parent() {
-                         let lib_path = exe_dir.join(import_path_str);
-                         if lib_path.exists() {
-                             import_path = lib_path;
-                         } else {
-                             // Check exe_dir/lib/
-                             let lib_sub_path = exe_dir.join("lib").join(import_path_str);
-                             // Need to handle "lib/io.nux" vs "io.nux" in lib folder
-                             if lib_sub_path.exists() {
-                                 import_path = lib_sub_path;
-                             }
-                         }
+                         let p4 = exe_dir.join(import_param);
+                         if p4.exists() { resolved_path = Some(p4); }
+                         
+                         let p5 = exe_dir.join("lib").join(import_param);
+                         if p5.exists() { resolved_path = Some(p5); }
                      }
                  }
             }
+            
+            if resolved_path.is_none() {
+                 // Try one last thing: Maybe the user provided "graphics2d" and it is in "lib/graphics2d.nux"
+                 // but we only checked "lib/graphics2d.nux" (correct).
+                 // What if it is in "std"?
+                 // Standard library usually in "lib".
+                 return Err(format!("Import not found: {}", import_param));
+            }
+            
+            let import_path = resolved_path.unwrap();
             
             let result = process_imports(&import_path, visited)?;
             out.push_str(&result);

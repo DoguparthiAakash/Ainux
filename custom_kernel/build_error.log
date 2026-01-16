@@ -7,14 +7,93 @@ warning: unused variable: `out_dir`
   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: `ainux_kernel` (build script) generated 1 warning
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/libc/stdio.c: In function 'fopen':
+warning: ainux_kernel@0.1.0: src/c/libc/stdio.c:142:47: warning: unused parameter 'mode' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   142 | FILE *fopen(const char *pathname, const char *mode) {
+warning: ainux_kernel@0.1.0:       |                                   ~~~~~~~~~~~~^~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/ex/io/ext2.c:80:25: warning: 'ext2_readdir' defined but not used [-Wunused-function]
+warning: ainux_kernel@0.1.0:    80 | static struct w_dirent *ext2_readdir(vfs_node_t *node, uint32_t index) {
+warning: ainux_kernel@0.1.0:       |                         ^~~~~~~~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c: In function 'fat32_read_vfs':
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c:891:52: warning: unused parameter 'offset' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   891 | uint64_t fat32_read_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+warning: ainux_kernel@0.1.0:       |                                           ~~~~~~~~~^~~~~~
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c: In function 'fat32_write_vfs':
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c:907:53: warning: unused parameter 'offset' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   907 | uint64_t fat32_write_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+warning: ainux_kernel@0.1.0:       |                                            ~~~~~~~~~^~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c: In function 'mouse_handler':
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c:132:20: warning: variable 'y_rel' set but not used [-Wunused-but-set-variable]
+warning: ainux_kernel@0.1.0:   132 |             int8_t y_rel = mouse_byte[2];
+warning: ainux_kernel@0.1.0:       |                    ^~~~~
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c:131:20: warning: variable 'x_rel' set but not used [-Wunused-but-set-variable]
+warning: ainux_kernel@0.1.0:   131 |             int8_t x_rel = mouse_byte[1];
+warning: ainux_kernel@0.1.0:       |                    ^~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/drivers/rtc.c: In function 'rtc_get_time':
+warning: ainux_kernel@0.1.0: src/c/drivers/rtc.c:32:13: warning: unused variable 'century' [-Wunused-variable]
+warning: ainux_kernel@0.1.0:    32 |     uint8_t century;
+warning: ainux_kernel@0.1.0:       |             ^~~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
     Checking ainux_kernel v0.1.0 (/home/aakash/Downloads/Ainuix/custom_kernel)
-warning: unused import: `self`
- --> src/main.rs:8:17
+error[E0428]: the name `cmd_nuxc` is defined multiple times
+    --> src/shell.rs:1241:1
+     |
+ 163 | fn cmd_nuxc(args: &[&str]) {
+     | -------------------------- previous definition of the value `cmd_nuxc` here
+...
+1241 | fn cmd_nuxc(args: &[&str]) {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `cmd_nuxc` redefined here
+     |
+     = note: `cmd_nuxc` must be defined only once in the value namespace of this module
+
+warning: unused `#[macro_use]` import
+ --> src/main.rs:4:1
   |
-8 | use core::fmt::{self, Write};
-  |                 ^^^^
+4 | #[macro_use]
+  | ^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `self`
+ --> src/main.rs:9:17
+  |
+9 | use core::fmt::{self, Write};
+  |                 ^^^^
 
 warning: unused import: `core::mem::transmute`
  --> src/fs/ext4.rs:2:5
@@ -94,11 +173,23 @@ warning: unused import: `spin::Mutex`
 1 | use spin::Mutex;
   |     ^^^^^^^^^^^
 
+warning: unused import: `core::fmt::Write`
+    --> src/shell.rs:1536:9
+     |
+1536 |     use core::fmt::Write;
+     |         ^^^^^^^^^^^^^^^^
+
 warning: unused imports: `FRAMEBUFFER_ADDR`, `FRAMEBUFFER_BPP`, `FRAMEBUFFER_HEIGHT`, `FRAMEBUFFER_PITCH`, and `FRAMEBUFFER_WIDTH`
  --> src/gui/graphics.rs:2:35
   |
 2 | use crate::drivers::video::{self, FRAMEBUFFER_ADDR, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_PITCH, FRAMEBUFFER_BPP};
   |                                   ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `Color`
+ --> src/gui/compositor.rs:4:28
+  |
+4 | use crate::gui::graphics::{Color, Graphics};
+  |                            ^^^^^
 
 warning: unused import: `spin::Mutex`
  --> src/engine/vm.rs:3:5
@@ -118,19 +209,17 @@ warning: unused import: `spin::Mutex`
 2 | use spin::Mutex;
   |     ^^^^^^^^^^^
 
-warning: unused import: `alloc::string::String`
- --> src/nux/vm.rs:2:5
+warning: unused import: `alloc::string::ToString`
+ --> src/nux/lexer.rs:4:5
   |
-2 | use alloc::string::String;
-  |     ^^^^^^^^^^^^^^^^^^^^^
+4 | use alloc::string::ToString;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
 
-error: type `i32` cannot be used with this register class
-  --> src/drivers/rtc.rs:36:57
-   |
-36 |         asm!("out dx, al", in("dx") CMOS_ADDR, in("al") 0x0A, options(nomem, nostack, preserves_flags));
-   |                                                         ^^^^
-   |
-   = note: register class `reg_byte` supports these types: i8
+warning: unused import: `alloc::sync::Arc`
+ --> src/sem/mod.rs:3:5
+  |
+3 | use alloc::sync::Arc;
+  |     ^^^^^^^^^^^^^^^^
 
 warning: unused variable: `group`
    --> src/fs/ext4.rs:270:23
@@ -259,66 +348,140 @@ warning: unused variable: `state`
    |                          ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
 
 warning: unreachable pattern
-   --> src/shell.rs:131:22
+   --> src/shell.rs:381:22
     |
-130 |                      "ssh" => cmd_stub("ssh"),
-    |                      ----- matches all the relevant values
-131 |                      "ssh" => cmd_stub("ssh"),
-    |                      ^^^^^ no value can reach this
+357 |                      "nuxc" => cmd_nuxc(&args),
+    |                      ------ matches all the relevant values
+...
+381 |                      "nuxc" => cmd_nuxc(&args),
+    |                      ^^^^^^ no value can reach this
     |
     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
 
-warning: variable does not need to be mutable
-   --> src/shell.rs:432:9
+warning: value assigned to `cursor_pos` is never read
+   --> src/shell.rs:243:26
     |
-432 |     let mut pmm_lock = crate::mm::pmm::PMM.lock();
+243 |     let mut cursor_pos = 0;
+    |                          ^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `cursor_visible` is never read
+   --> src/shell.rs:278:22
+    |
+278 |                      cursor_visible = false; // Reset blink phase
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: value assigned to `cursor_visible` is never read
+   --> src/shell.rs:294:22
+    |
+294 |                      cursor_visible = false; 
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: variable does not need to be mutable
+   --> src/shell.rs:617:9
+    |
+617 |     let mut pmm_lock = crate::mm::pmm::PMM.lock();
     |         ----^^^^^^^^
     |         |
     |         help: remove this `mut`
 
 warning: unused variable: `tens`
-   --> src/shell.rs:580:9
+   --> src/shell.rs:768:9
     |
-580 |     let tens = val / 10;
+768 |     let tens = val / 10;
     |         ^^^^ help: if this is intentional, prefix it with an underscore: `_tens`
 
 warning: unused variable: `e`
-   --> src/shell.rs:711:13
+   --> src/shell.rs:899:13
     |
-711 |         Err(e) => {
+899 |         Err(e) => {
     |             ^ help: if this is intentional, prefix it with an underscore: `_e`
 
 warning: unused variable: `args`
-   --> src/shell.rs:960:11
-    |
-960 | fn cmd_ip(args: &[&str]) {
-    |           ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
+    --> src/shell.rs:1148:11
+     |
+1148 | fn cmd_ip(args: &[&str]) {
+     |           ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
 
 warning: variable does not need to be mutable
-    --> src/shell.rs:1009:9
+    --> src/shell.rs:1197:9
      |
-1009 |     let mut prio = 128;
+1197 |     let mut prio = 128;
      |         ----^^^^
      |         |
      |         help: remove this `mut`
 
 warning: unused variable: `prio_str`
-    --> src/shell.rs:1002:9
+    --> src/shell.rs:1190:9
      |
-1002 |     let prio_str = args[1];
+1190 |     let prio_str = args[1];
      |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prio_str`
 
 warning: unused variable: `args`
-    --> src/shell.rs:1057:15
+    --> src/shell.rs:1310:15
      |
-1057 | fn cmd_umount(args: &[&str]) {
+1310 | fn cmd_umount(args: &[&str]) {
      |               ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
 
-warning: unused variable: `width`
-    --> src/shell.rs:1136:12
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1390:13
      |
-1136 |        let width = *video::FRAMEBUFFER_WIDTH.lock();
+1390 |             unsafe {
+     |             ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `width`
+    --> src/shell.rs:1423:12
+     |
+1423 |        let width = *video::FRAMEBUFFER_WIDTH.lock();
      |            ^^^^^ help: if this is intentional, prefix it with an underscore: `_width`
+
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1587:18
+     |
+1587 |                  unsafe {
+     |                  ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1609:14
+     |
+1609 |              unsafe {
+     |              ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1655:45
+     |
+1655 | ...                   unsafe {
+     |                       ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1662:45
+     |
+1662 | ...                   unsafe { *video::CONSOLE_X.lock() = 0; *video::CONSOLE_Y.lock() = 0; }
+     |                       ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> src/shell.rs:1673:41
+     |
+1673 | ...                   unsafe {
+     |                       ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `w`
+ --> src/gui/desktop.rs:4:41
+  |
+4 | pub fn draw_desktop(buffer: &mut [u32], w: usize, h: usize) {
+  |                                         ^ help: if this is intentional, prefix it with an underscore: `_w`
+
+warning: unused variable: `h`
+ --> src/gui/desktop.rs:4:51
+  |
+4 | pub fn draw_desktop(buffer: &mut [u32], w: usize, h: usize) {
+  |                                                   ^ help: if this is intentional, prefix it with an underscore: `_h`
 
 warning: unused variable: `current_load`
   --> src/engine/ai_scheduler.rs:25:21
@@ -341,7 +504,6 @@ warning: value assigned to `rflags` is never read
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: maybe it is overwritten before being read?
-  = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
 warning: unnecessary `unsafe` block
  --> src/debug/diagnostics.rs:5:5
@@ -397,26 +559,95 @@ warning: unused variable: `size`
 5 |     pub fn map_shared_memory(size: usize) -> Option<u64> {
   |                              ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
 
-warning: unused variable: `val`
-   --> src/nux/vm.rs:103:26
+warning: unused variable: `cname`
+   --> src/nux/high_level.rs:555:35
     |
-103 |                      let val = self.pop();
-    |                          ^^^ help: if this is intentional, prefix it with an underscore: `_val`
+555 | ...                   for (cname, cinfo) in &self.classes {
+    |                            ^^^^^ help: if this is intentional, prefix it with an underscore: `_cname`
+
+warning: unused variable: `cname`
+    --> src/nux/high_level.rs:1042:57
+     |
+1042 | ...   let mut found = None; for (cname, cinfo) in &self.classes { if let Some(off) = cinfo.fields.get(&member) { found = Some(*off); } }
+     |                                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_cname`
 
 warning: unnecessary `unsafe` block
-  --> src/main.rs:75:5
+  --> src/main.rs:78:5
    |
-75 |     unsafe { mm::pmm::BitmapPmm::init(); }
+78 |     unsafe { mm::pmm::BitmapPmm::init(); }
    |     ^^^^^^ unnecessary `unsafe` block
 
 warning: unnecessary `unsafe` block
-   --> src/main.rs:191:22
+   --> src/main.rs:195:22
     |
-189 |                  unsafe {
+193 |                  unsafe {
     |                  ------ because it's nested under this `unsafe` block
-190 |                      // Unmap first just in case
-191 |                      unsafe { mm::vmm::unmap_page(user_base); }
+194 |                      // Unmap first just in case
+195 |                      unsafe { mm::vmm::unmap_page(user_base); }
     |                      ^^^^^^ unnecessary `unsafe` block
 
-warning: `ainux_kernel` (bin "ainux_kernel") generated 62 warnings
-error: could not compile `ainux_kernel` (bin "ainux_kernel") due to 1 previous error; 62 warnings emitted
+For more information about this error, try `rustc --explain E0428`.
+warning: `ainux_kernel` (bin "ainux_kernel") generated 78 warnings
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/libc/stdio.c: In function 'fopen':
+warning: ainux_kernel@0.1.0: src/c/libc/stdio.c:142:47: warning: unused parameter 'mode' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   142 | FILE *fopen(const char *pathname, const char *mode) {
+warning: ainux_kernel@0.1.0:       |                                   ~~~~~~~~~~~~^~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/ex/io/ext2.c:80:25: warning: 'ext2_readdir' defined but not used [-Wunused-function]
+warning: ainux_kernel@0.1.0:    80 | static struct w_dirent *ext2_readdir(vfs_node_t *node, uint32_t index) {
+warning: ainux_kernel@0.1.0:       |                         ^~~~~~~~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c: In function 'fat32_read_vfs':
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c:891:52: warning: unused parameter 'offset' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   891 | uint64_t fat32_read_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+warning: ainux_kernel@0.1.0:       |                                           ~~~~~~~~~^~~~~~
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c: In function 'fat32_write_vfs':
+warning: ainux_kernel@0.1.0: src/c/ex/io/fat32.c:907:53: warning: unused parameter 'offset' [-Wunused-parameter]
+warning: ainux_kernel@0.1.0:   907 | uint64_t fat32_write_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+warning: ainux_kernel@0.1.0:       |                                            ~~~~~~~~~^~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c: In function 'mouse_handler':
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c:132:20: warning: variable 'y_rel' set but not used [-Wunused-but-set-variable]
+warning: ainux_kernel@0.1.0:   132 |             int8_t y_rel = mouse_byte[2];
+warning: ainux_kernel@0.1.0:       |                    ^~~~~
+warning: ainux_kernel@0.1.0: src/c/drivers/mouse.c:131:20: warning: variable 'x_rel' set but not used [-Wunused-but-set-variable]
+warning: ainux_kernel@0.1.0:   131 |             int8_t x_rel = mouse_byte[1];
+warning: ainux_kernel@0.1.0:       |                    ^~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: src/c/drivers/rtc.c: In function 'rtc_get_time':
+warning: ainux_kernel@0.1.0: src/c/drivers/rtc.c:32:13: warning: unused variable 'century' [-Wunused-variable]
+warning: ainux_kernel@0.1.0:    32 |     uint8_t century;
+warning: ainux_kernel@0.1.0:       |             ^~~~~~~
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+error: could not compile `ainux_kernel` (bin "ainux_kernel") due to 1 previous error; 78 warnings emitted

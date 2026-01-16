@@ -42,10 +42,61 @@ gcc -static -nostdlib -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables -Tt
 debugfs -w -R "write hello.elf hello.elf" disk.img || echo "debugfs (hello.elf) failed"
 
 # Inject init.anux (Full System Init)
-./tools/nuxc.py init.nuxi hello.anux
-debugfs -w -R "write hello.anux hello.anux" disk.img || echo "debugfs (hello.anux) failed"
+# ./tools/nuxc.py init.nuxi hello.anux # Use kernel compiler now
 
-# Stat root to check blocks (Commented out to prevent pager blocking)
+echo "Injecting Nux Scripts..."
+# Create library directory
+debugfs -w -R "mkdir lib" disk.img || true
+
+# Inject Libraries
+debugfs -w -R "write nux_portable/io.nux lib/io.nux" disk.img || echo "Failed to inject io.nux"
+debugfs -w -R "write nux_portable/math.nux lib/math.nux" disk.img || echo "Failed to inject math.nux"
+debugfs -w -R "write nux_portable/util.nux lib/util.nux" disk.img || echo "Failed to inject util.nux"
+debugfs -w -R "write nux_portable/graphics.nux lib/graphics.nux" disk.img || echo "Failed to inject graphics.nux"
+debugfs -w -R "write nux_portable/collections.nux lib/collections.nux" disk.img || echo "Failed to inject collections.nux"
+debugfs -w -R "write nux_portable/string.nux lib/string.nux" disk.img || echo "Failed to inject string.nux"
+# Create Library Structure
+debugfs -w -R "mkdir lib/util" disk.img || true
+debugfs -w -R "mkdir lib/io" disk.img || true
+debugfs -w -R "mkdir lib/lang" disk.img || true
+debugfs -w -R "mkdir lib/data" disk.img || true
+
+# Inject Libraries (Categorized)
+# IO
+debugfs -w -R "write nux_portable/io.nux lib/io/console.nux" disk.img || echo "Failed io.nux"
+debugfs -w -R "write nux_portable/file.nux lib/io/file.nux" disk.img || echo "Failed file.nux"
+# For backward compat (import "io") -> lib/io.nux mapping?
+# Compiler logic maps "io" -> "lib/io.nux".
+# If I move it to "lib/io/console.nux", then user must import "io.console".
+# User wanted "util.*".
+# I will KEEP root aliases for now OR update them to be category roots?
+
+# Strategy:
+# lib/io.nux (Aggregate or Console) -> Keep as is for "import 'io'"
+# lib/util.nux (Aggregate)
+# lib/lang.nux (Aggregate)
+
+# But user wants "call by name".
+# If I put file in lib/util/math.nux -> import "util.math".
+
+debugfs -w -R "write nux_portable/math.nux lib/util/math.nux" disk.img || echo "Failed math.nux"
+debugfs -w -R "write nux_portable/io.nux lib/io.nux" disk.img || echo "Failed io.nux" 
+debugfs -w -R "write nux_portable/file.nux lib/file.nux" disk.img || echo "Failed file.nux"
+debugfs -w -R "write nux_portable/sys.nux lib/sys.nux" disk.img || echo "Failed sys.nux"
+debugfs -w -R "write nux_portable/memory.nux lib/memory.nux" disk.img || echo "Failed memory.nux"
+debugfs -w -R "write nux_portable/string.nux lib/string.nux" disk.img || echo "Failed string.nux"
+debugfs -w -R "write nux_portable/collections.nux lib/collections.nux" disk.img || echo "Failed collections.nux"
+debugfs -w -R "write nux_portable/time.nux lib/time.nux" disk.img || echo "Failed time.nux"
+debugfs -w -R "write nux_portable/testing.nux lib/testing.nux" disk.img || echo "Failed testing.nux"
+debugfs -w -R "write nux_portable/log.nux lib/log.nux" disk.img || echo "Failed log.nux"
+debugfs -w -R "write nux_portable/test_mem_limit.nux test_mem.nux" disk.img || echo "Failed test_mem"
+debugfs -w -R "write nux_portable/test_gc.nux test_gc.nux" disk.img || echo "Failed test_gc"
+debugfs -w -R "write nux_portable/util.nux lib/util.nux" disk.img || echo "Failed util.nux"
+
+
+# Create Category Aggregates (Virtual)
+# We need actual files for "util.nux" if someone imports "util".
+# I will create 'util.nux' later which imports 'util/math'.
 # debugfs -R "stat /" disk.img
 # debugfs -R "stat /hello.txt" disk.img
 

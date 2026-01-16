@@ -1,10 +1,10 @@
-use crate::lexer::{Lexer, Token, Span};
-use std::vec::Vec;
-use std::collections::HashMap;
-
-use std::fmt;
-
-
+use crate::nux::lexer::{Lexer, Token, Span};
+use alloc::vec::Vec;
+use alloc::vec;
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::format;
+use core::fmt;
 
 #[derive(Debug)]
 pub struct CompileError {
@@ -41,7 +41,6 @@ pub fn compile_to_asm_source(source: &str) -> Result<String, Vec<CompileError>> 
             }
         },
         Err(e) => {
-           // Critical failure (e.g. unhandled), but we also have accumulated errors.
            parser.errors.push(e);
            Err(parser.errors)
         }
@@ -51,7 +50,7 @@ pub fn compile_to_asm_source(source: &str) -> Result<String, Vec<CompileError>> 
 pub fn compile_high_level(source: &str) -> Result<Vec<u8>, Vec<CompileError>> {
     match compile_to_asm_source(source) {
         Ok(asm) => {
-            crate::compiler::compile(&asm).map_err(|e| vec![CompileError::new(e, Span { line: 0, col: 0 })])
+            crate::nux::compiler::compile(&asm).map_err(|e| vec![CompileError::new(e, Span { line: 0, col: 0 })])
         },
         Err(e) => Err(e),
     }
@@ -68,7 +67,14 @@ pub enum Type {
     Char,
     String,
     Bool,
-    Unknown
+    Unknown,
+    Class(String)
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassInfo {
+    pub fields: BTreeMap<String, u32>,
+    pub size: u32,
 }
 
 pub struct Parser {
@@ -76,25 +82,15 @@ pub struct Parser {
     current_token: Token,
     current_span: Span,
     prev_span: Span,
-    
-    // Compiler State
     var_addr_counter: u64,
     label_id_counter: usize,
-    // Scope: Name -> (VarLocation, Type)
-    scopes: Vec<HashMap<String, (VarLocation, Type)>>,
-    
-    // Output
+    scopes: Vec<BTreeMap<String, (VarLocation, Type)>>,
     asm_output: String,
     errors: Vec<CompileError>,
-    
-    // Loop control stack: (start_label, end_label)
-    loop_stack: Vec<(String, String)>, // (ContinueLabel, BreakLabel)
-    
-    // Function State
+    loop_stack: Vec<(String, String)>, 
     local_offset: i64, 
-    
-    // Advanced Types
-    bound_types: HashMap<String, (i64, i64)>,
+    bound_types: BTreeMap<String, (i64, i64)>,
+    classes: BTreeMap<String, ClassInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -108,9 +104,8 @@ impl Parser {
         let mut l = Lexer::new(source);
         let (first, span) = l.next_token();
         
-        // Initialize with Global Scope
         let mut scopes = Vec::new();
-        scopes.push(HashMap::new());
+        scopes.push(BTreeMap::new());
 
         Self {
             lexer: l,
@@ -124,7 +119,8 @@ impl Parser {
             errors: Vec::new(),
             loop_stack: Vec::new(),
             local_offset: 0,
-            bound_types: HashMap::new(),
+            bound_types: BTreeMap::new(),
+            classes: BTreeMap::new(),
         }
     }
 
@@ -135,9 +131,8 @@ impl Parser {
         self.current_span = span;
     }
 
-    // --- Scope Helpers ---
     fn enter_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(BTreeMap::new());
     }
 
     fn exit_scope(&mut self) {
@@ -145,9 +140,7 @@ impl Parser {
     }
 
     fn declare_var(&mut self, name: String, typ: Type) -> VarLocation {
-        // Check depth
         if self.scopes.len() > 1 {
-            // Local Variable
             let offset = self.local_offset;
             self.local_offset += 1;
             let loc = VarLocation::Local(offset);
@@ -156,7 +149,6 @@ impl Parser {
             }
             loc
         } else {
-            // Global Variable (Static)
             let addr = self.var_addr_counter;
             self.var_addr_counter += 8; 
             let loc = VarLocation::Global(addr);
@@ -181,9 +173,8 @@ impl Parser {
         self.asm_output.push('\n');
     }
 
-    // Recover from error by skipping up to semicolon or end of block
     fn synchronize(&mut self) {
-        self.advance(); // Consumes the bad token to prevent infinite loop
+        self.advance();
         while self.current_token != Token::EOF {
              if self.current_token == Token::SemiColon {
                  self.advance();
@@ -191,27 +182,25 @@ impl Parser {
              }
              match self.current_token {
                  Token::Class | Token::Func | Token::Var | Token::For | 
-                 Token::If | Token::While | Token::Print | Token::Return => return, // Start of new statement
-                 Token::RBrace => return, // End of block
+                 Token::If | Token::While | Token::Print | Token::Return => return,
+                 Token::RBrace => return,
                  _ => self.advance(),
              }
         }
     }
     
-    // Non-fatal error logging
     fn error_at_current(&mut self, msg: String) {
         self.errors.push(CompileError::new(msg, self.current_span));
     }
 
     fn parse_to_asm(&mut self) -> Result<String, CompileError> {
-        self.emit("; Auto-Generated by Nux High-Level Compiler");
+        self.emit("; Auto-Generated by Nux High-Level Compiler (Kernel)");
         self.emit("JMP __start_execution"); 
         
         let mut main_body = String::new();
         let mut definitions = String::new();
         
         loop {
-            // println!("DEBUG: Token: {:?}", self.current_token); // TRACE
             match &self.current_token {
                 Token::EOF => break,
                 Token::Class => {
@@ -235,66 +224,85 @@ impl Parser {
                         self.synchronize();
                     }
                 },
-                Token::Import => { // Preprocessor-like include
-                    // import "filename";
+                Token::Import => { 
                     self.advance();
-                    let filename = match &self.current_token {
+                    // Import Logic
+                     let raw_name = match &self.current_token {
                         Token::String(s) => s.clone(),
                         _ => {
-                            self.errors.push(CompileError::new("Expected filename string".to_string(), self.current_span));
+                            self.errors.push(CompileError::new("Expected import path string".to_string(), self.current_span));
                             continue;
                         }
                     };
                     self.advance();
-                    if self.current_token != Token::SemiColon {
-                        self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                        continue;
-                    }
-                    self.advance();
+                    if self.current_token == Token::SemiColon { self.advance(); }
                     
-                    // TODO: Actually read file and parse it.
-                    // This is complex because we need to inject tokens or recurse parser.
-                    // Simplest: `compile_high_level` should maybe resolve imports?
-                    // But `Parser` owns the lexer.
-                    // Option: Delegate to a new Parser instance and merge output?
-                    // Yes. We can parse the imported file into `definitions` string.
-                    if let Ok(content) = std::fs::read_to_string(&filename) {
-                         // Parse the imported content
-                         // We need a way to extract *definitions* (funcs/classes) from it.
-                         // But imported files might have main body logic?
-                         // Usually libraries only have definitions.
-                         // Let's create a new Parser.
-                         let mut sub_parser = Parser::new(&content);
-                         match sub_parser.parse_to_asm() {
-                             Ok(asm) => {
-                                 // Strip Header/Footer to extract definitions
-                                 let lines: Vec<&str> = asm.lines().collect();
-                                 let mut capture = false;
-                                 for line in lines {
-                                     if line.trim().starts_with("JMP __start_execution") {
-                                         capture = true;
-                                         continue;
+                    // 1. Resolve Path
+                    let mut path = String::from("lib/");
+                    // "util.io" -> "util/io.nux"
+                    // "sys" -> "sys.nux"
+                    let rel = raw_name.replace(".", "/");
+                    path.push_str(&rel);
+                    path.push_str(".nux");
+                    
+                    // Fallback check for root/lib prefix if user provided it manually?
+                    // User asked for "by name".
+                    
+                    // 2. Read File via VFS
+                    let src_content = {
+                         // Need to lock VFS
+                         if let Some(inode) = crate::fs::vfs::root().lookup_path(&path).ok() {
+                             if let Ok(handle) = inode.open(0) {
+                                 let mut buf = vec![0u8; 64*1024]; // 64KB Import Limit
+                                 if let Ok(n) = handle.read(&mut buf, 0) {
+                                     match core::str::from_utf8(&buf[0..n]) {
+                                         Ok(s) => Some(s.to_string()),
+                                         Err(_) => None,
                                      }
-                                     if line.trim().starts_with("; Implicit main") || line.trim().starts_with("__start_execution:") {
-                                         capture = false;
-                                         continue; // Stop capturing
-                                     }
-                                     
-                                     if capture {
-                                         definitions.push_str(line);
-                                         definitions.push('\n');
-                                     }
-                                 }
-                             },
-                             Err(_) => {
-                                  self.errors.push(CompileError::new(format!("Failed to parse import {}", filename), self.prev_span));
-                             }
+                                 } else { None }
+                             } else { None }
+                         } else {
+                             // Try direct path?
+                             if let Some(inode) = crate::fs::vfs::root().lookup_path(&raw_name).ok() {
+                                 // ... (Duplicate logic, simplified for brevity)
+                                 None // For now enforce library path
+                             } else { None }
                          }
+                    };
+                    
+                    if let Some(src) = src_content {
+                        // 3. Nested Parse
+                        // We need to inject definitions.
+                        // Recursive call to register functions/classes/globals.
+                        
+                        // Save current state issues?
+                        // Lexer is stateful. We are "pausing" current lexer to parse another source?
+                        // Actually, easier to Append source to standard definition lists.
+                        // But we want to parse it.
+                        
+                        // Hack: Create a new Parser for the import, populate ITS definitions, 
+                        // then merge them into current definitions. 
+                        // BUT Globals need address fixups?
+                        // Shared Global Counter?
+                        // This implies `Parser` should share context.
+                        
+                        // For this task, assuming imports just add Functions/Classes.
+                        // Globals in imports might collide or overlap if not careful.
+                        // We will merge "definitions" string.
+                        
+                        // Ideally: `self.parse_import(&src, &mut definitions)?`
+                        // But I need access to `parse_func` etc.
+                        
+                        let mut imported_defs = String::new();
+                        // We temporarily swap lexer? No.
+                        // Helper method:
+                        self.parse_imported_source(&src, &mut definitions);
+                        
                     } else {
-                        self.errors.push(CompileError::new(format!("File not found: {}", filename), self.prev_span));
+                        self.errors.push(CompileError::new(format!("Import not found: {}", path), self.prev_span));
                     }
                 },
-                Token::SemiColon => self.advance(), // Empty
+                Token::SemiColon => self.advance(), 
                 Token::LBrace => {
                      if let Err(e) = self.parse_block(&mut main_body) {
                          self.errors.push(e);
@@ -302,14 +310,13 @@ impl Parser {
                      }
                 },
                 Token::Poke => {
-                    // poke(addr, val);
                     self.advance();
                     if self.current_token != Token::LParen { return self.error("Expected ( for poke".to_string()); }
                     self.advance();
-                    self.parse_expression(&mut main_body)?; // Addr
+                    self.parse_expression(&mut main_body)?; 
                     if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
                     self.advance();
-                    self.parse_expression(&mut main_body)?; // Val
+                    self.parse_expression(&mut main_body)?; 
                     if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                     self.advance();
                     if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
@@ -322,14 +329,11 @@ impl Parser {
                 }
             }
         }
-
         
-        // Append Function Definitions
         self.asm_output.push_str(&definitions);
         
-        // Wrap top-level statements in __main function
         if !main_body.trim().is_empty() {
-            self.emit("; Implicit main function for top-level statements");
+            self.emit("; Implicit main function");
             self.emit("JMP skip___main");
             self.emit("__main:");
             self.asm_output.push_str(&main_body);
@@ -338,25 +342,74 @@ impl Parser {
             self.emit("skip___main:");
         }
         
-        // Program entry point
         self.emit("__start_execution:");
         if !main_body.trim().is_empty() {
             self.emit("CALL __main 0");
-            self.emit("POP ; Discard __main return value");
+            self.emit("POP");
         }
         self.emit("EXIT");
         
         Ok(self.asm_output.clone())
     }
 
-    // --- Parsing Routines ---
+    fn parse_imported_source(&mut self, source: &str, definitions: &mut String) {
+        // Recursive parse
+        // We instantiate a new parser for the import?
+        // But we need to update state (e.g. classes).
+        // For now, let's just parse top-level definitions and Append them.
+        
+        let mut sub_parser = Parser::new(source);
+        // Share Class Definitions?
+        // Ideally we pass context. 
+        // For simplicity: We run `parse_to_asm` but ignore main body, only keep definitions?
+        // But `parse_to_asm` generates code.
+        // We need `parse_top_level`.
+        
+        // Manual loop over sub_parser
+        loop {
+            match sub_parser.current_token {
+                Token::EOF => break,
+                Token::Class => {
+                    if let Err(_) = sub_parser.parse_class(definitions) { break; }
+                },
+                Token::Func => {
+                    if let Err(_) = sub_parser.parse_func(definitions, "") { break; }
+                },
+                Token::Import => { 
+                    // Transitive imports!
+                    // This creates recursion. 
+                    // We need to handle it.
+                    // For now, call logic?
+                     sub_parser.advance();
+                     if let Token::String(s) = &sub_parser.current_token {
+                         // .... Recurse logic ....
+                         // Copy paste logic or Refactor?
+                         // Refactor `resolve_import` later.
+                         // For now, skip transitive imports in this simple impl.
+                     }
+                     sub_parser.advance();
+                     if sub_parser.current_token == Token::SemiColon { sub_parser.advance(); }
+                },
+                _ => { sub_parser.advance(); } // Skip top level statements in imports (Globals skipped?)
+            }
+        }
+        
+        // Merge Classes (if any)
+        for (k, v) in sub_parser.classes {
+            self.classes.insert(k, v);
+        }
+        // Merge Bound Types
+        for (k, v) in sub_parser.bound_types {
+            self.bound_types.insert(k, v);
+        }
+    }
 
     fn error<T>(&self, msg: String) -> Result<T, CompileError> {
         Err(CompileError::new(msg, self.current_span))
     }
 
     fn parse_class(&mut self, out: &mut String) -> Result<(), CompileError> {
-        self.advance(); // consume 'class'
+        self.advance(); 
         let name = match &self.current_token {
             Token::Identifier(s) => s.clone(),
             _ => return self.error("Expected class name".to_string()),
@@ -366,88 +419,88 @@ impl Parser {
         if self.current_token != Token::LBrace { return self.error("Expected '{' after class name".to_string()); }
         self.advance();
         
-        // Inside class, we expect functions (methods).
+        let mut fields = BTreeMap::new();
+        let mut offset = 0;
+        
         while self.current_token != Token::RBrace && self.current_token != Token::EOF {
             if self.current_token == Token::Func {
                 self.parse_func(out, &name)?;
+            } else if self.current_token == Token::Var {
+                self.advance();
+                let field_name = match &self.current_token {
+                    Token::Identifier(s) => s.clone(),
+                    _ => return self.error("Expected field name".to_string())
+                };
+                self.advance();
+                fields.insert(field_name, offset);
+                offset += 1; 
+                if self.current_token == Token::Colon {
+                    self.advance();
+                    self.advance(); 
+                }
+                if self.current_token == Token::SemiColon { self.advance(); }
             } else {
-                return self.error("Only functions allowed in classes for now".to_string());
+                return self.error("Only functions/fields allowed in classes for now".to_string());
             }
         }
+        self.classes.insert(name, ClassInfo { fields, size: offset });
         
         if self.current_token != Token::RBrace { return self.error("Expected '}'".to_string()); }
         self.advance();
         Ok(())
     }
 
-    fn parse_bound_type_decl(&mut self, _out: &mut String) -> Result<(), CompileError> {
-        self.advance(); // Consume 'var'
+    fn parse_bound_type_decl(&mut self) -> Result<(), CompileError> {
         let name = match &self.current_token {
             Token::Identifier(s) => s.clone(),
             _ => return self.error("Expected type name".to_string()),
         };
         self.advance();
         
-        if self.current_token != Token::Colon { return self.error("Expected :".to_string()); }
+        if self.current_token != Token::LBrace { return self.error("Expected {".to_string()); }
         self.advance();
         
-        // range(min, max)
-        let constraint_name = match &self.current_token {
-             Token::Identifier(s) => s.clone(),
-             _ => return self.error("Expected constraint type".to_string()),
-        };
+        let mut start_val = i64::MIN;
+        let mut end_val = i64::MAX;
         
-        if constraint_name != "range" { return self.error("Only 'range' constraint supported".to_string()); }
+        while self.current_token != Token::RBrace && self.current_token != Token::EOF {
+            let key = match &self.current_token {
+                Token::Identifier(s) => s.clone(),
+                _ => return self.error("Expected 'start' or 'end'".to_string()),
+            };
+            self.advance();
+            if self.current_token != Token::Eq { return self.error("Expected =".to_string()); }
+            self.advance();
+            
+            let val = match &self.current_token {
+                Token::Number(n) => *n,
+                Token::Minus => {
+                    self.advance();
+                    match &self.current_token {
+                         Token::Number(n) => -n,
+                         _ => return self.error("Expected number".to_string()),
+                    }
+                },
+                _ => return self.error("Expected constant for bound".to_string()),
+            };
+            self.advance();
+            if self.current_token == Token::SemiColon { self.advance(); }
+            
+            if key == "start" { start_val = val; }
+            else if key == "end" { end_val = val; }
+            else { return self.error(format!("Unknown property '{}'", key)); }
+        }
+        if self.current_token != Token::RBrace { return self.error("Expected }".to_string()); }
         self.advance();
-        
-        if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-        self.advance();
-        
-        // Parse min/max as raw numbers for now. 
-        // Expressions would require compile-time eval.
-        let min = match &self.current_token {
-            Token::Number(n) => *n,
-            _ => return self.error("Expected number for min".to_string()),
-        };
-        self.advance();
-        
-        if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
-        self.advance();
-        
-        let max = match &self.current_token {
-            Token::Number(n) => *n,
-            _ => return self.error("Expected number for max".to_string()),
-        };
-        self.advance();
-        
-        if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-        self.advance();
-        
-        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
-        self.advance();
-        
-        // Register type
-        self.bound_types.insert(name, (min, max));
+        self.bound_types.insert(name, (start_val, end_val));
         Ok(())
     }
 
     fn parse_func(&mut self, out: &mut String, class_prefix: &str) -> Result<(), CompileError> {
-        // self.current_token is either Func (if called from top) or Identifier?
-        // Wait, parse_to_asm consumed Func.
-        // So self.current_token is the NAME or VAR.
-        
-        // No, parse_to_asm calls parse_func(&mut definitions, "") inside Token::Func block.
-        // But parse_func starts with self.advance(); // consume 'func'.
-        // So in parse_to_asm, we should NOT consume func, OR parse_to_asm consumed it?
-        // parse_to_asm:
-        // Token::Func => { if let Err(e) = self.parse_func(...) ... }
-        // It does NOT advance.
-        
-        self.advance(); // consume 'func'
-        
-        // Check for 'var' (Advanced Type Declaration)
+        self.advance();
         if self.current_token == Token::Var {
-            return self.parse_bound_type_decl(out);
+             self.advance();
+             return self.parse_bound_type_decl();
         }
 
         let name = match &self.current_token {
@@ -459,7 +512,6 @@ impl Parser {
         if self.current_token != Token::LParen { return self.error("Expected '('".to_string()); }
         self.advance();
         
-        // Parse Arguments
         let mut args = Vec::new();
         if self.current_token != Token::RParen {
             loop {
@@ -483,32 +535,20 @@ impl Parser {
 
         if self.current_token != Token::LBrace { return self.error("Expected '{'".to_string()); }
         
-        // Generate Label
         let full_name = if class_prefix.is_empty() {
              name.clone()
         } else {
              format!("{}_{}", class_prefix, name)
         };
         
-        out.push_str(&format!("; Function {}\n", full_name));
-        out.push_str(&format!("JMP skip_{}\n", full_name)); // Skip definition
-        out.push_str(&format!("{}:\n", full_name));
-        
-        // Arguments Handling:
-        // VM sets FP = stack.len() - num_args
-        // Stack: [Arg0, Arg1, ... ArgN-1] where FP points to Arg0
-        // Arg0 is at offset 0 (fp + 0)
-        // Arg1 is at offset 1 (fp + 1)
-        // ArgN-1 is at offset N-1
-        // Locals start at offset N
+        out.push_str(&format!("; Function {}\nJMP skip_{}\n{}:\n", full_name, full_name, full_name));
         
         self.enter_scope(); 
         
         let num_args = args.len() as i64;
-        self.local_offset = num_args; // Locals start after arguments
+        self.local_offset = num_args; 
         
         for (i, arg) in args.iter().enumerate() {
-             // Arguments are at positive offsets 0, 1, 2, ...
              let offset = i as i64;
              let loc = VarLocation::Local(offset);
              if let Some(scope) = self.scopes.last_mut() {
@@ -516,15 +556,12 @@ impl Parser {
              }
         }
         
-        // Parse Body
         let mut body_asm = String::new();
         self.parse_block(&mut body_asm)?;
-        
-        self.exit_scope(); // End Function Scope
+        self.exit_scope(); 
         
         out.push_str(&body_asm);
-        out.push_str("PUSH 0\n"); // Default return value
-        out.push_str("RET\n");
+        out.push_str("PUSH 0\nRET\n");
         out.push_str(&format!("skip_{}:\n", full_name));
         
         Ok(())
@@ -533,18 +570,14 @@ impl Parser {
     fn parse_block(&mut self, out: &mut String) -> Result<(), CompileError> {
         if self.current_token != Token::LBrace { return self.error("Expected block '{'".to_string()); }
         self.advance();
-        
         self.enter_scope();
-        
         while self.current_token != Token::RBrace && self.current_token != Token::EOF {
              if let Err(e) = self.parse_statement_or_expr(out) {
                  self.errors.push(e);
                  self.synchronize();
              }
         }
-        
         self.exit_scope();
-        
         if self.current_token != Token::RBrace { return self.error("Expected '}'".to_string()); }
         self.advance();
         Ok(())
@@ -566,65 +599,49 @@ impl Parser {
              },
              Token::Identifier(name) => {
                  let part1 = name.clone();
-                 self.advance(); // skip name
+                 if part1 == "sleep" {
+                     self.advance(); 
+                     if self.current_token != Token::LParen { return self.error("Expected ( for sleep".to_string()); }
+                     self.advance();
+                     self.parse_expression(out)?;
+                     if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
+                     self.advance();
+                     if expect_semi && self.current_token == Token::SemiColon { self.advance(); }
+                     else if self.current_token == Token::SemiColon { self.advance(); }
+                     out.push_str("OP_SLEEP\n");
+                     return Ok(());
+                 }
+                 self.advance(); 
                  if self.current_token == Token::Eq {
-                       // Assignment
                         match self.resolve_var(&part1) {
                             Some((loc, _typ)) => {
-                                self.advance(); // Skip =
+                                self.advance(); 
                                 self.parse_expression(out)?;
-                                if expect_semi {
-                                    if self.current_token != Token::SemiColon {
-                                        return self.error("Expected ;".to_string());
-                                    }
-                                    self.advance();
-                                } else if self.current_token == Token::SemiColon {
-                                    self.advance(); // optionally consume
-                                }
+                                if expect_semi && self.current_token != Token::SemiColon {
+                                    return self.error("Expected ;".to_string());
+                                } else if self.current_token == Token::SemiColon { self.advance(); }
                                 match loc {
-                                    VarLocation::Global(addr) => {
-                                        out.push_str(&format!("PUSH {}\nPOKE\n", addr)); 
-                                    },
-                                    VarLocation::Local(offset) => {
-                                        out.push_str(&format!("SET_LOCAL {}\n", offset));
-                                    }
+                                    VarLocation::Global(addr) => { out.push_str(&format!("PUSH {}\nSWAP\nPOKE\n", addr)); },
+                                    VarLocation::Local(offset) => { out.push_str(&format!("SET_LOCAL {}\n", offset)); }
                                 }
                             },
                            None => {
-                               // Auto-declare undefined variables in global scope (Python-like)
                                if self.scopes.len() == 1 {
-                                   // Global scope - auto-declare
-                                   self.advance(); // Skip =
+                                   self.advance(); 
                                    self.parse_expression(out)?;
-                                   if expect_semi {
-                                       if self.current_token != Token::SemiColon {
-                                           return self.error("Expected ;".to_string());
-                                       }
-                                       self.advance();
-                                   } else if self.current_token == Token::SemiColon {
-                                       self.advance();
-                                   }
-                                   
-                                   // Declare as global with inferred type
+                                   if expect_semi && self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                                   else if self.current_token == Token::SemiColon { self.advance(); }
                                    let loc = self.declare_var(part1.clone(), Type::Int);
-                                   match loc {
-                                       VarLocation::Global(addr) => {
-                                           out.push_str(&format!("PUSH {}\nPOKE\n", addr));
-                                       },
-                                       VarLocation::Local(_) => {
-                                           // Should never happen in global scope
-                                           return self.error("Internal error: local var in global scope".to_string());
-                                       }
+                                   if let VarLocation::Global(addr) = loc {
+                                       out.push_str(&format!("PUSH {}\nPOKE\n", addr));
                                    }
                                } else {
-                                   // Function scope - require explicit declaration
-                                   return self.error(format!("Undefined variable '{}' (use 'var {}' to declare)", part1, part1));
+                                   return self.error(format!("Undefined variable '{}' (use 'var {}')", part1, part1));
                                }
                            }
                        }
                  } else if self.current_token == Token::LParen {
-                      self.advance(); // Skip (
-                      // Args
+                      self.advance(); 
                       let mut arg_count = 0;
                       if self.current_token != Token::RParen {
                            loop {
@@ -635,39 +652,53 @@ impl Parser {
                       }
                       if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                       self.advance();
-                      if expect_semi {
-                           if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
-                           self.advance();
-                      } else if self.current_token == Token::SemiColon { self.advance(); }
-                      
-                      // Emit CALL (vm handles arg cleanup), then POP return value
+                      if expect_semi && self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                      else if self.current_token == Token::SemiColon { self.advance(); }
                       out.push_str(&format!("CALL {} {}\nPOP\n", part1, arg_count));
-                      
                  } else if self.current_token == Token::Dot {
-                      self.advance(); // Skip .
-                      let method = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected method name".to_string()) };
                       self.advance();
-                      if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                      let member = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected member name".to_string()) };
                       self.advance();
-                      let mut arg_count = 0;
-                      if self.current_token != Token::RParen {
-                           loop {
-                               self.parse_expression(out)?;
-                               arg_count += 1; 
-                               if self.current_token == Token::Comma { self.advance(); } else { break; }
-                           }
-                      }
-                      if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                      self.advance();
-                      
-                      if expect_semi {
-                          if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                      if self.current_token == Token::Eq {
+                          let (loc, typ) = if let Some(r) = self.resolve_var(&part1) { r } else { return self.error(format!("Undefined variable '{}'", part1)); };
+                          let offset = if let Type::Class(cname) = typ {
+                              if let Some(cinfo) = self.classes.get(&cname) { *cinfo.fields.get(&member).unwrap() } 
+                              else { return self.error(format!("Unknown class '{}'", cname)); }
+                          } else {
+                             let mut found = None;
+                             for (cname, cinfo) in &self.classes {
+                                 if let Some(off) = cinfo.fields.get(&member) { found = Some(*off); }
+                             }
+                             if let Some(off) = found { off } else { return self.error(format!("Field '{}' not found", member)); }
+                          };
+                          match loc {
+                              VarLocation::Global(addr) => { out.push_str(&format!("PUSH {}\nPEEK\n", addr)); },
+                              VarLocation::Local(idx) => { out.push_str(&format!("OP_GET_LOCAL {}\n\n", idx)); }
+                          }
+                          out.push_str(&format!("PUSH {}\nOP_ADD\n", offset));
+                          self.advance(); 
+                          self.parse_expression(out)?;
+                          if expect_semi && self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                          else if self.current_token == Token::SemiColon { self.advance(); }
+                          out.push_str("POKE\n");
+                      } else if self.current_token == Token::LParen {
                           self.advance();
-                      } else if self.current_token == Token::SemiColon { self.advance(); }
-                      
-                      out.push_str(&format!("CALL {}_{} {}\nPOP\n", part1, method, arg_count));
+                          let mut arg_count = 0;
+                          if self.current_token != Token::RParen {
+                               loop {
+                                   self.parse_expression(out)?; arg_count += 1; 
+                                   if self.current_token == Token::Comma { self.advance(); } else { break; }
+                               }
+                          }
+                          self.advance(); // )
+                          if expect_semi && self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                          else if self.current_token == Token::SemiColon { self.advance(); }
+                          out.push_str(&format!("CALL {}_{} {}\nPOP\n", part1, member, arg_count));
+                      } else {
+                           return self.error("Expected = or ( after member name".to_string());
+                      }
                  } else {
-                       return self.error(format!("Unexpected token in statement (ID match): {:?} name={}", self.current_token, part1));
+                       return self.error(format!("Unexpected token: {:?}", self.current_token));
                  }
              },
              Token::Input => {
@@ -676,19 +707,11 @@ impl Parser {
                 self.advance();
                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                 self.advance();
-                if expect_semi {
-                    if self.current_token != Token::SemiColon { 
-                        self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-                        self.synchronize();
-                        return Ok(());
-                    }
-                    self.advance();
-                } else if self.current_token == Token::SemiColon { self.advance(); }
+                if expect_semi && self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
+                else if self.current_token == Token::SemiColon { self.advance(); }
                 out.push_str("INPUT\n");
              },
-              Token::Var => {
-                  self.parse_var_decl(out, Type::Unknown)?;
-              },
+              Token::Var => { self.parse_var_decl(out, Type::Unknown)?; },
               Token::KwInt => { self.parse_var_decl(out, Type::Int)?; },
               Token::KwFloat => { self.parse_var_decl(out, Type::Float)?; },
               Token::KwByte => { self.parse_var_decl(out, Type::Byte)?; },
@@ -709,33 +732,22 @@ impl Parser {
                  }
              },
              Token::If => {
-                  self.advance(); // skip if
+                  self.advance();
                   if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
                   self.advance();
                   self.parse_expression(out)?;
                   if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                   self.advance();
-                  
-                  let label_id = self.label_id_counter;
-                  self.label_id_counter += 1;
+                  let label_id = self.label_id_counter; self.label_id_counter += 1;
                   let label_else = format!("__if_else_{}", label_id);
                   let label_end = format!("__if_end_{}", label_id);
-                  
-                  out.push_str("PUSH 0\n");
-                  out.push_str(&format!("JE {}\n", label_else));
-                  
+                  out.push_str(&format!("PUSH 0\nJE {}\n", label_else));
                   self.parse_block(out)?;
-                  out.push_str(&format!("JMP {}\n", label_end));
-                  
-                  out.push_str(&format!("{}:\n", label_else));
-                  
+                  out.push_str(&format!("JMP {}\n{}:\n", label_end, label_else));
                   if self.current_token == Token::Else {
                       self.advance();
-                      if self.current_token == Token::If {
-                          self.parse_statement_or_expr(out)?; 
-                      } else {
-                          self.parse_block(out)?;
-                      }
+                      if self.current_token == Token::If { self.parse_statement_or_expr(out)?; } 
+                      else { self.parse_block(out)?; }
                   }
                   out.push_str(&format!("{}:\n", label_end));
              },
@@ -743,107 +755,62 @@ impl Parser {
                   self.advance();
                   if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
                   self.advance();
-                  
-                  let label_id = self.label_id_counter;
-                  self.label_id_counter += 1;
+                  let label_id = self.label_id_counter; self.label_id_counter += 1;
                   let label_start = format!("__while_start_{}", label_id);
                   let label_end = format!("__while_end_{}", label_id);
                   self.loop_stack.push((label_start.clone(), label_end.clone())); 
-                  
                   out.push_str(&format!("{}:\n", label_start));
                   self.parse_expression(out)?;
                   if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                   self.advance();
-                  
-                  out.push_str("PUSH 0\n");
-                  out.push_str(&format!("JE {}\n", label_end));
-                  
+                  out.push_str(&format!("PUSH 0\nJE {}\n", label_end));
                   self.parse_block(out)?;
-                  out.push_str(&format!("JMP {}\n", label_start));
-                  out.push_str(&format!("{}:\n", label_end));
+                  out.push_str(&format!("JMP {}\n{}:\n", label_start, label_end));
                   self.loop_stack.pop();
              },
              Token::For => {
                   self.advance();
                   if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
                   self.advance();
-                  
-                  // Init
                   self.parse_statement_or_expr(out)?; 
-                  // parse_statement logic consumes semicolon inside "var" or "assign" or "expr-stmt" logic?
-                  // Wait, parse_statement_or_expr checks for semicolon in ExpressionStmt, Var, Assign, Input, Return.
-                  // But Token::If, While don't consume trailing semicolon.
-                  // Check current token. If we are in 'For', we expect 'statement' then maybe we advanced passed semicolon?
-                  // parse_statement_or_expr for "var i=0;" consumes ';'.
-                  
-                  let label_id = self.label_id_counter;
-                  self.label_id_counter += 1;
+                  let label_id = self.label_id_counter; self.label_id_counter += 1;
                   let label_start = format!("__for_start_{}", label_id);
                   let label_step = format!("__for_step_{}", label_id);
                   let label_end = format!("__for_end_{}", label_id);
-                  self.loop_stack.push((label_step.clone(), label_end.clone())); // Continue goes to Step
-                  
+                  self.loop_stack.push((label_step.clone(), label_end.clone())); 
                   out.push_str(&format!("{}:\n", label_start));
-                  
-                  // Cond
                   if self.current_token != Token::SemiColon {
                        self.parse_expression(out)?;
-                       out.push_str("PUSH 0\n");
-                       out.push_str(&format!("JE {}\n", label_end));
+                       out.push_str(&format!("PUSH 0\nJE {}\n", label_end));
                   }
-                  if self.current_token != Token::SemiColon { return self.error("Expected ; in for".to_string()); }
+                  if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
                   self.advance();
-                  
-                  out.push_str(&format!("JMP __for_body_{}\n", label_id));
-
-                  // Step
-                  out.push_str(&format!("{}:\n", label_step));
+                  out.push_str(&format!("JMP __for_body_{}\n{}:\n", label_id, label_step));
                   let mut step_out = String::new();
                   if self.current_token != Token::RParen {
-                       // We need to parse expression but NOT consume semicolon? Step often doesn't have semicolon.
-                       // Usually "i = i + 1". Assign consumes semicolon. 
-                       // Standard for syntax: for(init; cond; step).
-                       // Step is expression or assignment.
-                       // My parse_expr/stmt consumes semicolon. 
-                       // This is tricky if step is "i=i+1". 
-                       // Let's tolerate ; if present.
                        self.parse_statement_impl(&mut step_out, false)?;
                   }
                   out.push_str(&step_out);
                   out.push_str(&format!("JMP {}\n", label_start));
-                  
                   if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
                   self.advance();
-                  
                   out.push_str(&format!("__for_body_{}:\n", label_id));
                   self.parse_block(out)?;
-                  
-                  out.push_str(&format!("JMP {}\n", label_step));
-                  out.push_str(&format!("{}:\n", label_end));
+                  out.push_str(&format!("JMP {}\n{}:\n", label_step, label_end));
                   self.loop_stack.pop();
              },
              Token::Do => {
                  self.advance();
-                 
-                 let label_id = self.label_id_counter;
-                 self.label_id_counter += 1;
+                 let label_id = self.label_id_counter; self.label_id_counter += 1;
                  let label_start = format!("__do_start_{}", label_id);
                  let label_end = format!("__do_end_{}", label_id);
-                 // Continue in do-while usually goes to check condition.
-                 // Let's say continues restart the loop body? No, standard is check condition.
-                 // So we need a label for condition check?
                  let label_cond = format!("__do_cond_{}", label_id);
-                 
                  self.loop_stack.push((label_cond.clone(), label_end.clone())); 
-                 
                  out.push_str(&format!("{}:\n", label_start));
-                 
                  self.parse_block(out)?;
-                 
                  out.push_str(&format!("{}:\n", label_cond));
-                 if self.current_token != Token::While { return self.error("Expected while after do block".to_string()); }
+                 if self.current_token != Token::While { return self.error("Expected while".to_string()); }
                  self.advance();
-                 
                  if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
                  self.advance();
                  self.parse_expression(out)?;
@@ -851,58 +818,46 @@ impl Parser {
                  self.advance();
                  if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
                  self.advance();
-                 
-                 // If true, jump back to start
-                 // Cond returns 1 or 0.
-                 // VM JE pops b, a. a==b -> jump.
-                 // We push 1. Stack: [cond_res, 1]. JE compares 1 == cond_res.
-                 out.push_str("PUSH 1\n");
-                 out.push_str(&format!("JE {}\n", label_start));
-                 
-                 out.push_str(&format!("{}:\n", label_end));
+                 out.push_str(&format!("PUSH 1\nJE {}\n{}:\n", label_start, label_end));
                  self.loop_stack.pop();
              },
-             Token::LBrace => {
-                 self.parse_block(out)?;
-             },
+             Token::LBrace => { self.parse_block(out)?; },
              Token::Peek => {
                  self.parse_expression(out)?; 
                  if self.current_token == Token::SemiColon { self.advance(); }
              },
-             Token::Poke => {
-                 self.parse_poke(out)?;
-             },
+             Token::Poke => { self.parse_poke(out)?; },
              Token::Break => {
-                 if let Some(label) = self.loop_stack.last() {
-                     out.push_str(&format!("JMP {}\n", label.1));
-                 } else {
-                     return self.error("Break outside of loop".to_string());
-                 }
-                 self.advance();
-                 if self.current_token == Token::SemiColon { self.advance(); }
+                 match self.loop_stack.last() { Some(label) => out.push_str(&format!("JMP {}\n", label.1)), None => return self.error("Break outside loop".to_string()) }
+                 self.advance(); if self.current_token == Token::SemiColon { self.advance(); }
              },
              Token::Continue => {
-                 if let Some(label) = self.loop_stack.last() {
-                     out.push_str(&format!("JMP {}\n", label.0));
-                 } else {
-                     return self.error("Continue outside of loop".to_string());
-                 }
-                 self.advance();
-                 if self.current_token == Token::SemiColon { self.advance(); }
+                 match self.loop_stack.last() { Some(label) => out.push_str(&format!("JMP {}\n", label.0)), None => return self.error("Continue outside loop".to_string()) }
+                 self.advance(); if self.current_token == Token::SemiColon { self.advance(); }
              },
              Token::Asm => {
-                 self.advance();
-                 if self.current_token != Token::LBrace { return self.error("Expected {".to_string()); }
-                 self.advance();
+                 self.advance(); if self.current_token != Token::LBrace { return self.error("Expected {".to_string()); } self.advance();
                  while self.current_token != Token::RBrace && self.current_token != Token::EOF {
-                     match &self.current_token {
-                         Token::String(s) => {
-                             out.push_str(s);
-                             out.push('\n');
-                             self.advance();
-                         },
-                         Token::Comma | Token::SemiColon => self.advance(),
-                         _ => return self.error("Expected string literals in asm block".to_string()),
+                     if let Token::String(s) = &self.current_token { 
+                         out.push_str(s); out.push('\n'); self.advance(); 
+                     } else if let Token::Identifier(name) = &self.current_token {
+                         // Resolve Variable
+                         if let Some(idx) = self.resolve_local(name) {
+                             out.push_str(&format!("GET_LOCAL {}\n", idx));
+                         } else if let Some(addr) = self.globals.get(name) {
+                             out.push_str(&format!("GET_GLOBAL {}\n", addr));
+                         } else {
+                             // Opcode or Label
+                             out.push_str(name); out.push('\n');
+                         }
+                         self.advance();
+                     } else if let Token::Number(n) = &self.current_token {
+                         out.push_str(&format!("{}\n", n)); // Emit number as is (arg)
+                         self.advance();
+                     } else if self.current_token == Token::Comma || self.current_token == Token::SemiColon { 
+                         self.advance(); 
+                     } else { 
+                         return self.error("Invalid token in asm".to_string()); 
                      }
                  }
                  self.advance();
@@ -910,150 +865,119 @@ impl Parser {
              Token::Spawn => {
                   self.advance();
                   match &self.current_token {
-                      Token::Identifier(func_name) => {
-                          out.push_str(&format!("PUSH {}\nSPAWN\n", func_name));
-                      },
+                      Token::Identifier(func_name) => { out.push_str(&format!("PUSH {}\nSPAWN\n", func_name)); },
                       _ => return self.error("Expected function name".to_string()),
                   }
-                  self.advance();
-                  if self.current_token == Token::SemiColon { self.advance(); }
+                  self.advance(); if self.current_token == Token::SemiColon { self.advance(); }
              },
              Token::Lock | Token::Unlock => {
-                 self.advance();
-                 if self.current_token == Token::LParen { self.advance(); } 
-                 if let Token::Identifier(_) = self.current_token { self.advance(); } 
-                 if self.current_token == Token::RParen { self.advance(); }
-                 if self.current_token == Token::SemiColon { self.advance(); }
+                 self.advance(); if self.current_token == Token::LParen { self.advance(); } if let Token::Identifier(_) = self.current_token { self.advance(); } if self.current_token == Token::RParen { self.advance(); } if self.current_token == Token::SemiColon { self.advance(); }
              },
-             _ => {
-                  return self.error(format!("Unexpected statement token: {:?}", self.current_token));
-             }
+             Token::CamCapture => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_CAM_CAPTURE\nPOP\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgDraw => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
+                 self.advance(); self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_IMG_DRAW\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgFree => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_IMG_FREE\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgFilter => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_IMG_FILTER\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgSet => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_IMG_SET\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgFill => {
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+                 self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("OP_IMG_FILL\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             Token::ImgGet => {
+                  self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                  self.parse_expression(out)?; self.advance(); self.parse_expression(out)?; self.advance(); self.parse_expression(out)?; self.advance();
+                  out.push_str("OP_IMG_GET\nPOP\n"); if self.current_token == Token::SemiColon { self.advance(); }
+             },
+             _ => { return self.error(format!("Unexpected token: {:?}", self.current_token)); }
         }
         Ok(())
     }
 
-
-
-    // --- Var Declaration ---
-    
     fn parse_var_decl(&mut self, out: &mut String, expected_type: Type) -> Result<(), CompileError> {
-        self.advance(); // consume keyword (int, var, etc)
-        
-        // Name
-        let name = match &self.current_token {
-            Token::Identifier(s) => s.clone(),
-            _ => return self.error("Expected variable name".to_string()),
-        };
         self.advance();
-        
+        let name = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected variable name".to_string()) };
+        self.advance();
+        let mut constraint = None;
+        if self.current_token == Token::Colon {
+             self.advance(); 
+             match &self.current_token { Token::Identifier(s) => if let Some(bounds) = self.bound_types.get(s) { constraint = Some(*bounds); }, _ => {} }
+             self.advance(); 
+        }
         let mut final_type = expected_type.clone();
-        
-        // = value
         if self.current_token == Token::Eq {
              self.advance();
              let expr_type = self.parse_expression(out)?;
-             
-             // Type Inference
-             if final_type == Type::Unknown || final_type == Type::Void {
-                 final_type = expr_type.clone();
-             }
-             
-             // Type Check / Cast
-             if final_type == Type::Float && expr_type == Type::Int {
-                 out.push_str("ITOF\n");
-             } else if final_type == Type::Int && expr_type == Type::Float {
-                 out.push_str("FTOI\n");
-             }
+             if let Some((min, max)) = constraint { out.push_str(&format!("OP_CHECK_RANGE\n{}\n{}\n", min, max)); }
+             if final_type == Type::Unknown || final_type == Type::Void { final_type = expr_type.clone(); }
+             if final_type == Type::Float && expr_type == Type::Int { out.push_str("ITOF\n"); }
+             else if final_type == Type::Int && expr_type == Type::Float { out.push_str("FTOI\n"); }
         } else {
-            // Default init 0 (implicit)
             out.push_str("PUSH 0\n");
         }
-        
         if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
         self.advance();
-        
         let loc = self.declare_var(name, final_type);
-        match loc {
-            VarLocation::Global(addr) => {
-                 // Value is on stack.
-                 // We need to Pop to Global.
-                 // POKE expects [Value, Addr]. 
-                 // Stack has [Value].
-                 // Wait. POKE is [Addr, Value]? Or [Value, Addr]?
-                 // VM `OP_POKE`: `let addr = self.pop(); let val = self.pop();`. 
-                 // So Stack must be [..., Value, Addr].
-                 // Currently Stack has [..., Value].
-                 // If we `PUSH addr`, Stack is [..., Value, Addr].
-                 // Then `POKE`. Correct.
-                 out.push_str(&format!("PUSH {}\nPOKE\n", addr));
-            },
-            VarLocation::Local(_) => {
-                 // Value is on stack. This IS the local.
-                 // No action.
-            }
-        }
-        
+        if let VarLocation::Global(addr) = loc { out.push_str(&format!("PUSH {}\nSWAP\nPOKE\n", addr)); }
         Ok(())
     }
-
 
     fn parse_print(&mut self, out: &mut String, newline: bool) -> Result<(), CompileError> {
         if self.current_token != Token::LParen { return self.error("Expected ( for print".to_string()); }
         self.advance();
-        
-        if self.current_token == Token::RParen {
-             self.advance();
-             if newline {
-                 out.push_str("PUSH 10\nPRINT_CHAR\n");
-             }
-        } else {
+        if self.current_token == Token::RParen { self.advance(); if newline { out.push_str("PUSH 10\nPRINT_CHAR\n"); } } 
+        else {
              if let Token::String(s) = &self.current_token {
-                for c in s.chars() {
-                    out.push_str(&format!("PUSH {}\nPRINT_CHAR\n", c as u32));
-                }
+                for c in s.chars() { out.push_str(&format!("PUSH {}\nPRINT_CHAR\n", c as u32)); }
                 self.advance();
              } else {
                 let t = self.parse_expression(out)?;
-                if t == Type::Float {
-                    out.push_str("PRINT_FLOAT\n");
-                } else {
-                    out.push_str("PRINT_VAL\n");
-                }
+                if t == Type::Float { out.push_str("PRINT_FLOAT\n"); } else { out.push_str("PRINT_VAL\n"); }
              }
-             
              if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
              self.advance();
-             
-             if newline {
-                 out.push_str("PUSH 10\nPRINT_CHAR\n");
-             }
+             if newline { out.push_str("PUSH 10\nPRINT_CHAR\n"); }
         }
-        
-         if self.current_token != Token::SemiColon { 
-              self.errors.push(CompileError::new("Expected ;".to_string(), self.prev_span));
-              self.synchronize();
-              return Ok(());
-         }
+         if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
          self.advance();
          Ok(())
     }
 
     fn parse_poke(&mut self, out: &mut String) -> Result<(), CompileError> {
-        self.advance(); // Skip POKE
-        if self.current_token != Token::LParen { return self.error("Expected ( for poke".to_string()); }
         self.advance();
-        self.parse_expression(out)?; // Addr
-        if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); }
-        self.advance();
-        self.parse_expression(out)?; // Val
-        if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-        self.advance();
-        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); }
-        self.advance();
+        if self.current_token != Token::LParen { return self.error("Expected ( for poke".to_string()); } self.advance();
+        self.parse_expression(out)?; if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
+        self.parse_expression(out)?; if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+        if self.current_token != Token::SemiColon { return self.error("Expected ;".to_string()); } self.advance();
         out.push_str("POKE\n");
         Ok(())
     }
-
     
     fn parse_expression(&mut self, out: &mut String) -> Result<Type, CompileError> {
         self.parse_logical_or(out)
@@ -1061,85 +985,39 @@ impl Parser {
 
     fn parse_logical_or(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_logical_and(out)?;
-        
         while self.current_token == Token::Or {
             self.advance();
-            let _right_type = self.parse_logical_and(out)?; // Right type is consumed
-            out.push_str("OR\n");
-            left_type = Type::Bool; // Logic ops always bool
+            let _ = self.parse_logical_and(out)?; out.push_str("OR\n"); left_type = Type::Bool;
         }
         Ok(left_type)
     }
 
     fn parse_logical_and(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_equality(out)?;
-        
         while self.current_token == Token::And {
             self.advance();
-            let _right_type = self.parse_equality(out)?; // Right type is consumed
-            out.push_str("AND\n");
-            left_type = Type::Bool; 
+            let _ = self.parse_equality(out)?; out.push_str("AND\n"); left_type = Type::Bool; 
         }
         Ok(left_type)
     }
     
     fn parse_equality(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_comparison(out)?;
-        
         while self.current_token == Token::EqEq || self.current_token == Token::NotEq {
-            let op = self.current_token.clone();
-            self.advance();
-            let right_type = self.parse_comparison(out)?;
-            
-            // Type check and promotion for equality
-            if left_type == Type::Float || right_type == Type::Float {
-                if left_type != Type::Float { out.push_str("ITOF\n"); }
-                if right_type != Type::Float { out.push_str("ITOF\n"); }
-                match op {
-                    Token::EqEq => out.push_str("FEQ\n"),
-                    Token::NotEq => out.push_str("FNEQ\n"),
-                    _ => {}
-                }
-            } else {
-                match op {
-                    Token::EqEq => out.push_str("EQ\n"),
-                    Token::NotEq => out.push_str("NEQ\n"),
-                    _ => {}
-                }
-            }
-            left_type = Type::Bool; // Result is Bool
+            let op = self.current_token.clone(); self.advance();
+            let _ = self.parse_comparison(out)?;
+            match op { Token::EqEq => out.push_str("EQ\n"), Token::NotEq => out.push_str("NEQ\n"), _ => {} }
+            left_type = Type::Bool;
         }
         Ok(left_type)
     }
 
     fn parse_comparison(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_term(out)?;
-        
         while matches!(self.current_token, Token::Lt | Token::Gt | Token::LtEq | Token::GtEq) {
-            let op = self.current_token.clone();
-            self.advance();
-            let right_type = self.parse_term(out)?;
-            
-            // Type check and promotion for comparison
-            if left_type == Type::Float || right_type == Type::Float {
-                if left_type != Type::Float { out.push_str("ITOF\n"); }
-                if right_type != Type::Float { out.push_str("ITOF\n"); }
-                match op {
-                    Token::Lt => out.push_str("FLT\n"),
-                    Token::Gt => out.push_str("FGT\n"),
-                    Token::LtEq => out.push_str("FLTE\n"),
-                    Token::GtEq => out.push_str("FGTE\n"),
-                    _ => {}
-                }
-            } else {
-                match op {
-                    Token::Lt => out.push_str("LT\n"),
-                    Token::Gt => out.push_str("GT\n"),
-                    Token::LtEq => out.push_str("LTE\n"),
-                    Token::GtEq => out.push_str("GTE\n"),
-                    _ => {}
-                }
-            }
+            let op = self.current_token.clone(); self.advance();
+            let _ = self.parse_term(out)?;
+            match op { Token::Lt => out.push_str("LT\n"), Token::Gt => out.push_str("GT\n"), Token::LtEq => out.push_str("LTE\n"), Token::GtEq => out.push_str("GTE\n"), _ => {} }
             left_type = Type::Bool;
         }
         Ok(left_type)
@@ -1147,70 +1025,19 @@ impl Parser {
 
     fn parse_term(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_factor(out)?;
-        
         while self.current_token == Token::Plus || self.current_token == Token::Minus {
-            let op = self.current_token.clone();
-            self.advance();
-            
-            // Need to buffer right side code to inject conversion?
-            // Wait, we are writing to `out` directly.
-            // If left is Int and right is Float, we need to convert Left to Float BEFORE right is pushed?
-            // No, Left is already pushed. Integer is on stack.
-            // If we find right is Float, we are in trouble if we didn't convert Left.
-            // Because we only know right's type AFTER parsing it.
-            // And parsing it emits code to push it.
-            
-            // Solution: 
-            // 1. If Left is Int, we assume Int math.
-            // 2. Parse Right.
-            // 3. If Right turns out to be Float:
-            //    - If Left was Int, we need to convert Left (generic stack swap? `ITOF` under top? No).
-            //    - We need to `SWAP, ITOF, SWAP`? VM doesn't have Swap.
-            //    - Better: Simple Compiler limitation -> Float Must be on Left? Or explicit cast?
-            //    - Or: We just emit generic ops and VM handles generic types? (Dynamic Typing). 
-            //      But user asked for explicit sizes. VM is `i64`.
-            //      Float bits in i64.
-            //      ADD will mangle float bits. FADD works.
-            
-            // Alternative:
-            // Buffer the Right side code.
-            // 1. Evaluate Left type.
-            // 2. Capture Right output in temp buffer.
-            // 3. Evaluate Right type.
-            // 4. Emit corrections.
-            
+            let op = self.current_token.clone(); self.advance();
             let mut right_out = String::new();
             let right_type = self.parse_factor(&mut right_out)?;
-            
-            // Promotion Logic
             if left_type == Type::Float || right_type == Type::Float {
-                // Float Arithmetic
-                if left_type != Type::Float {
-                     // Left is Int (on stack). Convert to Float.
-                     // But Right code isn't emitted yet.
-                     out.push_str("ITOF\n");
-                }
+                if left_type != Type::Float { out.push_str("ITOF\n"); }
                 out.push_str(&right_out);
-                if right_type != Type::Float {
-                    // Right is Int (on top of stack). Convert.
-                     out.push_str("ITOF\n");
-                }
-                
-                match op {
-                    Token::Plus => out.push_str("FADD\n"),
-                    Token::Minus => out.push_str("FSUB\n"),
-                    _ => {}
-                }
+                if right_type != Type::Float { out.push_str("ITOF\n"); }
+                match op { Token::Plus => out.push_str("FADD\n"), Token::Minus => out.push_str("FSUB\n"), _ => {} }
                 left_type = Type::Float;
             } else {
-                // Int Arithmetic
                 out.push_str(&right_out);
-                match op {
-                    Token::Plus => out.push_str("ADD\n"),
-                    Token::Minus => out.push_str("SUB\n"),
-                    _ => {}
-                }
-                // left_type remains Int (or whatever it was)
+                match op { Token::Plus => out.push_str("ADD\n"), Token::Minus => out.push_str("SUB\n"), _ => {} }
             }
         }
         Ok(left_type)
@@ -1218,35 +1045,24 @@ impl Parser {
 
     fn parse_factor(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_power(out)?;
-        
         while matches!(self.current_token, Token::Star | Token::Slash | Token::SlashSlash | Token::Percent) {
-            let op = self.current_token.clone();
-            self.advance();
-            
+            let op = self.current_token.clone(); self.advance();
             let mut right_out = String::new();
             let right_type = self.parse_power(&mut right_out)?;
-            
             if left_type == Type::Float || right_type == Type::Float {
                  if left_type != Type::Float { out.push_str("ITOF\n"); }
                  out.push_str(&right_out);
                  if right_type != Type::Float { out.push_str("ITOF\n"); }
-                 
                  match op {
-                     Token::Star => out.push_str("FMUL\n"),
-                     Token::Slash => out.push_str("FDIV\n"),
-                     Token::SlashSlash => out.push_str("FFLOORDIV\n"),
-                     Token::Percent => return self.error("Modulo operator not supported for floats".to_string()),
-                     _ => {} 
+                     Token::Star => out.push_str("FMUL\n"), Token::Slash => out.push_str("FDIV\n"), Token::SlashSlash => out.push_str("FFLOORDIV\n"),
+                     Token::Percent => return self.error("Modulo not supported for floats".to_string()), _ => {} 
                  }
                  left_type = Type::Float;
             } else {
                 out.push_str(&right_out);
                 match op {
-                    Token::Star => out.push_str("MUL\n"),
-                    Token::Slash => out.push_str("DIV\n"),
-                    Token::SlashSlash => out.push_str("FLOORDIV\n"),
-                    Token::Percent => out.push_str("MOD\n"),
-                    _ => {}
+                    Token::Star => out.push_str("MUL\n"), Token::Slash => out.push_str("DIV\n"),
+                    Token::SlashSlash => out.push_str("FLOORDIV\n"), Token::Percent => out.push_str("MOD\n"), _ => {}
                 }
             }
         }
@@ -1255,13 +1071,10 @@ impl Parser {
     
     fn parse_power(&mut self, out: &mut String) -> Result<Type, CompileError> {
         let mut left_type = self.parse_unary(out)?;
-        
-        // Power is right-associative: 2**3**2 = 2**(3**2) = 2**9 = 512
         if self.current_token == Token::StarStar {
             self.advance();
             let mut right_out = String::new();
-            let right_type = self.parse_power(&mut right_out)?; // Recursive for right-associativity
-            
+            let right_type = self.parse_power(&mut right_out)?; 
             if left_type == Type::Float || right_type == Type::Float {
                 if left_type != Type::Float { out.push_str("ITOF\n"); }
                 out.push_str(&right_out);
@@ -1273,233 +1086,101 @@ impl Parser {
                 out.push_str("POW\n");
             }
         }
-        
         Ok(left_type)
     }
-    
+
     fn parse_unary(&mut self, out: &mut String) -> Result<Type, CompileError> {
-        if self.current_token == Token::Not {
-             self.advance();
-             self.parse_expression(out)?;
-             out.push_str("PUSH 0\nEQ\n"); // Logically NOT: (x == 0)
-             Ok(Type::Bool)
-        } else if self.current_token == Token::Minus {
+        if self.current_token == Token::Minus {
             self.advance();
-            let t = self.parse_expression(out)?;
-            if t == Type::Float {
-                out.push_str("PRINT_FLOAT\n");
+            let operand_type = self.parse_unary(out)?;
+            if operand_type == Type::Float {
+                let neg_one: f64 = -1.0;
+                let bits = neg_one.to_bits() as i64;
+                out.push_str(&format!("PUSH {}\nFMUL\n", bits));
+                return Ok(Type::Float);
             } else {
-                out.push_str("PRINT_VAL\n");
+                out.push_str("PUSH 0\nSWAP\nSUB\n");
+                return Ok(operand_type);
             }
-            Ok(t)
-        } else {
-            self.parse_primary(out)
         }
+        if self.current_token == Token::Not {
+            self.advance(); let _ = self.parse_unary(out)?; out.push_str("PUSH 0\nEQ\n"); return Ok(Type::Bool);
+        }
+        self.parse_primary(out)
     }
 
     fn parse_primary(&mut self, out: &mut String) -> Result<Type, CompileError> {
         match &self.current_token {
+            Token::New => {
+                self.advance();
+                let name = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected class name".to_string()) };
+                self.advance();
+                let size = if let Some(info) = self.classes.get(&name) { info.size as i32 } else { return self.error(format!("Undefined class '{}'", name)); };
+                out.push_str(&format!("PUSH {}\nPUSH 1\nOP_IMG_ALLOC\n", size));
+                if self.current_token == Token::LParen { 
+                     self.advance();
+                     if self.current_token != Token::RParen { loop { self.parse_expression(out)?; if self.current_token==Token::Comma{self.advance();}else{break;} } }
+                     self.advance();
+                }
+                Ok(Type::Class(name)) 
+            },
             Token::Input => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                 self.advance();
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("INPUT\n");
-                 Ok(Type::Int) // Input returns an integer
+                 self.advance(); if self.current_token != Token::LParen { return self.error("Expected (".to_string()); } self.advance();
+                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                 out.push_str("INPUT\n"); Ok(Type::Int)
             },
-            Token::Number(n) => {
-                let val = *n;
-                self.advance();
-                out.push_str(&format!("PUSH {}\n", val));
-                Ok(Type::Int)
+            Token::KwInt => {
+                 self.advance(); if self.current_token == Token::LParen { self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error("Expected )".to_string());} self.advance(); out.push_str("FTOI\n"); Ok(Type::Int) } else { return self.error("Expected (".to_string()); }
             },
-            Token::Float(f) => {
-                let val = *f;
-                self.advance();
-                // We need to push raw bits of f64
-                let bits = val.to_bits() as i64;
-                out.push_str(&format!("PUSH {}\n", bits));
-                Ok(Type::Float)
+            Token::KwFloat => {
+                 self.advance(); if self.current_token == Token::LParen { self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error("Expected )".to_string());} self.advance(); out.push_str("ITOF\n"); Ok(Type::Float) } else { return self.error("Expected (".to_string()); }
             },
-            Token::String(s) => {
-                // String Literal
-                // TODO: Store string in data segment and push pointer.
-                // For now, fail or char pointer mock?
-                // Minimal: Push chars?
-                // Real: "String" type support not fully in VM yet.
-                // Let's treat as sequence of chars?
-                // Just error for now or basic?
-                // Allow "String" type but value is 0?
-                // Or basic char loop print support.
-                // Let's return String type but emit nothing valuable yet except for print?
-                // Actually, existing `print("foo")` works by iterating.
-                // If this is part of expression `var s = "foo"`, we need value.
-                // Implement: String Table?
-                // Hack: Pass raw string if it's argument to print?
-                // But this is parse_primary.
-                let s_val = s.clone();
-                self.advance();
-                // We don't have good support for string variables yet.
-                // Just push 0 and warn.
-                out.push_str("PUSH 0 ; String Literal Placeholder\n"); 
-                Ok(Type::String)
-            },
+            Token::SysPlatform => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_SYS_PLATFORM\n"); Ok(Type::Int) },
+            Token::CamCount => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_CAM_COUNT\n"); Ok(Type::Int) },
+            Token::IsKeyDown => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IS_KEY_DOWN\n"); Ok(Type::Bool) },
+            Token::Sin => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_FSIN\n"); Ok(Type::Float) },
+            Token::Cos => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_FCOS\n"); Ok(Type::Float) },
+            Token::Sqrt => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_FSQRT\n"); Ok(Type::Float) },
+            Token::CamCapture => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_CAM_CAPTURE\n"); Ok(Type::Int) },
+            Token::ImgAlloc => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IMG_ALLOC\n"); Ok(Type::Int) },
+            Token::ImgResize => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IMG_RESIZE\n"); Ok(Type::Int) },
+            Token::ImgCrop => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IMG_CROP\n"); Ok(Type::Int) },
+            Token::ImgGrayscale => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IMG_GRAYSCALE\n"); Ok(Type::Int) },
+            Token::UpperCase => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_TO_UPPER\n"); Ok(Type::Int) },
+            Token::LowerCase => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_TO_LOWER\n"); Ok(Type::Int) },
+            Token::ImgGet => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::Comma{return self.error(",".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("OP_IMG_GET\n"); Ok(Type::Int) },
+            Token::Number(n) => { let val = *n; self.advance(); out.push_str(&format!("PUSH {}\n", val)); Ok(Type::Int) },
+            Token::Float(f) => { let val = *f; self.advance(); let bits = val.to_bits() as i64; out.push_str(&format!("PUSH {}\n", bits)); Ok(Type::Float) },
+            Token::True => { self.advance(); out.push_str("PUSH 1\n"); Ok(Type::Bool) },
+            Token::False => { self.advance(); out.push_str("PUSH 0\n"); Ok(Type::Bool) },
+            Token::String(_s) => { self.advance(); out.push_str("PUSH 0\n"); Ok(Type::String) },
             Token::Identifier(name) => {
-                let part1 = name.clone();
-                self.advance();
-                
+                let part1 = name.clone(); self.advance();
                 if self.current_token == Token::LParen {
-                    // Function Call
-                    self.advance(); // Skip (
-                    let mut arg_count = 0;
-                    if self.current_token != Token::RParen {
-                           loop {
-                               self.parse_expression(out)?;
-                               arg_count += 1;
-                               if self.current_token == Token::Comma { self.advance(); } else { break; }
-                           }
-                    }
-                    if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                    self.advance();
-                    // Emit CALL with arg count
-                    out.push_str(&format!("CALL {} {}\n", part1, arg_count));
-                    Ok(Type::Int)
-                } else if self.current_token == Token::Dot {
-                     // Method call...
-                     self.advance();
-                     let method = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected method name".to_string()) };
-                     self.advance();
-                     if self.current_token != Token::LParen { return self.error("Expected (".to_string()); }
-                     self.advance();
-                     let mut arg_count = 0;
-                     if self.current_token != Token::RParen {
-                           loop {
-                               self.parse_expression(out)?;
-                               arg_count += 1;
-                               if self.current_token == Token::Comma { self.advance(); } else { break; }
-                           }
-                     }
-                     if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                     self.advance();
-                     
-                     out.push_str(&format!("CALL {}_{} {}\n", part1, method, arg_count));
-                     Ok(Type::Int)
+                    self.advance(); let mut arg_count = 0;
+                    if self.current_token != Token::RParen { loop { self.parse_expression(out)?; arg_count += 1; if self.current_token == Token::Comma { self.advance(); } else { break; } } }
+                    if self.current_token != Token::RParen { return self.error("Expected )".to_string()); } self.advance();
+                    out.push_str(&format!("CALL {} {}\n", part1, arg_count)); Ok(Type::Int)
                 } else {
-                    // Variable Access
-                    match self.resolve_var(&part1) {
-                        Some((loc, typ)) => {
-                            match loc {
-                                VarLocation::Global(addr) => {
-                                    out.push_str(&format!("PUSH {}\nPEEK\n", addr)); 
-                                },
-                                VarLocation::Local(offset) => {
-                                    out.push_str(&format!("GET_LOCAL {}\n", offset));
-                                }
-                            }
-                            Ok(typ)
-                        },
-                        None => self.error(format!("Undefined variable: {}", part1)),
+                    let (loc, mut typ) = if let Some(r) = self.resolve_var(&part1) { r } else { return self.error(format!("Undefined variable '{}'", part1)); };
+                    match loc { VarLocation::Global(addr) => { out.push_str(&format!("PUSH {}\nPEEK\n", addr)); }, VarLocation::Local(idx) => { out.push_str(&format!("OP_GET_LOCAL {}\n\n", idx)); } }
+                    while self.current_token == Token::Dot {
+                        self.advance();
+                        let member = match &self.current_token { Token::Identifier(s) => s.clone(), _ => return self.error("Expected member name".to_string()) };
+                        self.advance();
+                        let offset = if let Type::Class(cname) = &typ {
+                             if let Some(cinfo) = self.classes.get(cname) { *cinfo.fields.get(&member).unwrap() } else { return self.error(format!("Unknown class '{}'", cname)); }
+                        } else {
+                             let mut found = None; for (cname, cinfo) in &self.classes { if let Some(off) = cinfo.fields.get(&member) { found = Some(*off); } }
+                             if let Some(off) = found { off } else { return self.error(format!("Field '{}' not found", member)); }
+                        };
+                        out.push_str(&format!("PUSH {}\nOP_ADD\nPEEK\n", offset)); typ = Type::Unknown;
                     }
+                    Ok(typ)
                 }
             },
-            Token::LParen => {
-                self.advance();
-                let t = self.parse_expression(out)?;
-                if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                self.advance();
-                Ok(t)
-            },
-
-            Token::Peek => {
-                self.advance();
-                if self.current_token != Token::LParen { return self.error("Expected ( for peek".to_string()); }
-                self.advance();
-                self.parse_expression(out)?;
-                if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                self.advance();
-                out.push_str("PEEK\n");
-                Ok(Type::Int) // Peek returns Int (raw)
-            },
-            
-            // --- VISION EXPRESSIONS ---
-            Token::CamCapture => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected ( for cam_capture".to_string()); }
-                 self.advance();
-                 self.parse_expression(out)?; // Cam ID
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("OP_CAM_CAPTURE\n");
-                 Ok(Type::Int)
-            },
-            Token::ImgAlloc => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected ( for img_alloc".to_string()); }
-                 self.advance();
-                 self.parse_expression(out)?; // W
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // H
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("OP_IMG_ALLOC\n");
-                 Ok(Type::Int)
-            },
-            Token::ImgResize => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected ( for img_resize".to_string()); }
-                 self.advance();
-                 self.parse_expression(out)?; // Handle
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // W
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // H
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("OP_IMG_RESIZE\n");
-                 Ok(Type::Int)
-            },
-            Token::ImgCrop => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected ( for img_crop".to_string()); }
-                 self.advance();
-                 self.parse_expression(out)?; // Handle
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // X
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // Y
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // W
-                 if self.current_token != Token::Comma { return self.error("Expected ,".to_string()); } self.advance();
-                 self.parse_expression(out)?; // H
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("OP_IMG_CROP\n");
-                 Ok(Type::Int)
-            },
-            Token::ImgGrayscale => {
-                 self.advance();
-                 if self.current_token != Token::LParen { return self.error("Expected ( for img_grayscale".to_string()); }
-                 self.advance();
-                 self.parse_expression(out)?; // Handle
-                 if self.current_token != Token::RParen { return self.error("Expected )".to_string()); }
-                 self.advance();
-                 out.push_str("OP_IMG_GRAYSCALE\n");
-                 Ok(Type::Int)
-            },
-            
-            // --- BOOLEAN OPS ---
-            Token::True => {
-                self.advance();
-                out.push_str("PUSH 1\n");
-                Ok(Type::Bool)
-            },
-            Token::False => {
-                self.advance();
-                out.push_str("PUSH 0\n");
-                Ok(Type::Bool)
-            },
-            
+            Token::LParen => { self.advance(); let t = self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); Ok(t) },
+            Token::Peek => { self.advance(); if self.current_token!=Token::LParen{return self.error("(".to_string());} self.advance(); self.parse_expression(out)?; if self.current_token!=Token::RParen{return self.error(")".to_string());} self.advance(); out.push_str("PEEK\n"); Ok(Type::Int) },
             _ => return self.error(format!("Unexpected token in expression: {:?}", self.current_token)),
         }
     }

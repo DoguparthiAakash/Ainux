@@ -1,0 +1,10 @@
+/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/debug/deps/volatile-c3f5ff1289a1e62c.d: /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/lib.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/access.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/mod.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/macros.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/operations.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ref.rs
+
+/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/debug/deps/libvolatile-c3f5ff1289a1e62c.rmeta: /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/lib.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/access.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/mod.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/macros.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/operations.rs /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ref.rs
+
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/lib.rs:
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/access.rs:
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/mod.rs:
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/macros.rs:
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ptr/operations.rs:
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-0.6.1/src/volatile_ref.rs:

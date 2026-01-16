@@ -47,6 +47,64 @@ cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently
 cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
 cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
 cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=src/c/libc/stdio.c: In function 'fopen':
+cargo:warning=src/c/libc/stdio.c:142:47: warning: unused parameter 'mode' [-Wunused-parameter]
+cargo:warning=  142 | FILE *fopen(const char *pathname, const char *mode) {
+cargo:warning=      |                                   ~~~~~~~~~~~~^~~~
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=src/c/ex/io/ext2.c:80:25: warning: 'ext2_readdir' defined but not used [-Wunused-function]
+cargo:warning=   80 | static struct w_dirent *ext2_readdir(vfs_node_t *node, uint32_t index) {
+cargo:warning=      |                         ^~~~~~~~~~~~
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=src/c/ex/io/fat32.c: In function 'fat32_read_vfs':
+cargo:warning=src/c/ex/io/fat32.c:891:52: warning: unused parameter 'offset' [-Wunused-parameter]
+cargo:warning=  891 | uint64_t fat32_read_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+cargo:warning=      |                                           ~~~~~~~~~^~~~~~
+cargo:warning=src/c/ex/io/fat32.c: In function 'fat32_write_vfs':
+cargo:warning=src/c/ex/io/fat32.c:907:53: warning: unused parameter 'offset' [-Wunused-parameter]
+cargo:warning=  907 | uint64_t fat32_write_vfs(vfs_node_t *node, uint64_t offset, uint64_t size, uint8_t *buffer) {
+cargo:warning=      |                                            ~~~~~~~~~^~~~~~
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=src/c/drivers/mouse.c: In function 'mouse_handler':
+cargo:warning=src/c/drivers/mouse.c:132:20: warning: variable 'y_rel' set but not used [-Wunused-but-set-variable]
+cargo:warning=  132 |             int8_t y_rel = mouse_byte[2];
+cargo:warning=      |                    ^~~~~
+cargo:warning=src/c/drivers/mouse.c:131:20: warning: variable 'x_rel' set but not used [-Wunused-but-set-variable]
+cargo:warning=  131 |             int8_t x_rel = mouse_byte[1];
+cargo:warning=      |                    ^~~~~
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=src/c/drivers/rtc.c: In function 'rtc_get_time':
+cargo:warning=src/c/drivers/rtc.c:32:13: warning: unused variable 'century' [-Wunused-variable]
+cargo:warning=   32 |     uint8_t century;
+cargo:warning=      |             ^~~~~~~
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+cargo:warning=Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
 cargo:rerun-if-env-changed=AR_x86_64-unknown-none
 AR_x86_64-unknown-none = None
 cargo:rerun-if-env-changed=AR_x86_64_unknown_none
@@ -63,9 +121,6 @@ cargo:rerun-if-env-changed=ARFLAGS_x86_64_unknown_none
 ARFLAGS_x86_64_unknown_none = None
 cargo:rerun-if-env-changed=ARFLAGS_x86_64-unknown-none
 ARFLAGS_x86_64-unknown-none = None
-cargo:rustc-link-lib=static=legacy_gfx
+cargo:rustc-link-lib=static=legacy_kernel
 cargo:rustc-link-search=native=/home/aakash/Downloads/Ainuix/custom_kernel/target/x86_64-unknown-none/release/build/ainux_kernel-7277069a2251585a/out
-cargo:rerun-if-changed=src/c/gfx.c
-cargo:rerun-if-changed=src/c/font.c
-cargo:rerun-if-changed=src/c/gfx.h
-cargo:rerun-if-changed=src/c/font.h
+cargo:rerun-if-changed=src/c

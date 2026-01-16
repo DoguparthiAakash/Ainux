@@ -68,3 +68,7 @@ pub static ROOT: Mutex<Option<Arc<dyn Inode>>> = Mutex::new(None);
 pub fn init(fs: Arc<dyn FileSystem>) {
     *ROOT.lock() = Some(fs.root_inode());
 }
+
+pub fn root() -> Arc<dyn Inode> {
+    ROOT.lock().as_ref().expect("VFS root not initialized").clone()
+}

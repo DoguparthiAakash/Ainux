@@ -294,82 +294,63 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
-    // GUI Mode
-    crate::gui::graphics::Graphics::fill_screen(crate::gui::graphics::Color::BLUE);
-    
-    // Create "Cards App" Window
-    crate::gui::compositor::Compositor::init();
-    let mut card_win = crate::gui::window::Window::new(1, 100, 100, 400, 300, "Solitaire");
-    card_win.fill_content(0xFF008000); // Green felt
-    crate::gui::compositor::Compositor::add_window(card_win);
+    // ----------- Boot Menu -----------
+    boot_menu();
 
-    /* User Space Loop Removed for VM Demo
-    loop {
-        unsafe {
-            crate::cpu::pic::disable(); // Atomic update
-            crate::gui::compositor::Compositor::render();
-            crate::cpu::pic::enable();
-        }
-    } 
-    */
-    
-    crate::drivers::video::put_str("Loading hello.anux from VFS...\n");
-    
-    // Read from VFS
-    let mut anux_code = alloc::vec::Vec::new();
-    {
-        let root = crate::fs::vfs::ROOT.lock();
-        if let Some(root_inode) = root.as_ref() {
-             match root_inode.lookup("hello.anux") {
-                 Ok(inode) => {
-                     if let Ok(handle) = inode.open(0) {
-                         // Read up to 4KB (Program size)
-                         let mut buf = [0u8; 4096];
-                         if let Ok(n) = handle.read(&mut buf, 0) {
-                             crate::drivers::video::put_str("Anux: File Read!\n");
-                             for i in 0..n {
-                                 anux_code.push(buf[i]);
-                             }
-                         }
-                     }
-                 },
-                 Err(_) => {
-                      crate::drivers::video::put_str("Anux: File Not Found!\n");
-                      // Fallback: Use manual code if file fails (for robustness)
-                      // ... (omitted) ...
-                 }
-             }
-        }
-    }
-    
-    // Fallback if empty (e.g. VFS fail)
-    if anux_code.is_empty() {
-         crate::drivers::video::put_str("Anux: Using Built-in Vision Demo.\n");
-         // Embed compiled bytecode
-         let demo_bin = include_bytes!("vision_demo.bin");
-         anux_code.extend_from_slice(demo_bin);
-    }
+    // ----------- Start Shell -----------
+    crate::drivers::video::put_str("Starting Shell...\n");
+    crate::shell::run();
 
-    crate::drivers::video::put_str("Starting Anux Engine...\n");
-    let mut vm = crate::engine::vm::AnuxVM::new(anux_code);
-    
     loop {
-        // Run VM Step
-        if vm.running {
-            vm.step();
-        } else {
-            // Restart or Halt
-            unsafe { asm!("hlt"); }
+        unsafe { asm!("hlt"); }
+    }
+}
+
+fn boot_menu() {
+    drivers::video::clear();
+    drivers::video::put_str("\n=== Ainux Boot Menu (Rust) ===\n\n");
+    drivers::video::put_str("1. Start Kernel (Shell)\n");
+    drivers::video::put_str("2. Network Diagnostics\n");
+    drivers::video::put_str("3. Reboot\n");
+    drivers::video::put_str("4. Shutdown\n\n");
+    drivers::video::put_str("Select option [1-4]: ");
+
+    loop {
+        if let Some(c) = drivers::keyboard::pop_char() {
+            match c {
+                '1' => {
+                    drivers::video::put_str("1\n");
+                    return; // Proceed to Shell
+                },
+                '2' => {
+                    drivers::video::put_str("2\n");
+                    drivers::video::put_str("Network Diagnostics not implemented yet.\n");
+                    drivers::video::put_str("Select option [1-4]: ");
+                },
+                '3' => {
+                    drivers::video::put_str("3\nRebooting...\n");
+                    unsafe {
+                        // Pulse 0xFE to 0x64 (CPU Reset)
+                        loop {
+                             let status: u8;
+                             core::arch::asm!("in al, 0x64", out("al") status);
+                             if status & 2 == 0 { break; }
+                        }
+                        core::arch::asm!("out 0x64, al", in("al") 0xFE as u8);
+                        core::arch::asm!("hlt");
+                    }
+                },
+                '4' => {
+                    drivers::video::put_str("4\nShutting down...\n");
+                    unsafe {
+                        // QEMU Shutdown (0x2000 to 0x604)
+                        core::arch::asm!("out dx, ax", in("dx") 0x604 as u16, in("ax") 0x2000 as u16);
+                        loop { core::arch::asm!("hlt"); }
+                    }
+                },
+                _ => {}
+            }
         }
-        
-        // AI Scheduler Tick
-        crate::engine::ai_scheduler::ResourceManager::update_heuristics();
-        
-        // Render Frame
-        // unsafe {
-        //     crate::cpu::pic::disable();
-        //     // ... (Rendering logic skipped)
-        //     crate::cpu::pic::enable();
-        // }
+        unsafe { asm!("hlt"); }
     }
 }

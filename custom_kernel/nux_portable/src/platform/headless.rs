@@ -73,4 +73,8 @@ impl Platform for HeadlessPlatform {
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         return 0;
     }
+
+    fn is_key_down(&self, _key: usize) -> bool {
+        false
+    }
 }
