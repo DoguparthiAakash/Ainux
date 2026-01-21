@@ -32,4 +32,13 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
     } :data
+
+    /DISCARD/ : {
+        *(.eh_frame)
+        *(.note .note.*)
+    }
+
+    .got : {
+        *(.got .got.*)
+    } :data
 }

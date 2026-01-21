@@ -93,6 +93,12 @@ const OP_JMP: u8 = 0x60;
 const OP_JE: u8 = 0x61;
 // const OP_JNE: u8 = 0x62; // Future?
 
+// Graphics Opcodes
+const OP_DRAW_LINE: u8 = 0x93;     // Draw line (img, x1, y1, x2, y2, color)
+const OP_DRAW_CIRCLE: u8 = 0x94;   // Draw circle (img, x, y, radius, color)
+const OP_DRAW_PIXEL: u8 = 0x95;    // Set pixel (img, x, y, color)
+const OP_GFX_CLEAR: u8 = 0x96;     // Clear image with color (img, color)
+
 const OP_CALL: u8 = 0x70;
 const OP_RET: u8 = 0x71;
 const OP_SPAWN: u8 = 0x72; // NEW: Spawn Thread
@@ -538,10 +544,13 @@ impl NuxVm {
                     let shared = self.shared.clone();
                     let state = shared.lock();
                     if let Some((w, h, data)) = state.images.get(&handle) {
+                        eprintln!("DEBUG: img_draw called - handle={}, size={}x{}, data_len={}", handle, w, h, data.len());
                         if let Some(plat) = platform.as_deref_mut() {
+                            eprintln!("DEBUG: Calling platform.update_window()");
                             if let Err(e) = plat.update_window(data, *w as usize, *h as usize) {
                                 println!("Runtime Warning: Window Update Failed: {}", e);
                             }
+                            eprintln!("DEBUG: update_window completed");
                         } else {
                             println!("Runtime Error: No Platform for Display");
                         }
@@ -934,6 +943,131 @@ impl NuxVm {
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("Time went backwards");
                     self.push(since_the_epoch.as_millis() as i64);
+                },
+
+                // Graphics Opcodes
+                OP_GFX_CLEAR => {
+                    // Stack: [img_handle, color]
+                    let color = self.pop() as u32;
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    let mut state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                        for pixel in data.iter_mut() {
+                            *pixel = color;
+                        }
+                    }
+                },
+
+                OP_DRAW_PIXEL => {
+                    // Stack: [img_handle, x, y, color]
+                    let color = self.pop() as u32;
+                    let y = self.pop() as i64;
+                    let x = self.pop() as i64;
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    let mut state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                        if x >= 0 && y >= 0 && x < *w && y < *h {
+                            let idx = (y * *w + x) as usize;
+                            if idx < data.len() {
+                                data[idx] = color;
+                            }
+                        }
+                    }
+                },
+
+                OP_DRAW_LINE => {
+                    // Stack: [img_handle, x1, y1, x2, y2, color]
+                    let color = self.pop() as u32;
+                    let y2 = self.pop() as i64;
+                    let x2 = self.pop() as i64;
+                    let y1 = self.pop() as i64;
+                    let x1 = self.pop() as i64;
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    let mut state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                        // Bresenham's line algorithm
+                        let mut x = x1;
+                        let mut y = y1;
+                        let dx = (x2 - x1).abs();
+                        let dy = (y2 - y1).abs();
+                        let sx = if x1 < x2 { 1 } else { -1 };
+                        let sy = if y1 < y2 { 1 } else { -1 };
+                        let mut err = dx - dy;
+
+                        loop {
+                            // Set pixel
+                            if x >= 0 && y >= 0 && x < *w && y < *h {
+                                let idx = (y * *w + x) as usize;
+                                if idx < data.len() {
+                                    data[idx] = color;
+                                }
+                            }
+
+                            if x == x2 && y == y2 { break; }
+
+                            let e2 = 2 * err;
+                            if e2 > -dy {
+                                err -= dy;
+                                x += sx;
+                            }
+                            if e2 < dx {
+                                err += dx;
+                                y += sy;
+                            }
+                        }
+                    }
+                },
+
+                OP_DRAW_CIRCLE => {
+                    // Stack: [img_handle, cx, cy, radius, color]
+                    let color = self.pop() as u32;
+                    let radius = self.pop() as i64;
+                    let cy = self.pop() as i64;
+                    let cx = self.pop() as i64;
+                    let handle = self.pop();
+                    
+                    let shared = self.shared.clone();
+                    let mut state = shared.lock();
+                    if let Some((w, h, data)) = state.images.get_mut(&handle) {
+                        // Midpoint circle algorithm
+                        let mut x = radius;
+                        let mut y = 0;
+                        let mut err = 0;
+
+                        while x >= y {
+                            // Draw 8 octants
+                            let points = [
+                                (cx + x, cy + y), (cx + y, cy + x),
+                                (cx - y, cy + x), (cx - x, cy + y),
+                                (cx - x, cy - y), (cx - y, cy - x),
+                                (cx + y, cy - x), (cx + x, cy - y),
+                            ];
+
+                            for (px, py) in &points {
+                                if *px >= 0 && *py >= 0 && *px < *w && *py < *h {
+                                    let idx = (*py * *w + *px) as usize;
+                                    if idx < data.len() {
+                                        data[idx] = color;
+                                    }
+                                }
+                            }
+
+                            if err <= 0 {
+                                y += 1;
+                                err += 2 * y + 1;
+                            }
+                            if err > 0 {
+                                x -= 1;
+                                err -= 2 * x + 1;
+                            }
+                        }
+                    }
                 },
 
                 // Memory Ops (Thread-Safe via Mutex)

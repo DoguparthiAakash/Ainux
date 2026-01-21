@@ -36,6 +36,9 @@ const OP_POW: u8 = 0x15;
 const OP_FLOORDIV: u8 = 0x16;
 const OP_AND: u8 = 0x18;
 const OP_OR:  u8 = 0x19; 
+const OP_XOR: u8 = 0x22;
+const OP_XAND: u8 = 0x23; // XNOR
+const OP_XNOT: u8 = 0x24; // Bitwise NOT 
 const OP_EQ: u8 = 0x90;
 const OP_NEQ: u8 = 0x91;
 const OP_LT: u8 = 0x92;
@@ -94,6 +97,14 @@ const OP_FILE_READ: u8 = 0x57;
 const OP_FILE_WRITE: u8 = 0x58;
 const OP_FILE_EXISTS: u8 = 0x59;
 const OP_FILE_MKDIR: u8 = 0x5A;
+const OP_FILE_DELETE: u8 = 0x5C;
+
+// DataManager & Security Opcodes
+const OP_DM_GET: u8 = 0x64;
+const OP_DM_SET: u8 = 0x65;
+const OP_SEC_LOGIN: u8 = 0x66;
+const OP_SEC_WHOAMI: u8 = 0x67;
+const OP_PUSH_STR: u8 = 0x68; // Push string literal
 
 // Simple SpinLock Implementation for Kernel Safety
 pub struct SpinLock<T> {
@@ -150,7 +161,7 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
 struct SharedState {
     memory: Vec<u8>, // Global Virtual Memory (Heap/Globals)
     locks: BTreeMap<u64, Arc<SpinLock<()>>>,
-    files: BTreeMap<u64, FileHandle>, // Open File Handles
+    files: BTreeMap<u64, Arc<dyn FileHandle>>, // Open File Handles
     next_fd: u64,
 }
 
@@ -246,6 +257,34 @@ impl NuxVm {
                 OP_PUSH => {
                     let val = self.read_i64_code();
                     self.push(val);
+                },
+                OP_PUSH_STR => {
+                    // Read string length (i64)
+                    let len = self.read_i64_code() as usize;
+                    
+                    // Read string bytes from bytecode
+                    let mut str_bytes = Vec::new();
+                    for _ in 0..len {
+                        if self.ip < self.code.len() {
+                            str_bytes.push(self.code[self.ip]);
+                            self.ip += 1;
+                        }
+                    }
+                    
+                    // Allocate in shared memory (use a simple bump allocator at end of memory)
+                    let mut shared = self.shared.lock();
+                    let dest_addr = shared.memory.len() - 2048; // Reserve 2KB at end for string pool
+                    
+                    // Write string to shared memory
+                    let max_copy = core::cmp::min(len, 1024); // Limit to 1KB per string
+                    for i in 0..max_copy {
+                        shared.memory[dest_addr + i] = str_bytes[i];
+                    }
+                    shared.memory[dest_addr + max_copy] = 0; // Null terminator
+                    drop(shared);
+                    
+                    // Push address
+                    self.push(dest_addr as i64);
                 },
                 OP_POP => { self.pop(); },
                 OP_ADD => { let b = self.pop(); let a = self.pop(); self.push(a.wrapping_add(b)); },
@@ -619,7 +658,7 @@ impl NuxVm {
                     }
                     
                     if let Ok(inode) = crate::fs::vfs::root().lookup(&path) {
-                        if let Ok(handle) = inode.open() {
+                        if let Ok(handle) = inode.open(0) {
                             let fd = shared.next_fd;
                             shared.next_fd += 1;
                             shared.files.insert(fd, handle);
@@ -633,7 +672,7 @@ impl NuxVm {
                     } else {
                          // File not found, try create
                          if let Ok(inode) = crate::fs::vfs::root().create(&path, crate::fs::vfs::FileType::File) {
-                             if let Ok(handle) = inode.open() {
+                             if let Ok(handle) = inode.open(0) {
                                  let fd = shared.next_fd;
                                  shared.next_fd += 1;
                                  shared.files.insert(fd, handle);
@@ -652,7 +691,10 @@ impl NuxVm {
                 OP_FILE_CLOSE => {
                     let fd = self.pop() as u64;
                     let mut shared = self.shared.lock();
-                    if shared.files.remove(&fd).is_some() {
+                    let success = shared.files.remove(&fd).is_some();
+                    drop(shared);
+                    
+                    if success {
                         self.push(1); // Success
                     } else {
                         self.push(0); // Fail
@@ -666,7 +708,7 @@ impl NuxVm {
                     let mut shared = self.shared.lock();
                     if let Some(handle) = shared.files.get(&fd) {
                         let mut temp_buf = alloc::vec![0u8; len];
-                        if let Ok(count) = handle.read(&mut temp_buf) {
+                        if let Ok(count) = handle.read(&mut temp_buf, 0) { // Offset 0 for now
                             // Copy back to memory
                             for i in 0..count {
                                 if buf_ptr + i < shared.memory.len() {
@@ -701,7 +743,7 @@ impl NuxVm {
                              }
                         }
                         
-                        if let Ok(count) = handle.write(&temp_buf) {
+                        if let Ok(count) = handle.write(&temp_buf, 0) { // Offset 0
                             drop(shared);
                             self.push(count as i64);
                         } else {
@@ -788,18 +830,119 @@ impl NuxVm {
                     }
                     drop(shared);
                     
-                    kprintln!("System Command: {}", cmd);
-                    // Actual execution?
-                    // crate::shell::execute_command(&cmd); ??
-                    // For now, logging it is enough for "demo" usage, 
-                    // or we try to chain it.
-                    self.push(0); // Success/Fail code
+                    kprintln!("System command (Stub): {}", cmd);
+                    self.push(0); // Return Success
+                },
+                
+                // --- DataManager Ops ---
+                OP_DM_GET => {
+                    let ptr = self.pop();
+                    let mut key = String::new();
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    let mut addr = ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 {
+                         key.push(mem[addr] as char);
+                         addr += 1;
+                    }
+                    drop(shared);
+                    
+                    let val = crate::api::datamanager::DATA_MANAGER.lock().get(&key);
+                    
+                    // Write result to new string in heap?
+                    // Need to allocate. Simple linear alloc for now or just overwrite?
+                    // VM needs a way to Allocate String.
+                    // Hack: We return an integer pointer to a new string?
+                    // But shared memory is fixed.
+                    // Let's use a temporary buffer area at end of heap?
+                    // Or just use `shared.memory`.
+                    // We need a proper `alloc` in shared memory.
+                    // For now: Write to address 0x1000? (DANGER)
+                    // Better: The user script passes a buffer pointer?
+                    // The standard `dm_get(key)` returns string.
+                    // Nux strings are pointers.
+                    // We need to place the string somewhere.
+                    
+                    // QUICK HACK: Use a fixed buffer at (mem.len() - 1024)
+                    let mut shared = self.shared.lock();
+                    let dest_addr = shared.memory.len() - 1024; // top 1KB for returns
+                    let val_bytes = val.as_bytes();
+                    let len = core::cmp::min(val_bytes.len(), 1023);
+                    
+                    for i in 0..len {
+                        shared.memory[dest_addr + i] = val_bytes[i];
+                    }
+                    shared.memory[dest_addr + len] = 0; // Null term
+                    drop(shared);
+                    
+                    self.push(dest_addr as i64);
+                },
+                
+                OP_DM_SET => {
+                    let val_ptr = self.pop();
+                    let key_ptr = self.pop();
+                    
+                    let mut key = String::new();
+                    let mut val_str = String::new();
+                    
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    
+                    let mut addr = key_ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 { key.push(mem[addr] as char); addr += 1; }
+                    
+                    addr = val_ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 { val_str.push(mem[addr] as char); addr += 1; }
+                    drop(shared);
+                    
+                    crate::api::datamanager::DATA_MANAGER.lock().set(&key, &val_str);
+                    self.push(0); // Void
+                },
+                
+                // --- Security Ops ---
+                OP_SEC_LOGIN => {
+                    let pass_ptr = self.pop();
+                    let user_ptr = self.pop();
+                    
+                    let mut user = String::new();
+                    let mut pass = String::new();
+                    
+                    let shared = self.shared.lock();
+                    let mem = &shared.memory;
+                    
+                    let mut addr = user_ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 { user.push(mem[addr] as char); addr += 1; }
+                    
+                    addr = pass_ptr as usize;
+                    while addr < mem.len() && mem[addr] != 0 { pass.push(mem[addr] as char); addr += 1; }
+                    drop(shared);
+                    
+                    let success = crate::security::user::USER_MANAGER.lock().authenticate(&user, &pass);
+                    self.push(if success { 1 } else { 0 });
+                },
+                
+                OP_SEC_WHOAMI => {
+                   let name = crate::security::user::USER_MANAGER.lock().get_current_user();
+                   
+                   // Return String (Same Hack as DM_GET)
+                    let mut shared = self.shared.lock();
+                    let dest_addr = shared.memory.len() - 1024; 
+                    let val_bytes = name.as_bytes();
+                    let len = core::cmp::min(val_bytes.len(), 1023);
+                    
+                    for i in 0..len {
+                        shared.memory[dest_addr + i] = val_bytes[i];
+                    }
+                    shared.memory[dest_addr + len] = 0;
+                    drop(shared);
+                    
+                    self.push(dest_addr as i64);
                 },
 
+                // Opcode 0xB5: Vision Detect (Mock)
                 OP_EXIT => { self.running = false; },
                 _ => { kprintln!("Unknown Opcode: {:02X}", op); }
             }
         }
     }
 }
-

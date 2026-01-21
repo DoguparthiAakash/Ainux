@@ -63,6 +63,11 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "GT" => ops.push(0x93),
             "LTE" => ops.push(0x94),
             "GTE" => ops.push(0x95),
+            
+            "XOR" => ops.push(0x22),
+            "XAND" => ops.push(0x23),
+            "XNOT" => ops.push(0x24),
+            
             "DRAW_RECT" => ops.push(0x20),
             
             // Vision
@@ -162,7 +167,20 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "UNLOCK" => ops.push(0x74),
             
             "RET" => ops.push(0x71),
+            "OP_FILE_MKDIR" => ops.push(0x5A),
+            "OP_FILE_DELETE" => ops.push(0x5C),
+            "OP_DM_GET" => ops.push(0x64),
+            "OP_DM_SET" => ops.push(0x65),
+            "OP_SEC_LOGIN" => ops.push(0x66),
+            "OP_SEC_WHOAMI" => ops.push(0x67),
+            "OP_PUSH_STR" => ops.push(0x68),
             "EXIT" => ops.push(0xFF),
+            "BYTE" => {
+                // Emit a single byte (for string data)
+                if parts.len() < 2 { return Err(format!("BYTE missing operand")); }
+                let val = parts[1].parse::<u8>().map_err(|_| "Invalid byte value")?;
+                ops.push(val);
+            },
             _ => return Err(format!("Unknown instruction: {}", mnemonic)),
         }
     }

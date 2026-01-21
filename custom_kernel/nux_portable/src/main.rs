@@ -5,6 +5,7 @@ mod high_level;
 mod editor;
 mod transpiler;
 mod platform;
+mod versioning;
 
 use std::env;
 use std::fs;
@@ -161,39 +162,50 @@ fn main() {
                 }
             };
 
-            // 2. Prepare Directory structure
-            let path_obj = std::path::Path::new(path);
-            let stem = path_obj.file_stem().unwrap().to_str().unwrap();
-            let dir_name = format!("{}_nux", stem);
-            
-            if let Err(e) = fs::create_dir_all(&dir_name) {
-                println!("Error creating directory {}: {}", dir_name, e);
-                return;
-            }
+            // 2. Check for 'bin' and '-fis' flags
+            let save_bin = args.iter().any(|arg| arg == "bin");
+            let use_fis = args.iter().any(|arg| arg == "-fis");
 
-            let binary_name = format!("{}.nuxi", stem);
-            let binary_path = std::path::Path::new(&dir_name).join(&binary_name);
-
-            // 3. Versioning (Backup old .nuxi if exists)
-            if binary_path.exists() {
-                let backup_name = format!("{}.v1", binary_name);
-                let backup_path = std::path::Path::new(&dir_name).join(backup_name);
+            // 3. Save binary based on flags
+            if save_bin {
+                let path_obj = std::path::Path::new(path);
+                let stem = path_obj.file_stem().unwrap().to_str().unwrap();
+                let dir_name = format!("{}_nux", stem);
                 
-                if let Err(e) = fs::rename(&binary_path, &backup_path) {
-                    println!("Warning: Failed to backup old binary: {}", e);
-                } else {
-                    println!("Saved previous version to {}", backup_path.display());
+                if let Err(e) = fs::create_dir_all(&dir_name) {
+                    println!("Error creating directory {}: {}", dir_name, e);
+                    return;
                 }
+
+                let binary_name = format!("{}.nuxi", stem);
+                let binary_path = std::path::Path::new(&dir_name).join(&binary_name);
+
+                if use_fis {
+                    // Mode 3: bin -fis (versioning)
+                    let versioning = versioning::BinaryVersioning::new(path_obj, 5);
+                    match versioning.save_version(&compiled_bytes) {
+                        Ok(saved_path) => {
+                            println!("✅ Successfully compiled to {}", saved_path.display());
+                        }
+                        Err(e) => {
+                            println!("Error saving versioned binary: {}", e);
+                            return;
+                        }
+                    }
+                } else {
+                    // Mode 2: bin (simple overwrite)
+                    if let Err(e) = fs::write(&binary_path, &compiled_bytes) {
+                        println!("Error writing binary: {}", e);
+                        return;
+                    }
+                    println!("✅ Successfully compiled to {}", binary_path.display());
+                }
+            } else {
+                // Mode 1: No bin flag - just compile (no save)
+                println!("✅ Compilation successful");
             }
 
-            // 4. Write New Binary
-            if let Err(e) = fs::write(&binary_path, &compiled_bytes) {
-                println!("Error writing new binary: {}", e);
-                return;
-            }
-            println!("✅ Successfully compiled to {}", binary_path.display());
-
-            // 5. Run
+            // 4. Run
             println!("Running...");
             let mut machine = vm::NuxVm::new(compiled_bytes);
             
@@ -395,10 +407,18 @@ fn print_usage() {
     println!("Nux Language Portable SDK");
     println!("Usage:");
     println!("  nux build <source.nux> [output.nuxi]  - Compile (Auto-detects HighLevel/ASM)");
-    println!("  nux run   <binary.nuxi>               - Run a Nux binary");
+    println!("  nux run   <source.nux>                - Compile & run (no binary saved)");
+    println!("  nux run   <source.nux> bin            - Compile, save binary & run");
+    println!("  nux run   <source.nux> bin -fis       - Compile, save with versioning & run");
+    println!("  nux run   <binary.nuxi>               - Run a pre-compiled binary");
     println!("  nux edit  <file>                      - Open IDE/Editor");
     println!("  nux update                            - Update Nux from GitHub");
     println!("  nux version                           - Show version");
+    println!("");
+    println!("Flags:");
+    println!("  bin     Save compiled binary to <filename>_nux/<filename>.nuxi");
+    println!("  -fis    Force Incremental Save - saves binaries with version control");
+    println!("          (keeps last 5 versions as v1, v2, v3, etc.)");
 }
 
 // Simple Import Preprocessor

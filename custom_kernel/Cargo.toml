@@ -8,6 +8,7 @@ limine = "0.5" # Bindings for Limine boot protocol
 volatile = "0.6.1"
 spin = "0.9.8" # Spinlocks for synchronization
 linked_list_allocator = "0.10.5"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
 
 [build-dependencies]
 cc = "1.0"

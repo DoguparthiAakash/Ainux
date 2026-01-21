@@ -68,6 +68,10 @@ pub enum Token {
     GtEq,
     And,
     Or,
+    Xor,
+    Xand,
+    Xnot,
+    
     SemiColon,
     Colon,
     Dot,
@@ -316,6 +320,10 @@ impl Lexer {
             "not" => Token::Not,
             "and" => Token::And,
             "or" => Token::Or,
+            "not" => Token::Not,
+            "xor" => Token::Xor,
+            "xand" => Token::Xand,
+            "xnot" => Token::Xnot,
             
             _ => Token::Identifier(text),
         };

@@ -1600,7 +1600,7 @@ impl Parser {
         match loc {
             VarLocation::Global(addr) => {
                  // Value is on stack.
-                 out.push_str(&format!("PUSH {}\nSWAP\nPOKE\n", addr));
+                 out.push_str(&format!("PUSH {}\nPOKE\n", addr));
             },
             VarLocation::Local(_) => {
                  // Value is on stack. This IS the local.
@@ -2567,6 +2567,11 @@ impl Parser {
             "random" => Some("OP_RANDOM".to_string()),
             "system" => Some("OP_SYSTEM".to_string()),
             "vision_detect" => Some("OP_VISION_DETECT".to_string()),
+            // Graphics intrinsics
+            "gfx_clear" => Some("OP_GFX_CLEAR".to_string()),
+            "gfx_pixel" => Some("OP_DRAW_PIXEL".to_string()),
+            "gfx_line" => Some("OP_DRAW_LINE".to_string()),
+            "gfx_circle" => Some("OP_DRAW_CIRCLE".to_string()),
             _ => None
         }
     }

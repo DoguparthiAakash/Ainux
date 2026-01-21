@@ -296,3 +296,15 @@ fn draw_circle_octants(cx: i64, cy: i64, x: i64, y: i64, color: u32) {
     draw_pixel(cx + y, cy - x, color);
     draw_pixel(cx - y, cy - x, color);
 }
+
+pub fn copy_buffer(buffer: &[u32]) {
+    let fb_addr = *FRAMEBUFFER_ADDR.lock(); 
+    if fb_addr == 0 { return; }
+    
+    // Safety: We assume buffer size matches framebuffer size for full screen updates.
+    // Or we should check bounds. For max speed, we trust the caller in this kernel context.
+    let ptr = fb_addr as *mut u32;
+    unsafe {
+        core::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr, buffer.len());
+    }
+}

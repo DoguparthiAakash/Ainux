@@ -34,6 +34,7 @@ pub enum VfsError {
     InvalidHandle,
     NotImplemented,
     NotEmpty,
+    AlreadyExists,
 }
 
 pub trait FileSystem: Send + Sync {

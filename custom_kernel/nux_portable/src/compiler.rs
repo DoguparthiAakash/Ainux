@@ -95,6 +95,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "OP_SYSTEM" | "SYSTEM" => ops.push(0x5D),
             "OP_FILE_DELETE" | "FILE_DELETE" => ops.push(0x5E),
             
+            // Graphics Opcodes
+            "OP_GFX_CLEAR" => ops.push(0x96),
+            "OP_DRAW_PIXEL" => ops.push(0x95),
+            "OP_DRAW_LINE" => ops.push(0x93),
+            "OP_DRAW_CIRCLE" => ops.push(0x94),
+            
             "OP_VISION_DETECT" => ops.push(0xB0),
             
             // Embedded Opcodes

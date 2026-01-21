@@ -7,3 +7,6 @@ pub mod rtc;
 pub mod serial;
 pub mod manager;
 pub mod power;
+pub mod iokit;
+pub mod pci;
+pub mod net;

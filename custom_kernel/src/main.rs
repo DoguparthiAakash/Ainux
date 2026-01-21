@@ -8,12 +8,15 @@ use core::panic::PanicInfo;
 use limine::request::FramebufferRequest;
 use core::fmt::{self, Write};
 use core::arch::asm;
-mod fs;
-mod mm;
 mod cpu;
 mod process;
-mod drivers;
-mod shell;
+mod mm;
+pub mod drivers;
+pub mod apps;
+pub mod fs;
+
+pub mod api;
+pub mod shell;
 pub mod gui;
 pub mod engine;
 pub mod debug;
@@ -37,6 +40,10 @@ fn panic(_info: &PanicInfo) -> ! {
     // In panic, try to construct a fresh serial port to avoid deadlock if lock is held
     let mut serial = drivers::serial::SerialPort::new(0x3F8);
     let _ = write!(serial, "PANIC: {:?}\n", _info);
+    
+    let _ = write!(serial, "Attempting to recover to Shell...\n");
+    crate::shell::run();
+    
     loop {
         hlt();
     }
@@ -87,6 +94,11 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Initializing Heap...\n");
     mm::heap::init();
     let _ = write!(serial, "Heap Initialized.\n");
+
+    // Initialize Zone Allocator (After Heap, safe now with try_lock fix)
+    let _ = write!(serial, "Initializing Zone Allocator...\n");
+    mm::zone::init(1); 
+    let _ = write!(serial, "Zone Allocator Initialized.\n");
     
     // Initialize GDT
     let _ = write!(serial, "Initializing GDT...\n");
@@ -121,6 +133,26 @@ pub extern "C" fn _start() -> ! {
     drivers::video::init();
     drivers::video::put_str("Ainux Kernel v0.1\n");
     drivers::video::put_str("Initializing...\n");
+    
+    // Initialize IO Kit
+    let _ = write!(serial, "Initializing IO Kit...\n");
+    drivers::iokit::registry::init();
+    let _ = write!(serial, "IO Kit Registry Initialized.\n");
+    
+    // Initialize PCI
+    drivers::pci::init();
+    
+    // Initialize Simulated WiFi (Atheros)
+    if let Some(root) = drivers::iokit::registry::REGISTRY.lock().root.clone() {
+        let wifi = drivers::net::atheros::AtherosHAL::new();
+        let entry = drivers::iokit::registry::IORegistryEntry::new(wifi.clone());
+        drivers::iokit::registry::IORegistryEntry::add_child(&root, &entry);
+        use crate::drivers::iokit::service::IOService;
+        let _ = IOService::start(&*wifi, &root.service);
+    }
+
+    // Auto-Run IO Kit Test
+    drivers::iokit::test::run_test();
     
     // Test ATA
     let _ = write!(serial, "ATA TEST START\n");
@@ -349,6 +381,44 @@ fn boot_menu() {
                     }
                 },
                 _ => {}
+            }
+        }
+        
+        // Serial Poll
+        if drivers::serial::SERIAL.lock().data_ready() {
+            let b = drivers::serial::SERIAL.lock().read_byte();
+            let c = b as char;
+             match c {
+                '1' => {
+                    drivers::video::put_str("1\n");
+                    return; // Proceed to Shell
+                },
+                '2' => {
+                    drivers::video::put_str("2\n");
+                    drivers::video::put_str("Network Diagnostics not implemented yet.\n");
+                    drivers::video::put_str("Select option [1-4]: ");
+                },
+                '3' => {
+                    drivers::video::put_str("3\nRebooting...\n");
+                    unsafe {
+                         // Pulse 0xFE to 0x64 (CPU Reset)
+                         loop {
+                              let status: u8;
+                              core::arch::asm!("in al, 0x64", out("al") status);
+                              if status & 2 == 0 { break; }
+                         }
+                         core::arch::asm!("out 0x64, al", in("al") 0xFE as u8);
+                         core::arch::asm!("hlt");
+                    }
+                },
+                '4' => {
+                    drivers::video::put_str("4\nShutting down...\n");
+                    unsafe {
+                        core::arch::asm!("out dx, ax", in("dx") 0x604 as u16, in("ax") 0x2000 as u16);
+                        loop { core::arch::asm!("hlt"); }
+                    }
+                },
+               _ => {}
             }
         }
         unsafe { asm!("hlt"); }

@@ -435,6 +435,7 @@ impl Inode for Ext4Inode {
             
             let mut offset = 0;
             while offset < buf.len() {
+                if offset + core::mem::size_of::<DirEntry2>() > buf.len() { break; }
                 let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
                 let entry = unsafe { *entry_ptr };
                 
@@ -506,6 +507,7 @@ impl Inode for Ext4Inode {
             
             let mut offset = 0;
             while offset < buf.len() {
+                if offset + core::mem::size_of::<DirEntry2>() > buf.len() { break; }
                 let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
                 let entry = unsafe { *entry_ptr };
                 
@@ -542,6 +544,7 @@ impl Inode for Ext4Inode {
     }
 
     fn create(&self, name: &str, file_type: FileType) -> VfsResult<Arc<dyn Inode>> {
+        if let Ok(_) = self.lookup(name) { return Err(VfsError::AlreadyExists); }
         self.make_entry(name, file_type)
     }
 
@@ -1075,5 +1078,196 @@ impl FileHandle for Ext4File {
     
     fn close(&self) -> VfsResult<()> {
         Ok(())
+    }
+}
+
+impl Ext4FileSystem {
+    pub fn format(_device: u8) -> bool {
+        // Simple MKFS implementation for Ainux (Ext4)
+        // 1. Write Superblock
+        // 2. Write BGDT
+        // 3. Write Root Inode (Inode 2)
+        // 4. Write Root Directory Block
+        
+        crate::drivers::video::put_str("MKFS: Formatting... ");
+        
+        // 1. Superblock (Block 0/1 depending on size, offset 1024)
+        // LBA 2 (bytes 1024-1535) and LBA 3.
+        
+        let sb = Superblock {
+            inodes_count: 1024,
+            blocks_count_lo: 8192,
+            r_blocks_count_lo: 0,
+            free_blocks_count_lo: 8100, // Approx
+            free_inodes_count: 1013, // 1024 - 11 reserved
+            first_data_block: 1, // 1024 block size
+            log_block_size: 0,   // 1024 bytes (2 ^ (10+0))
+            log_cluster_size: 0,
+            blocks_per_group: 8192,
+            clusters_per_group: 8192,
+            inodes_per_group: 1024,
+            mtime: 0, wtime: 0,
+            mnt_count: 0, max_mnt_count: 0xFFFF,
+            magic: 0xEF53,
+            state: 1, errors: 1,
+            minor_rev_level: 0,
+            lastcheck: 0, checkinterval: 0,
+            creator_os: 0, rev_level: 0,
+            def_resuid: 0, def_resgid: 0,
+        };
+        
+        // Serialize Superblock to buffer
+        // Align to 1024 bytes
+        let mut sb_buf = alloc::vec![0u8; 1024];
+        unsafe {
+             let ptr = sb_buf.as_ptr() as *mut Superblock;
+             *ptr = sb;
+        }
+        
+        // Write SB to LBA 2 (Sector 2 and 3)
+        // Convert u8 buf to u16 for ATA
+        let mut ata_buf = alloc::vec![0u16; 512]; // 1024 bytes
+        unsafe {
+            let src = sb_buf.as_ptr() as *const u16;
+            let dst = ata_buf.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, 512);
+        }
+        
+        if !ata::write_sectors(&ata_buf, 2, 2) { 
+            crate::drivers::video::put_str("Failed to write SB!\n");
+            return false; 
+        }
+        
+        // 2. Block Group Descriptor Table (BGDT)
+        // Block 2 (LBA 4, 5) if block_size=1024 (SB is Block 1)
+        
+        // Fixed BGDT for 1 Group
+        let bgd = BlockGroupDescriptor {
+            block_bitmap_lo: 3,
+            inode_bitmap_lo: 4,
+            inode_table_lo: 5,
+            free_blocks_count_lo: 8000, // Dummy
+            free_inodes_count_lo: 1000, // Dummy
+            used_dirs_count_lo: 1,      // Root
+            flags: 0,
+            exclude_bitmap_lo: 0,
+            block_bitmap_hi: 0,
+            inode_bitmap_hi: 0,
+            inode_table_hi: 0,
+            free_blocks_count_hi: 0,
+            free_inodes_count_hi: 0,
+            used_dirs_count_hi: 0,
+            pad: 0,
+            reserved: [0; 3],  
+        };
+        
+        let mut bgd_buf = alloc::vec![0u8; 1024];
+        unsafe {
+             let ptr = bgd_buf.as_ptr() as *mut BlockGroupDescriptor;
+             *ptr = bgd;
+        }
+        
+        // Write BGDT to LBA 4 (Block 2)
+        unsafe {
+            let src = bgd_buf.as_ptr() as *const u16;
+            let dst = ata_buf.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, 512); 
+        }
+        if !ata::write_sectors(&ata_buf, 4, 2) { 
+             crate::drivers::video::put_str("Failed to write BGDT!\n");
+             return false; 
+        }
+        
+        // 3. Bitmaps (LBA 6, 7 for Block Bitmap | LBA 8, 9 for Inode Bitmap)
+        // Clear them (all free except reserved)
+        let mut zero_buf = alloc::vec![0u16; 512];
+        ata::write_sectors(&zero_buf, 6, 2); // Block Bitmap
+        ata::write_sectors(&zero_buf, 8, 2); // Inode Bitmap
+        
+        // 4. Inode Table (Starts LBA 10. We need to write Inode 2)
+        // Inode 2 is Root.
+        // Inode 2 is at offset 256 bytes (Inode size 256 assumed in SB?).
+        // Actually SB inodes_count etc don't specify size, usually in SB (inode_size).
+        // Let's assume 256 for now.
+        
+        // Construct Inode Table Block (containing inodes 1..N)
+        let mut itable_buf = alloc::vec![0u8; 1024]; // 4 inodes (256 bytes per inode)
+        // Inode 2 is at offset 256.
+        
+        let root_inode = DiskInode {
+            mode: 0x41ED, // Dir
+            uid: 0,
+            size_lo: 1024,
+            atime: 0, ctime: 0, mtime: 0, dtime: 0,
+            gid: 0,
+            links_count: 2,
+            blocks_lo: 2, // 2 sectors? or 1 block? 1 block = 2 sectors.
+            flags: 0,
+            osd1: 0,
+            block: {
+                let mut b = [0; 15];
+                b[0] = 20; // Data block for Root Dir (arbitrary far enough)
+                b
+            },
+            generation: 0,
+            file_acl_lo: 0,
+            size_hi: 0,
+            obso_faddr: 0,
+        };
+        
+        unsafe {
+             // Offset 256 (Inode 2)
+             let ptr = itable_buf.as_ptr().add(256) as *mut DiskInode;
+             *ptr = root_inode;
+        }
+        
+        // Write Inode Table Block (LBA 10)
+        unsafe {
+            let src = itable_buf.as_ptr() as *const u16;
+            let dst = ata_buf.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, 512);
+        }
+        ata::write_sectors(&ata_buf, 10, 2);
+        
+        // 5. Root Directory Data Block (Block 20 -> LBA 20*2 = 40)
+        // Write . and ..
+        let mut dir_buf = alloc::vec![0u8; 1024];
+        
+        // Entry 1: .
+        let entry_dot = DirEntry2 {
+            inode: 2,
+            rec_len: 12, // 8 + 1 + 3 align
+            name_len: 1,
+            file_type: 2, // Dir
+        };
+        
+        // Entry 2: ..
+        let entry_dotdot = DirEntry2 {
+            inode: 2,
+            rec_len: 1012, // Rest of block (1024 - 12)
+            name_len: 2,
+            file_type: 2,
+        };
+        
+        unsafe {
+             let ptr1 = dir_buf.as_ptr() as *mut DirEntry2;
+             *ptr1 = entry_dot;
+             core::ptr::copy_nonoverlapping(".".as_ptr(), dir_buf.as_mut_ptr().add(8), 1);
+             
+             let ptr2 = dir_buf.as_ptr().add(12) as *mut DirEntry2;
+             *ptr2 = entry_dotdot;
+             core::ptr::copy_nonoverlapping("..".as_ptr(), dir_buf.as_mut_ptr().add(12+8), 2);
+        }
+        
+        // Write Dir Data (LBA 40)
+        unsafe {
+            let src = dir_buf.as_ptr() as *const u16;
+            let dst = ata_buf.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, 512);
+        }
+        ata::write_sectors(&ata_buf, 40, 2);
+        
+        crate::drivers::video::put_str("Done.\n");
+        true
     }
 }

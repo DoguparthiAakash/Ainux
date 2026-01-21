@@ -1,0 +1,172 @@
+use alloc::sync::Arc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use crate::drivers::iokit::service::IOService;
+use crate::drivers::iokit::types::{IOValue, IOResult};
+use crate::drivers::video;
+
+const VENDOR_ID: i64 = 0x10EC;
+const DEVICE_ID: i64 = 0x8139;
+
+// Registers
+const MAC0: u16 = 0x00;
+const MAR0: u16 = 0x08;
+const TX_STATUS0: u16 = 0x10;
+const TX_ADDR0: u16 = 0x20;
+const RX_BUF: u16 = 0x30;
+const COMMAND: u16 = 0x37;
+const IMR: u16 = 0x3C;
+const ISR: u16 = 0x3E;
+const CONFIG1: u16 = 0x52;
+
+#[derive(Debug)]
+pub struct RTL8139 {
+    name: String,
+}
+
+impl RTL8139 {
+    pub fn new() -> Self {
+        Self { name: String::from("RTL8139 Ethernet") }
+    }
+    
+    // Helper helpers
+    unsafe fn outb(port: u16, val: u8) {
+        core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nostack, preserves_flags));
+    }
+    
+    unsafe fn outw(port: u16, val: u16) {
+        core::arch::asm!("out dx, ax", in("dx") port, in("ax") val, options(nostack, preserves_flags));
+    }
+    
+    unsafe fn outl(port: u16, val: u32) {
+        core::arch::asm!("out dx, eax", in("dx") port, in("eax") val, options(nostack, preserves_flags));
+    }
+}
+
+impl IOService for RTL8139 {
+    fn get_name(&self) -> &str { &self.name }
+    
+    fn get_property(&self, _key: &str) -> Option<IOValue> { None }
+    
+    fn probe(&self, provider: &Arc<dyn IOService>) -> i32 {
+        if let Some(IOValue::Integer(vid)) = provider.get_property("vendor-id") {
+            if let Some(IOValue::Integer(did)) = provider.get_property("device-id") {
+                if vid == VENDOR_ID && did == DEVICE_ID {
+                    return 100; // Match!
+                }
+            }
+        }
+        0
+    }
+    
+    fn start(&self, provider: &Arc<dyn IOService>) -> IOResult<()> {
+        video::put_str("RTL8139: Initializing...\n");
+        
+        let bar0 = match provider.get_property("bar0") {
+            Some(IOValue::Integer(b)) => b as u16,
+            _ => return Err(crate::drivers::iokit::types::IOError::DeviceError),
+        };
+        
+        let io_base = bar0 & !1;
+        video::put_str(&alloc::format!("RTL8139: I/O Base: {:#x}\n", io_base));
+        
+        // 1. Enable Hardware
+        unsafe {
+            Self::outb(io_base + CONFIG1, 0x00); // Power On
+            Self::outb(io_base + COMMAND, 0x10); // Reset
+            let mut timeout = 10000;
+            while timeout > 0 { timeout -= 1; }
+            
+            // 2. Allocate DMA Buffers (RX + 4 TX)
+            // We need contiguous physical memory. Using PMM to alloc single frames.
+            // RX Buffer (8K + 16 + 1.5K wrap) -> say 3 pages (12K)
+            // TX Buffers (2K each x 4) -> 2 pages
+            
+            // Helper to get phys addr of a frame
+            // WARNING: This is a hacky way to get a static buffer for the driver
+            // In a real OS, use the driver struct state. Here we use static mut or just leak it.
+            
+            let mut pmm_lock = crate::mm::pmm::PMM.lock();
+            if let Some(pmm) = pmm_lock.as_mut() {
+                 let rx_phys = pmm.alloc_frame().unwrap();
+                 let tx_phys = pmm.alloc_frame().unwrap(); // 4K is enough for 2 TX buffers? 
+                 // Let's alloc one frame per buffer to be safe and simple
+                 let tx0_phys = pmm.alloc_frame().unwrap();
+                 let tx1_phys = pmm.alloc_frame().unwrap();
+                 let tx2_phys = pmm.alloc_frame().unwrap();
+                 let tx3_phys = pmm.alloc_frame().unwrap();
+                 
+                 // Store IO Base globally for send_packet
+                 RTL8139_IO_BASE = io_base;
+                 RTL8139_TX_PHYS[0] = tx0_phys;
+                 RTL8139_TX_PHYS[1] = tx1_phys;
+                 RTL8139_TX_PHYS[2] = tx2_phys;
+                 RTL8139_TX_PHYS[3] = tx3_phys;
+                 
+                 video::put_str(&alloc::format!("RTL8139: RX Buffer at {:#x}\n", rx_phys));
+                 
+                 // 3. Init RX Buffer
+                 Self::outl(io_base + RX_BUF, rx_phys as u32);
+                 
+                 // 4. Init IM/ISR
+                 Self::outw(io_base + IMR, 0x0005); // TOK + ROK (Transmit OK, Receive OK)
+                 
+                 // 5. Build RCR (Receive Config Register)
+                 // ABP (Accept Broadcast/Physical/Multicast) | WRAP
+                 Self::outl(io_base + 0x44, 0xF | (1 << 7));
+                 
+                 // 6. Enable RE/TE
+                 Self::outb(io_base + COMMAND, 0x0C);
+            }
+        }
+        
+        video::put_str("RTL8139: Driver Active (DMA Configured).\n");
+        Ok(())
+    }
+    
+    fn stop(&self) {
+        video::put_str("RTL8139: Stopping...\n");
+    }
+}
+
+// Global state for simple access from send_packet (since we lack a proper driver instance passing mechanism yet)
+static mut RTL8139_IO_BASE: u16 = 0;
+static mut RTL8139_TX_PHYS: [u64; 4] = [0; 4];
+static mut RTL8139_TX_CUR: usize = 0;
+pub static mut RTL8139_FRAMEWORK: Option<u8> = Some(1); // Marker
+
+impl RTL8139 {
+    pub fn send_packet(data: &[u8]) {
+        unsafe {
+            let io_base = RTL8139_IO_BASE;
+            if io_base == 0 { return; }
+            
+            let cur_tx = RTL8139_TX_CUR;
+            let phys_addr = RTL8139_TX_PHYS[cur_tx];
+            
+            // 1. Copy data to the DMA buffer
+            // Only works if we have HHDM offset to map phys -> virt
+            let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            let virt_addr = phys_addr + hhdm;
+            let ptr = virt_addr as *mut u8;
+            
+            // Limit size
+            let len = if data.len() > 1792 { 1792 } else { data.len() };
+            core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+            
+            // 2. Write Address (TSAD)
+            // TSAD0 = offset 0x20, TSAD1 = 0x24...
+            Self::outl(io_base + 0x20 + (cur_tx as u16 * 4), phys_addr as u32);
+            
+            // 3. Write Status/Length (TSD)
+            // TSD0 = 0x10...
+            // Size | Early TX Threshold (0)
+            Self::outl(io_base + 0x10 + (cur_tx as u16 * 4), len as u32);
+            
+            // 4. Update index
+            RTL8139_TX_CUR = (cur_tx + 1) % 4;
+            
+            video::put_str("[NET] Transmitted Frame\n");
+        }
+    }
+}
