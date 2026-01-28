@@ -12,6 +12,7 @@ func Seconds(s) {
 }
 
 func Now() {
-    # Not implemented
-    return 0;
+    asm {
+        TIME
+    }
 }

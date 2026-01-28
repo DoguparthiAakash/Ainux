@@ -115,13 +115,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "GFX_RECT" => ops.push(0x3D),
             "PEEK8" => ops.push(0x42),
             "POKE8" => ops.push(0x43),
-            "GET_LOCAL" | "OP_GET_LOCAL" => {
+            "GET_LOCAL" => {
                 ops.push(0x44);
                 if parts.len() < 2 { return Err(format!("GET_LOCAL missing offset")); }
                 let val = parts[1].parse::<i64>().map_err(|_| "Invalid number")?;
                 ops.extend_from_slice(&val.to_le_bytes());
             },
-            "SET_LOCAL" | "OP_SET_LOCAL" => {
+            "SET_LOCAL" => {
                 ops.push(0x45);
                 if parts.len() < 2 { return Err(format!("SET_LOCAL missing offset")); }
                 let val = parts[1].parse::<i64>().map_err(|_| "Invalid number")?;
@@ -166,9 +166,6 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
             "LOCK" => ops.push(0x73),
             "UNLOCK" => ops.push(0x74),
             
-            "TIME" => ops.push(0x75),
-            "RANDOM" => ops.push(0x76),
-            
             "RET" => ops.push(0x71),
             "OP_FILE_MKDIR" => ops.push(0x5A),
             "OP_FILE_DELETE" => ops.push(0x5C),
@@ -196,16 +193,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
                  ops[offset + i] = bytes[i];
              }
         } else {
-            // DEBUG
-            if label_name.contains("while_end") {
-                eprintln!("DEBUG: Labels map keys:");
-                for k in labels.keys() {
-                    if k.contains("while_end") {
-                        eprintln!("  Found: '{}'", k);
-                    }
-                }
-            }
-            return Err(format!("Undefined label: '{}' (Len: {})", label_name, label_name.len()));
+            return Err(format!("Undefined label: {}", label_name));
         }
     }
 

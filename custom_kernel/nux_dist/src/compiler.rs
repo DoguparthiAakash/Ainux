@@ -248,22 +248,8 @@ impl Parser {
                     // Fallback check for root/lib prefix if user provided it manually?
                     // User asked for "by name".
                     
-                    // 2. Read File via VFS (DISABLED IN STANDALONE)
-                    // 2. Read File via VFS (DISABLED IN STANDALONE)
-                    // Implement file-based imports for standalone version
-                    let src_content = match std::fs::read_to_string(&path) {
-                        Ok(c) => Some(c),
-                        Err(_) => {
-                             // Try prefixing with ../nux_portable/ ? No, user should run from root or setup paths.
-                             // Try "nux_portable/lib/..."
-                             if path.starts_with("lib/") {
-                                 let alt_path = format!("../nux_portable/{}", path.strip_prefix("lib/").unwrap());
-                                 std::fs::read_to_string(&alt_path).ok()
-                             } else {
-                                 None
-                             }
-                        }
-                    };
+                    // File imports not supported in standalone version
+                    let src_content: Option<String> = None;
                     
                     if let Some(src) = src_content {
                         // 3. Nested Parse
@@ -354,7 +340,11 @@ impl Parser {
         // For now, let's just parse top-level definitions and Append them.
         
         let mut sub_parser = Parser::new(source);
-        sub_parser.label_id_counter = self.label_id_counter;
+        // Share Class Definitions?
+        // Ideally we pass context. 
+        // For simplicity: We run `parse_to_asm` but ignore main body, only keep definitions?
+        // But `parse_to_asm` generates code.
+        // We need `parse_top_level`.
         
         // Manual loop over sub_parser
         loop {
@@ -373,35 +363,10 @@ impl Parser {
                     // For now, call logic?
                      sub_parser.advance();
                      if let Token::String(s) = &sub_parser.current_token {
-                         let raw_name = s.clone();
-                         // Resolve Path logic (Duplicate from parse_to_asm)
-                         let mut path = String::from("lib/");
-                         let rel = raw_name.replace(".", "/");
-                         path.push_str(&rel);
-                         path.push_str(".nux");
-                         
-                         let src_content = match std::fs::read_to_string(&path) {
-                            Ok(c) => Some(c),
-                            Err(_) => {
-                                 if path.starts_with("lib/") {
-                                     let alt_path = format!("../nux_portable/{}", path.strip_prefix("lib/").unwrap());
-                                     std::fs::read_to_string(&alt_path).ok()
-                                 } else {
-                                     None
-                                 }
-                            }
-                        };
-                        
-                        if let Some(src) = src_content {
-                            // Recursively parse the imported source
-                            // We use `self` to accumulate classes/types from the grandchild
-                            self.parse_imported_source(&src, definitions);
-                            // Sync sub_parser counter with self (updated by recursion)
-                            sub_parser.label_id_counter = self.label_id_counter;
-                        } else {
-                            // Ignore missing imports in transitive for now or warn?
-                            // eprintln!("Warning: Transitive import not found: {}", path);
-                        }
+                         // .... Recurse logic ....
+                         // Copy paste logic or Refactor?
+                         // Refactor `resolve_import` later.
+                         // For now, skip transitive imports in this simple impl.
                      }
                      sub_parser.advance();
                      if sub_parser.current_token == Token::SemiColon { sub_parser.advance(); }
@@ -418,8 +383,6 @@ impl Parser {
         for (k, v) in sub_parser.bound_types {
             self.bound_types.insert(k, v);
         }
-        
-        self.label_id_counter = sub_parser.label_id_counter;
     }
 
     fn error<T>(&self, msg: String) -> Result<T, CompileError> {
@@ -954,17 +917,14 @@ impl Parser {
                           }
                      } else {
                           // If it's not a variable, assume it's an opcode or label to be emitted directly
-                          out.push_str(name); out.push(' ');
+                          out.push_str(name); out.push('\n');
                      }
                          self.advance();
                      } else if let Token::Number(n) = &self.current_token {
-                         out.push_str(&format!("{} ", n)); // Emit number as is (arg)
+                         out.push_str(&format!("{}\n", n)); // Emit number as is (arg)
                          self.advance();
-                     } else if self.current_token == Token::Comma { 
+                     } else if self.current_token == Token::Comma || self.current_token == Token::SemiColon { 
                          self.advance(); 
-                     } else if self.current_token == Token::SemiColon {
-                         out.push('\n');
-                         self.advance();
                      } else { 
                          return self.error("Invalid token in asm".to_string()); 
                      }
