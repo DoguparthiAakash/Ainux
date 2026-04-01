@@ -51,8 +51,36 @@ static mut EXTENDED: bool = false;
 
 static mut CTRL: bool = false;
 
+unsafe fn wait_write() {
+    while (inb(0x64) & 2) != 0 {}
+}
+
+unsafe fn wait_read() {
+    while (inb(0x64) & 1) == 0 {}
+}
+
+unsafe fn outb(port: u16, val: u8) {
+    asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
+}
+
+unsafe fn inb(port: u16) -> u8 {
+    let mut val: u8;
+    asm!("in al, dx", out("al") val, in("dx") port, options(nomem, nostack, preserves_flags));
+    val
+}
+
 pub fn init() {
     unsafe {
+        // Explicitly ENABLE scanning for the keyboard
+        // Wait for buffer to be empty
+        wait_write();
+        outb(0x60, 0xF4); // Enable Scanning
+        
+        // Wait for acknowledgment (0xFA) to clear the buffer
+        // Note: bit 0 of 0x64 must be 1 for a successful read.
+        wait_read();
+        let _ack = inb(0x60); 
+        
         crate::cpu::pic::unmask_irq(1);
     }
 }
@@ -98,12 +126,26 @@ extern "C" fn keyboard_handler() {
 #[no_mangle]
 extern "C" fn rust_keyboard_handler() {
     unsafe {
-        let scancode: u8;
-        asm!("in al, dx", out("al") scancode, in("dx") 0x60);
+        let status = inb(0x64);
+        if (status & 1) == 0 {
+            notify_eoi(1);
+            return;
+        }
+
+        let scancode = inb(0x60);
+        
+        // If bit 5 of status is set, it's mouse data, not keyboard
+        if (status & 0x20) != 0 {
+            // Serial Debug: Print 'M' for mouse data found in KB handler
+            asm!("out dx, al", in("dx") 0x3F8, in("al") b'm' as u8, options(nomem, nostack, preserves_flags));
+            notify_eoi(1);
+            return;
+        }
+
+        // Serial Debug: Print 'K' for every keyboard event
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b'K' as u8, options(nomem, nostack, preserves_flags));
 
         notify_eoi(1);
-
-        // Extended scancode prefix
         if scancode == 0xE0 {
             EXTENDED = true;
             return;

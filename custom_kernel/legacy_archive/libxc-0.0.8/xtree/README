@@ -1,7 +1,0 @@
-xtree 
-=====
-
-A C library to create and traverse multi-children trees. Each child node
-points to a single parent node and each parent node may have multiple
-child nodes. Child nodes are stored in an unordered list for each parent.
-

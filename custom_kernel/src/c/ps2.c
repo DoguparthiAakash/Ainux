@@ -13,9 +13,19 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
-// Dummy kprint
+// Serial kprint (using serial port 0x3F8)
 static void kprint(const char *msg) {
-    (void)msg;
+    while (*msg) {
+        // Wait for Transmit Holding Register Empty (THRE) bit 5 of LSR (port + 5)
+        while (!(inb(0x3F8 + 5) & 0x20));
+        outb(0x3F8, *msg++);
+    }
+}
+
+static void kprint_hex(uint8_t n) {
+    const char *hex = "0123456789ABCDEF";
+    char buf[5] = {'0', 'x', hex[(n >> 4) & 0xF], hex[n & 0xF], 0};
+    kprint(buf);
 }
 
 #define PS2_DATA_PORT 0x60
@@ -48,40 +58,67 @@ static void ps2_wait_read(void) {
 void ps2_init(void) {
     kprint("[PS2] Initializing Controller...\n");
 
-    /* 1. Disable devices */
+    /* 1. Disable devices to prevent interrupts during config */
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_DISABLE_PORT1);
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_DISABLE_PORT2);
 
-    /* 2. Flush Output Buffer */
+    /* 2. Flush Output Buffer (Discard any pending data) */
     while (inb(PS2_STATUS_PORT) & PS2_STATUS_OUTPUT_BUFFER) {
         inb(PS2_DATA_PORT);
     }
 
-    /* 3. Set Config Byte */
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_READ_CONFIG);
     ps2_wait_read();
     uint8_t config = inb(PS2_DATA_PORT);
     
-    /* Enable IRQs (bit 0=port1, bit 1=port2) and translation (bit 6) */
+    kprint("[PS2] Config Read: ");
+    kprint_hex(config);
+    kprint("\n");
+
+    /* 
+       Enable Keyboard IRQ (bit 0)
+       Enable Mouse IRQ (bit 1)
+       Enable System Flag (bit 2) - indicates POST passed
+       Enable Port 1 Clock (clear bit 4)
+       Enable Port 2 Clock (clear bit 5)
+       Enable Translation (bit 6) - Set 2 to Set 1 for compatibility
+    */
     config |= (1 << 0) | (1 << 1) | (1 << 6);
+    config &= ~((1 << 4) | (1 << 5)); 
     
+    kprint("[PS2] Writing Config: ");
+    kprint_hex(config);
+    kprint("\n");
+
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_WRITE_CONFIG);
     ps2_wait_write();
     outb(PS2_DATA_PORT, config);
 
-    /* 4. Enable Devices */
+    /* 4. Perform Controller Self-Test (Optional but good) */
+    ps2_wait_write();
+    outb(PS2_CMD_PORT, PS2_CMD_CONTROLLER_TEST);
+    ps2_wait_read();
+    if (inb(PS2_DATA_PORT) != 0x55) {
+        kprint("[PS2] Controller Self-Test FAILED.\n");
+    }
+
+    /* 5. Enable Devices */
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_ENABLE_PORT1);
     ps2_wait_write();
     outb(PS2_CMD_PORT, PS2_CMD_ENABLE_PORT2);
     
-    /* 5. Reset Mouse (0xFF) to ensure it streams */
-    /* This might be done in mouse.c but good to do here if needed */
-    /* But we let mouse.c handle specific device logic */
+    /* 6. Enable Keyboard Scanning specifically */
+    ps2_wait_write();
+    outb(PS2_DATA_PORT, 0xF4); // Enable Scanning command to keyboard
+    
+    // Wait for ACK
+    // ps2_wait_read();
+    // inb(PS2_DATA_PORT);
 
     kprint("[PS2] Controller Configured.\n");
 }

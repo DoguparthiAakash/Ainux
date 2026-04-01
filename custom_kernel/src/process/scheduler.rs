@@ -1,3 +1,4 @@
+use core::arch::asm;
 use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
@@ -19,7 +20,14 @@ pub fn init() {
 }
 
 pub fn tick() {
-    unsafe { TICKS += 1; }
+    unsafe { 
+        TICKS += 1; 
+        
+        // Heartbeat dot every 100 ticks (approx 1s)
+        if TICKS % 100 == 0 {
+            asm!("out dx, al", in("dx") 0x3F8, in("al") b'.' as u8, options(nomem, nostack, preserves_flags));
+        }
+    }
     
     // Account CPU Time
     let mut tasks = TASKS.lock();

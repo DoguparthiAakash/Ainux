@@ -22,7 +22,8 @@ pub mod engine;
 pub mod debug;
 pub mod security;
 pub mod ipc;
-pub mod nux; // Enabled (compiler only)
+// pub mod nux; // Disabled (nux_portable missing)
+
 pub mod sem;
 
 

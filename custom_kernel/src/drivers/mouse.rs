@@ -11,8 +11,12 @@ pub fn init() {
         // 2. Enable Interrupts
         wait_write();
         outb(0x64, 0x20); // read command byte
+        wait_read();      // CRITICAL: Wait for controller to put data in 0x60
         let mut status = inb(0x60);
-        status |= 2; // Enable IRQ12
+        
+        // Ensure Keyboard (bit 0), Mouse (bit 1), and Translation (bit 6) are preserved/enabled
+        status |= (1 << 0) | (1 << 1) | (1 << 6); 
+        
         wait_write();
         outb(0x64, 0x60); // write command byte
         wait_write();
@@ -20,10 +24,10 @@ pub fn init() {
         
         // 3. Defaults
         mouse_write(0xF6); // Set Default
-        mouse_read(); // ACK
+        mouse_read(); // ACK (0xFA)
         
         mouse_write(0xF4); // Enable Streaming
-        mouse_read(); // ACK
+        mouse_read(); // ACK (0xFA)
 
         // Unmask IRQ12
         crate::cpu::pic::unmask_irq(12);

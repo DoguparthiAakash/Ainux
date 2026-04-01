@@ -1,0 +1,7 @@
+/media/aakash/New Volume1/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/scopeguard-a98dcf0e6044bb75.d: /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0/src/lib.rs
+
+/media/aakash/New Volume1/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/libscopeguard-a98dcf0e6044bb75.rlib: /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0/src/lib.rs
+
+/media/aakash/New Volume1/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/libscopeguard-a98dcf0e6044bb75.rmeta: /home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0/src/lib.rs
+
+/home/aakash/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0/src/lib.rs:

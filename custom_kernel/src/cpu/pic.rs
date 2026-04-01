@@ -69,6 +69,12 @@ pub unsafe fn unmask_irq(irq: u8) {
          port = PIC1_DATA;
          value = 1 << irq;
      } else {
+         // Unmask Cascade IRQ on PIC 1 if not already unmasked
+         let pic1_mask = inb(PIC1_DATA);
+         if (pic1_mask & 4) != 0 {
+             outb(PIC1_DATA, pic1_mask & !4);
+         }
+         
          port = PIC2_DATA;
          value = 1 << (irq - 8);
      }

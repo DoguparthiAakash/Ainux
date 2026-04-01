@@ -17,9 +17,9 @@ cp limine/limine-bios.sys iso_root/boot/
 cp limine/limine-bios-cd.bin iso_root/boot/
 cp limine/limine-bios-cd.bin iso_root/boot/
 cp limine/limine-uefi-cd.bin iso_root/boot/
-cp nux_portable/standard_vision.nux iso_root/
-cp nux_portable/camera_demo.nux iso_root/
-cp test_sec.nux iso_root/
+# Nux files skipped (nux_portable missing)
+
+# cp test_sec.nux iso_root/ (missing)
 
 # Create ISO
 xorriso -as mkisofs -b boot/limine-bios-cd.bin \
