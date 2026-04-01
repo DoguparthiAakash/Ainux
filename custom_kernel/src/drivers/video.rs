@@ -154,8 +154,8 @@ pub fn draw_cursor(color: u32) {
     let x = *CONSOLE_X.lock();
     let y = *CONSOLE_Y.lock();
     // 8x12 font
-    let draw_x = x * 8;
-    let draw_y = y * 12;
+    let draw_x = (x * 8) as i64;
+    let draw_y = (y * 12) as i64;
     // Draw 8x12 block
     draw_rect(draw_x, draw_y, 8, 12, color);
 }
@@ -166,27 +166,24 @@ pub fn put_str(s: &str) {
     }
 }
 
-pub fn draw_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
-    let fb_width = *FRAMEBUFFER_WIDTH.lock();
-    let fb_height = *FRAMEBUFFER_HEIGHT.lock();
+pub fn draw_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
+    let fb_width = *FRAMEBUFFER_WIDTH.lock() as i64;
+    let fb_height = *FRAMEBUFFER_HEIGHT.lock() as i64;
     let fb_pitch = *FRAMEBUFFER_PITCH.lock();
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
-
     if fb_addr == 0 { return; }
 
     let ptr = fb_addr as *mut u32;
 
     for row in 0..h {
         let draw_y = y + row;
-        if draw_y >= fb_height { break; }
+        if draw_y < 0 || draw_y >= fb_height { continue; }
         
         for col in 0..w {
             let draw_x = x + col;
-            if draw_x >= fb_width { break; }
+            if draw_x < 0 || draw_x >= fb_width { continue; }
             
-            // Calculate offset. Assumes 32 BPP (4 bytes).
-            // Pitch is in bytes.
-            let offset = (draw_y * fb_pitch / 4) + draw_x;
+            let offset = (draw_y as usize * fb_pitch / 4) + draw_x as usize;
             unsafe {
                 *ptr.add(offset) = color;
             }
@@ -216,21 +213,12 @@ pub fn put_int(mut val: usize) {
 pub fn draw_pixel(x: i64, y: i64, color: u32) {
     let width = *FRAMEBUFFER_WIDTH.lock() as i64;
     let height = *FRAMEBUFFER_HEIGHT.lock() as i64;
-    
-    if x < 0 || x >= width || y < 0 || y >= height { return; }
-
-    unsafe {
-        c_draw_char(x as i32, y as i32, 0, color, 0); // Hack: using c_draw_char logic? 
-        // Wait, c_draw_char draws a CHARACTER. We need direct pixel access.
-        // Let's implement direct pixel access reusing the DrawRect logic but for 1 pixel?
-        // Or better, just write to the pointer.
-    }
-    
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
-    let fb_pitch = *FRAMEBUFFER_PITCH.lock(); // bytes
+    let fb_pitch = *FRAMEBUFFER_PITCH.lock();
     
     if fb_addr == 0 { return; }
-    
+    if x < 0 || x >= width || y < 0 || y >= height { return; }
+
     let offset = (y as usize * fb_pitch / 4) + x as usize;
     let ptr = fb_addr as *mut u32;
     unsafe {
@@ -238,8 +226,7 @@ pub fn draw_pixel(x: i64, y: i64, color: u32) {
     }
 }
 
-pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
-    // Reusing draw_rect logic but renamed/exposed properly
+pub fn fill_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
     draw_rect(x, y, w, h, color);
 }
 
