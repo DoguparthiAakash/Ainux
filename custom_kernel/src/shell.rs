@@ -1276,8 +1276,8 @@ fn cmd_cal(args: &[&str]) {
                 // Check if we didn't wrap? put_str handles basic wrapping if width exceeded but here we control newlines.
                 
                 let start_cx = if cx >= 3 { cx - 3 } else { 0 }; // Safety
-                let px = start_cx * 8;
-                let py = cy * 12;
+                let px = (start_cx * 8) as i64;
+                let py = (cy * 12) as i64;
                 
                 // Draw Hollow White Box (16x12)
                 video::draw_rect(px, py, 16, 1, 0xFFFFFF); // Top
@@ -1361,7 +1361,7 @@ fn cmd_clock() {
             last_second = t.seconds;
 
             // Redraw Face
-            video::fill_rect((cx - radius - 5) as usize, (cy - radius - 5) as usize, (radius * 2 + 10) as usize, (radius * 2 + 10) as usize, 0x101010);
+            video::fill_rect(cx - radius - 5, cy - radius - 5, radius * 2 + 10, radius * 2 + 10, 0x101010);
 
             // Draw Rim
             video::draw_circle(cx, cy, radius, 0xFF8800);
@@ -1395,7 +1395,7 @@ fn cmd_clock() {
             video::draw_line(cx, cy, cx + (sx * s_len) / 1024, cy + (sy * s_len) / 1024, 0xFF0000); // Red
             
             // Center Dot
-            video::fill_rect((cx - 3) as usize, (cy - 3) as usize, 6, 6, 0xFF8800);
+            video::fill_rect(cx - 3, cy - 3, 6, 6, 0xFF8800);
             
             // Digital Time below
             let am_pm = if t.hours >= 12 { "PM" } else { "AM" };

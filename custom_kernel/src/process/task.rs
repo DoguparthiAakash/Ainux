@@ -28,7 +28,7 @@ pub struct Task {
     pub id: usize,
     pub context: Context,
     pub state: TaskState,
-    pub stack: [u8; 4096], 
+    pub stack: [u8; 16384], 
     pub cr3: u64, // Page Table Physical Address (0 if kernel task)
     pub userspace_stack_top: u64,
     pub caps: CapTable,
@@ -47,7 +47,7 @@ impl Task {
             id: 0,
             context: Context { rsp:0, r15:0, r14:0, r13:0, r12:0, rbx:0, rbp:0, rip:0 },
             state: TaskState::Free,
-            stack: [0; 4096],
+            stack: [0; 16384],
             cr3: 0,
             userspace_stack_top: 0,
             caps: CapTable::new(),

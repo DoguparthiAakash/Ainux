@@ -95,6 +95,7 @@ macro_rules! exception_err_handler {
             naked_asm!(
                 "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
                 "mov rdi, [rsp + 72]", // Error Code is at RSP + 9*8 = 72
+                "mov rsi, [rsp + 80]", // RIP is at RSP + 72 + 8 = 80
                 "call {}",
                 "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
                 "add rsp, 8", // Pop error code
@@ -131,8 +132,14 @@ extern "C" fn rust_double_fault_handler(_err: u64) {
 }
 
 #[no_mangle]
-extern "C" fn rust_gp_fault_handler(_err: u64) {
-    unsafe { print_serial("GP FAULT\n"); }
+extern "C" fn rust_gp_fault_handler(err: u64, rip: u64) {
+    unsafe { 
+        print_serial("GP FAULT at RIP: ");
+        print_hex(rip);
+        print_serial(" Error Code: ");
+        print_hex(err);
+        print_serial("\n");
+    }
     loop {}
 }
 
