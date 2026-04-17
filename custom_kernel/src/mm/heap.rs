@@ -47,21 +47,26 @@ impl HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 
 pub const HEAP_START: usize = 0x_4444_4444_0000;
-pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 
 pub fn init() {
-    // Map the heap pages
-    // map HEAP_SIZE bytes starting at HEAP_START
-    // allocate frames from PMM
+    let total_mem = crate::mm::pmm::TOTAL_MEMORY.load(core::sync::atomic::Ordering::Relaxed) as usize;
+    // Aim for 32MB, but if memory is low, cap at (total_mem / 4) to leave room for userspace/page tables
+    // E.g., for 10MB RAM, heap will be 2.5MB. For 2GB RAM, heap will be 32MB.
+    let target_size = if total_mem < 128 * 1024 * 1024 {
+        total_mem / 4
+    } else {
+        32 * 1024 * 1024
+    };
     
-    let pages = (HEAP_SIZE + 4095) / 4096;
+    let heap_size = target_size.max(1024 * 1024); // at least 1MB
+    let pages = (heap_size + 4095) / 4096;
     let mut current_addr = HEAP_START;
     
     // Debug helper (manual serial output)
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     use core::fmt::Write;
     let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
-    let _ = write!(serial, "Heap: Need to map {} pages at {:#x}. HHDM: {:#x}\n", pages, current_addr, hhdm);
+    let _ = write!(serial, "Heap: Reserving {} pages ({:?} bytes) at {:#x}\n", pages, heap_size, current_addr);
 
     for i in 0..pages {
         let frame = {
@@ -95,7 +100,7 @@ pub fn init() {
     let _ = write!(serial, "Heap: Mapping done. Initializing allocator...\n");
     
     // Initialize the allocator
-    ALLOCATOR.init(HEAP_START as *mut u8, HEAP_SIZE);
+    ALLOCATOR.init(HEAP_START as *mut u8, heap_size);
     
     let _ = write!(serial, "Heap: Allocator init done.\n");
 }

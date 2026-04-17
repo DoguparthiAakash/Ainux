@@ -128,10 +128,6 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             if fd <= 2 {
                 if let Ok(s) = core::str::from_utf8(&buf) {
                     video::put_str(s);
-                     // Also write to Serial for verification
-                    for byte in s.bytes() {
-                        unsafe { asm!("out dx, al", in("dx") 0x3F8, in("al") byte, options(nomem, nostack)); }
-                    }
                     return a3;
                 }
             } else {

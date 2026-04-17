@@ -1,34 +1,43 @@
-ENTRY(_start)
+ENTRY(_start_multiboot)
 
 PHDRS
 {
+    boot PT_LOAD FLAGS(5);
     text PT_LOAD FLAGS(5);
     data PT_LOAD FLAGS(6);
 }
 
 SECTIONS
 {
-    . = 0xffffffff80000000;
+    . = 1M;
 
-    .text : {
+    .boot : {
+        KEEP(*(.multiboot))
+        src/asm/boot.o(.text)
+        src/asm/boot.o(.data)
+        src/asm/boot.o(.rodata)
+    } :boot
+
+    .boot_bss (NOLOAD) : {
+        src/asm/boot.o(.bss)
+        src/asm/boot.o(COMMON)
+    } :boot
+
+    . += 0xFFFFFFFF80000000;
+
+    .text ALIGN(4K) : AT(ADDR(.text) - 0xFFFFFFFF80000000) {
         *(.text .text.*)
     } :text
 
-    . = ALIGN(0x1000);
-
-    .rodata : {
+    .rodata ALIGN(4K) : AT(ADDR(.rodata) - 0xFFFFFFFF80000000) {
         *(.rodata .rodata.*)
     } :data
 
-    . = ALIGN(0x1000);
-
-    .data : {
+    .data ALIGN(4K) : AT(ADDR(.data) - 0xFFFFFFFF80000000) {
         *(.data .data.*)
     } :data
 
-    . = ALIGN(0x1000);
-
-    .bss : {
+    .bss ALIGN(4K) : AT(ADDR(.bss) - 0xFFFFFFFF80000000) {
         *(.bss .bss.*)
         *(COMMON)
     } :data
@@ -38,7 +47,8 @@ SECTIONS
         *(.note .note.*)
     }
 
-    .got : {
+    .got ALIGN(4K) : AT(ADDR(.got) - 0xFFFFFFFF80000000) {
         *(.got .got.*)
     } :data
 }
+

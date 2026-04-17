@@ -1,31 +1,22 @@
 #!/bin/bash
 set -e
 
-# Build Kernel
 # Build C and ASM
 nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
+nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
 gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
 
 # Build Kernel
-RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-Tlinker.ld -C link-arg=src/asm/utils.o -C link-arg=src/c/hardware.o" cargo build --release --target x86_64-unknown-none
+echo "Building Kernel..."
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-Tlinker.ld -C link-arg=src/asm/boot.o -C link-arg=src/asm/utils.o -C link-arg=src/c/hardware.o" cargo build --release --target x86_64-unknown-none
 
 # Create ISO Structure
-mkdir -p iso_root/boot
+rm -rf iso_root
+mkdir -p iso_root/boot/grub
 cp target/x86_64-unknown-none/release/ainux_kernel iso_root/boot/
-cp limine.conf iso_root/boot/
-cp limine/limine-bios.sys iso_root/boot/
-cp limine/limine-bios-cd.bin iso_root/boot/
-cp limine/limine-bios-cd.bin iso_root/boot/
-cp limine/limine-uefi-cd.bin iso_root/boot/
-# Nux files skipped (nux_portable missing)
-
-# cp test_sec.nux iso_root/ (missing)
+cp grub.cfg iso_root/boot/grub/
 
 # Create ISO
-xorriso -as mkisofs -b boot/limine-bios-cd.bin \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
-        --efi-boot boot/limine-uefi-cd.bin \
-        -efi-boot-part --efi-boot-image --protective-msdos-label \
-        -o ainux.iso iso_root
+grub-mkrescue -o ainux.iso iso_root
 
 echo "ISO Created: ainux.iso"

@@ -1,4 +1,4 @@
-use core::arch::{asm, naked_asm};
+use core::arch::asm;
 use crate::cpu::gdt::{USER_CODE, USER_DATA};
 
 // Enter Userspace (Ring 3)

@@ -78,6 +78,18 @@ pub fn init() {
         let mouse_handler = crate::drivers::mouse::mouse_handler_addr();
         IDT.entries[44] = IdtEntry::new(mouse_handler, 0x08, 0x8E);
 
+        // Fill ALL remaining IRQ vectors (32-47) with a stub handler
+        // that just sends EOI and returns, preventing GP faults from
+        // unexpected hardware interrupts (e.g., ATA at IRQ14 / vector 46)
+        let stub = irq_stub_handler_addr();
+        for vec in 32..=47 {
+            // Skip vectors with real handlers
+            if vec == 32 || vec == 33 || vec == 44 {
+                continue;
+            }
+            IDT.entries[vec] = IdtEntry::new(stub, 0x08, 0x8E);
+        }
+
         let idt_ptr = IdtPointer {
             limit: (size_of::<Idt>() - 1) as u16,
             base: (&IDT as *const Idt) as u64,
@@ -181,9 +193,15 @@ pub unsafe fn print_hex(mut n: u64) {
 #[unsafe(naked)]
 extern "C" fn timer_handler_wrapper() {
     naked_asm!(
-        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "push rax", "push rbx", "push rcx", "push rdx",
+        "push rsi", "push rdi", "push rbp",
+        "push r8", "push r9", "push r10", "push r11",
+        "push r12", "push r13", "push r14", "push r15",
         "call rust_timer_handler",
-        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "pop r15", "pop r14", "pop r13", "pop r12",
+        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop rbp", "pop rdi", "pop rsi",
+        "pop rdx", "pop rcx", "pop rbx", "pop rax",
         "iretq"
     );
 }
@@ -204,4 +222,27 @@ unsafe fn print_serial(s: &str) {
      for b in s.bytes() {
         asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
      }
+}
+
+// Stub handler for unhandled IRQs — just sends EOI
+#[unsafe(naked)]
+extern "C" fn irq_stub_handler_wrapper() {
+    naked_asm!(
+        "push rax",
+        "call rust_irq_stub_handler",
+        "pop rax",
+        "iretq"
+    );
+}
+
+fn irq_stub_handler_addr() -> u64 {
+    irq_stub_handler_wrapper as u64
+}
+
+#[no_mangle]
+extern "C" fn rust_irq_stub_handler() {
+    unsafe {
+        // Send EOI to both PIC master and slave
+        crate::cpu::pic::notify_eoi(0);
+    }
 }

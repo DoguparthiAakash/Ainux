@@ -1,5 +1,4 @@
 use spin::Mutex;
-use crate::FRAMEBUFFER_REQUEST;
 
 // C FFI declarations
 extern "C" {
@@ -10,8 +9,8 @@ extern "C" {
 
 pub static CONSOLE_X: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static CONSOLE_Y: spin::Mutex<usize> = spin::Mutex::new(0);
-pub static CONSOLE_WIDTH: spin::Mutex<usize> = spin::Mutex::new(0);
-pub static CONSOLE_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(0);
+pub static CONSOLE_WIDTH: spin::Mutex<usize> = spin::Mutex::new(80);
+pub static CONSOLE_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(25);
 
 // Raw Framebuffer Info (Public for GUI)
 pub static FRAMEBUFFER_ADDR: spin::Mutex<u64> = spin::Mutex::new(0);
@@ -20,16 +19,27 @@ pub static FRAMEBUFFER_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static FRAMEBUFFER_PITCH: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static FRAMEBUFFER_BPP: spin::Mutex<usize> = spin::Mutex::new(0);
 
+// VGA Buffer Address in Higher Half (0xFFFFFFFF80000000 + 0xB8000)
+pub const VGA_HHDM_ADDR: u64 = 0xFFFFFFFF800B8000;
 
 fn fast_clear(color: u32) {
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr == 0 {
+        // VGA Text mode clear
+        let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+        let vga_char = 0x0F00 | b' ' as u16; // Black background, white space
+        unsafe {
+            for i in 0..(80 * 25) {
+                core::ptr::write_volatile(vga_buffer.offset(i as isize), vga_char);
+            }
+        }
+        return;
+    }
+    
     let fb_pitch = *FRAMEBUFFER_PITCH.lock(); // bytes
     let fb_height = *FRAMEBUFFER_HEIGHT.lock();
     
-    if fb_addr == 0 { return; }
-    
     // Total u32 words
-    // Assumes pitch is multiple of 4
     let total = (fb_pitch / 4) * fb_height;
     let ptr = fb_addr as *mut u32;
     
@@ -41,39 +51,21 @@ fn fast_clear(color: u32) {
 }
 
 pub fn init() {
-    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-        if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-            let width = framebuffer.width() as u64;
-            let height = framebuffer.height() as u64;
-            let buffer = framebuffer.addr();
-            let pitch = framebuffer.pitch() as u64;
-
-            // Initialize C graphics
-            unsafe {
-                gfx_init(buffer as *mut u8, width, height, pitch);
-            }
-            
-            // Store console dimensions (in characters)
-            *CONSOLE_WIDTH.lock() = (width / 8) as usize;
-            *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
-            
-            // Store Raw Info
-            *FRAMEBUFFER_ADDR.lock() = buffer as u64;
-            *FRAMEBUFFER_WIDTH.lock() = width as usize;
-            *FRAMEBUFFER_HEIGHT.lock() = height as usize;
-            *FRAMEBUFFER_PITCH.lock() = pitch as usize;
-            *FRAMEBUFFER_BPP.lock() = 32; // Assuming 32-bit
-
-            // Debug Resolution
-            {
-               use core::fmt::Write;
-               let mut serial = crate::drivers::serial::SERIAL.lock();
-               let _ = write!(serial, "Video Init: W={} H={} P={}\n", width, height, pitch);
-            }
-
-            // Clear screen to black on startup
-            fast_clear(0x00000000);
-        }
+    let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr != 0 {
+        let width = *FRAMEBUFFER_WIDTH.lock() as u64;
+        let height = *FRAMEBUFFER_HEIGHT.lock() as u64;
+        let pitch = *FRAMEBUFFER_PITCH.lock() as u64;
+        
+        unsafe { gfx_init(fb_addr as *mut u8, width, height, pitch); }
+        *CONSOLE_WIDTH.lock() = (width / 8) as usize;
+        *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
+        fast_clear(0x00000000);
+    } else {
+        // VGA Text mode dimensions
+        *CONSOLE_WIDTH.lock() = 80;
+        *CONSOLE_HEIGHT.lock() = 25;
+        fast_clear(0);
     }
 }
 
@@ -85,13 +77,26 @@ pub fn clear() {
 }
 
 fn scroll_screen() {
+    let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr == 0 {
+        // VGA Text Mode Scroll
+        let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+        unsafe {
+            // Shift up by 1 line (80 chars)
+            core::ptr::copy(vga_buffer.offset(80), vga_buffer, 80 * 24);
+            // Clear last line
+            let blank = 0x0F00 | b' ' as u16;
+            for i in 0..80 {
+                core::ptr::write_volatile(vga_buffer.offset((80 * 24) + i), blank);
+            }
+        }
+        return;
+    }
+    
     let height = *FRAMEBUFFER_HEIGHT.lock();
     let pitch = *FRAMEBUFFER_PITCH.lock();
-    let addr = *FRAMEBUFFER_ADDR.lock() as *mut u8;
+    let addr = fb_addr as *mut u8;
 
-    if addr.is_null() { return; }
-
-    // Assume 12px font height
     let char_height = 12; 
     let row_bytes = pitch * char_height;
     let total_bytes = pitch * height;
@@ -99,23 +104,12 @@ fn scroll_screen() {
     if total_bytes <= row_bytes { return; }
 
     unsafe {
-        // Shift up
-        // src: addr + row_bytes
-        // dst: addr
-        // len: total_bytes - row_bytes
         core::ptr::copy(addr.add(row_bytes), addr, total_bytes - row_bytes);
-        
-        // Clear bottom
         core::ptr::write_bytes(addr.add(total_bytes - row_bytes), 0, row_bytes);
     }
 }
 
 pub fn put_char(c: char) {
-    // Mirror to Serial (0x3F8) for debugging
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") 0x3F8, in("al") c as u8, options(nomem, nostack, preserves_flags));
-    }
-
     let mut x = CONSOLE_X.lock();
     let mut y = CONSOLE_Y.lock();
     let width = *CONSOLE_WIDTH.lock();
@@ -135,8 +129,23 @@ pub fn put_char(c: char) {
     } else if c == '\r' {
         *x = 0;
     } else {
-        unsafe {
-            c_draw_char(*x as i32, *y as i32, c as u8, 0xFFFFFFFF, 0x00000000);
+        let fb_addr = *FRAMEBUFFER_ADDR.lock();
+        if fb_addr != 0 {
+            // Pixel Graphics Mode
+            unsafe {
+                c_draw_char(*x as i32, *y as i32, c as u8, 0xFFFFFFFF, 0x00000000);
+            }
+        } else {
+            // Legacy VGA Text Mode Fallback
+            let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+            // Ensure bounds are safe
+            let safe_x = (*x).min(79);
+            let safe_y = (*y).min(24);
+            let offset = (safe_y * 80) + safe_x;
+            let vga_char = (c as u16) | (0x0F << 8); // White on black
+            unsafe {
+                core::ptr::write_volatile(vga_buffer.offset(offset as isize), vga_char);
+            }
         }
         *x += 1;
         if *x >= width {

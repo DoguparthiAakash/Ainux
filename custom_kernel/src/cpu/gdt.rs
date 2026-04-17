@@ -4,8 +4,8 @@ use core::mem::size_of;
 // Segment Selectors
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
-pub const USER_CODE: u16 = 0x18 | 3;
-pub const USER_DATA: u16 = 0x20 | 3;
+pub const USER_DATA: u16 = 0x18 | 3;  // Must come BEFORE User Code for SYSRET
+pub const USER_CODE: u16 = 0x20 | 3;  // SYSRET loads CS = base+16
 pub const TSS_SELECTOR: u16 = 0x28;
 
 #[repr(C, packed)]
@@ -82,10 +82,10 @@ static mut GDT: [GdtDescriptor; 7] = [
     GdtDescriptor::new(0, 0, 0x9A, 0x20),
     // 2: Kernel Data
     GdtDescriptor::new(0, 0, 0x92, 0x00),
-    // 3: User Code (Access 0xFA: Present, Ring 3, Code, Readable)
-    GdtDescriptor::new(0, 0, 0xFA, 0x20),
-    // 4: User Data (Access 0xF2: Present, Ring 3, Data, Writable)
+    // 3: User Data (Access 0xF2: Present, Ring 3, Data, Writable) — MUST be before User Code for SYSRET
     GdtDescriptor::new(0, 0, 0xF2, 0x00),
+    // 4: User Code (Access 0xFA: Present, Ring 3, Code, Readable)
+    GdtDescriptor::new(0, 0, 0xFA, 0x20),
     // 5: TSS Low (will be filled in init)
     GdtDescriptor::new(0, 0, 0, 0),
     // 6: TSS High (will be filled in init)

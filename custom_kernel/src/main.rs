@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
+#![allow(warnings)]
 
 #[macro_use]
 extern crate alloc;
 
 use core::panic::PanicInfo;
-use limine::request::FramebufferRequest;
-use core::fmt::{self, Write};
+use core::fmt::Write;
 use core::arch::asm;
 mod cpu;
 mod process;
@@ -26,9 +26,6 @@ pub mod ipc;
 
 pub mod sem;
 
-
-// Request a framebuffer from Limine
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 pub fn hlt() {
     unsafe {
@@ -54,69 +51,64 @@ fn panic(_info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    let _ = write!(serial, "Hello from Ainux Core!\n");
+    let _ = write!(serial, "\n");
+    let _ = write!(serial, "╔══════════════════════════════════════════════════╗\n");
+    let _ = write!(serial, "║         AINUX KERNEL v0.2 — GRUB/SMP            ║\n");
+    let _ = write!(serial, "║    Advanced Interrupt & Nucleus Unix eXtended    ║\n");
+    let _ = write!(serial, "╚══════════════════════════════════════════════════╝\n");
+    let _ = write!(serial, "\n");
 
-    // C/ASM Integration test removed - not needed for shell
+    // ─── Phase 0: CPU Detection ───
+    let _ = write!(serial, "── Phase 0: CPU Detection ──\n");
+    cpu::cpuid::init();
 
-    // if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-    //    if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-    //        let bpp = framebuffer.bpp() as usize;
-    //        let pitch = framebuffer.pitch() as usize;
-    //        let height = framebuffer.height() as usize;
-    //        let width = framebuffer.width() as usize;
-    //        let buffer = framebuffer.addr();
-    //        
-    //        // Blue screen removed per user request for command level operation.
-    //        // if bpp == 32 { ... }
-    //        let _ = write!(serial, "Framebuffer Initialized (Visuals Disabled).\n");
-    //    }
-    // }
+    // ─── Phase 1: Memory Subsystem (Multiboot) ───
+    let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
+    let _ = write!(serial, "Initializing PMM (Multiboot)...\n");
+    mm::pmm::BitmapPmm::init();
+    let _ = write!(serial, "PMM Initialized.\n");
 
-    // Framebuffer Disabled (Visuals Handled by C driver)
-    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-       if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-           let bpp = framebuffer.bpp();
-           let _ = write!(serial, "Debug: Framebuffer BPP: {}\n", bpp);
-       }
-    }
-    let _ = write!(serial, "Debug: Framebuffer Block Skipped (C Driver Active).\n");
-
-    // Initialize PMM
-    let _ = write!(serial, "Initializing PMM...\n");
-    unsafe { mm::pmm::BitmapPmm::init(); }
-    let _ = write!(serial, "Debug: PMM Initialized.\n");
-    
-    // Initialize VMM
     let _ = write!(serial, "Initializing VMM...\n");
     mm::vmm::init();
-    let _ = write!(serial, "Debug: VMM Initialized.\n");
+    let _ = write!(serial, "VMM Initialized.\n");
 
-    // Initialize Heap
-    let _ = write!(serial, "Initializing Heap...\n");
+    let _ = write!(serial, "Initializing Heap (32 MB)...\n");
     mm::heap::init();
     let _ = write!(serial, "Heap Initialized.\n");
 
-    // Initialize Zone Allocator (After Heap, safe now with try_lock fix)
-    let _ = write!(serial, "Initializing Zone Allocator...\n");
-    mm::zone::init(1); 
-    let _ = write!(serial, "Zone Allocator Initialized.\n");
-    
-    // Initialize GDT
+    // ─── Phase 2: Core CPU Structures ───
+    let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
     let _ = write!(serial, "Initializing GDT...\n");
     cpu::gdt::init();
     let _ = write!(serial, "GDT Initialized.\n");
 
-    // Initialize IDT
     let _ = write!(serial, "Initializing IDT...\n");
     cpu::idt::init();
     let _ = write!(serial, "IDT Initialized.\n");
-    
-    // Initialize PIC
-    let _ = write!(serial, "Initializing PIC...\n");
+
+    let _ = write!(serial, "Initializing PIC (legacy)...\n");
     unsafe { cpu::pic::init(); }
     let _ = write!(serial, "PIC Remapped.\n");
-    
-    // Initialize Drivers
+
+    // ─── Phase 3: ACPI + Multi-Core Bootstrap ───
+    let _ = write!(serial, "\n── Phase 3: ACPI & Multi-Core ──\n");
+    cpu::acpi::init();
+
+    // Initialize APIC (replaces PIC for multi-core routing)
+    cpu::apic::init_lapic();
+    cpu::apic::init_ioapic();
+
+    // Boot all Application Processors
+    cpu::smp::init();
+
+    // Now we know CPU count — init zone allocator with correct count
+    let cpu_count = cpu::smp::CPU_COUNT.load(core::sync::atomic::Ordering::Relaxed) as usize;
+    let _ = write!(serial, "Initializing Zone Allocator ({} CPUs)...\n", cpu_count);
+    mm::zone::init(cpu_count.max(1));
+    let _ = write!(serial, "Zone Allocator Initialized.\n");
+
+    // ─── Phase 4: Drivers ───
+    let _ = write!(serial, "\n── Phase 4: Device Drivers ──\n");
     unsafe {
         extern "C" { fn ps2_init(); }
         ps2_init();
@@ -204,12 +196,13 @@ pub extern "C" fn _start() -> ! {
     crate::sem::init(); // Initialize Semantic Core
     let _ = write!(serial, "Scheduler Initialized.\n");
 
-    // Enable Interrupts
-    unsafe { asm!("sti"); }
-    
-    // Initialize Syscalls
+    // Initialize Syscalls (MUST be before STI to avoid timer interrupts during MSR setup)
     unsafe { cpu::syscall::init(); }
     let _ = write!(serial, "Syscalls Enabled.\n");
+
+    // Enable Interrupts
+    unsafe { asm!("sti"); }
+    let _ = write!(serial, "Interrupts Enabled.\n");
 
     // ----------- Enter Userspace -----------
     let _ = write!(serial, "Preparing Userspace...\n");

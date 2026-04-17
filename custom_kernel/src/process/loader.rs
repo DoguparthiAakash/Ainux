@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 use super::task::{Task, TaskState};
 use super::scheduler; // We need access to create tasks.
 use crate::fs::elf::{ElfHeader, ProgramHeader, PT_LOAD, PF_W, PF_X};

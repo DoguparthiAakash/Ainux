@@ -4,3 +4,7 @@ pub mod pic;
 pub mod syscall;
 pub mod userspace;
 pub mod control;
+pub mod acpi;
+pub mod apic;
+pub mod smp;
+pub mod cpuid;
