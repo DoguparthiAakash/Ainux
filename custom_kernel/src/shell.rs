@@ -20,21 +20,36 @@ fn set_cwd(path: &str) {
 }
 
 fn resolve_path(path: &str) -> String {
-    if path.starts_with("/") {
-        String::from(path)
-    } else {
-        let current = get_cwd();
-        if current == "/" {
-            let mut s = String::from("/");
-            s.push_str(path);
-            s
-        } else {
-            let mut s = current;
-            s.push_str("/");
-            s.push_str(path);
-            s
+    let mut components: Vec<String> = Vec::new();
+    
+    // Start with existing CWD if relative, or empty if absolute
+    if !path.starts_with("/") {
+        for comp in get_cwd().split('/') {
+            if !comp.is_empty() {
+                components.push(String::from(comp));
+            }
         }
     }
+    
+    // Process new path components
+    for comp in path.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        } else if comp == ".." {
+            components.pop();
+        } else {
+            components.push(String::from(comp));
+        }
+    }
+    
+    let mut resolved = String::from("/");
+    for (i, comp) in components.iter().enumerate() {
+        resolved.push_str(comp);
+        if i < components.len() - 1 {
+            resolved.push_str("/");
+        }
+    }
+    resolved
 }
 
 
@@ -187,7 +202,7 @@ pub fn run() {
         let mut last_blink = 0;
         let mut cursor_visible = false;
         
-        loop {
+        'input: loop {
             let current_ticks = crate::process::scheduler::get_ticks();
             if current_ticks > last_blink + 50 { // Blink every 0.5s approx
                  last_blink = current_ticks;
@@ -200,7 +215,7 @@ pub fn run() {
             }
 
             // Check PS/2 Keyboard
-            if let Some(c) = keyboard::pop_char() {
+            while let Some(c) = keyboard::pop_char() {
                 // Ensure cursor is erased before moving/printing
                  if cursor_visible { 
                      restore_cursor(&input_buffer, cursor_pos); 
@@ -209,7 +224,11 @@ pub fn run() {
                  }
 
                 process_char(c, &mut input_buffer, &mut cursor_pos, &mut history_index);
-                if c == '\n' { break; }
+                if c == '\n' { 
+                    crate::drivers::video::draw_cursor(0xFFFFFFFF);
+                    cursor_visible = true;
+                    break 'input; 
+                }
                 
                 // Force cursor visible after typing
                 crate::drivers::video::draw_cursor(0xFFFFFFFF);
@@ -217,7 +236,7 @@ pub fn run() {
             }
             
             // Check Serial
-            if crate::drivers::serial::SERIAL.lock().data_ready() {
+            while crate::drivers::serial::SERIAL.lock().data_ready() {
                  if cursor_visible { 
                      restore_cursor(&input_buffer, cursor_pos); 
                      cursor_visible = false; 
@@ -226,7 +245,12 @@ pub fn run() {
                 let c = crate::drivers::serial::SERIAL.lock().read_byte() as char;
                 let c = if c == '\r' { '\n' } else { c };
                 process_char(c, &mut input_buffer, &mut cursor_pos, &mut history_index);
-                if c == '\n' { break; }
+                if c == '\n' { 
+                    crate::drivers::video::draw_cursor(0xFFFFFFFF);
+                    cursor_visible = true;
+                    last_blink = current_ticks;
+                    break 'input; 
+                }
                 
                 crate::drivers::video::draw_cursor(0xFFFFFFFF);
                 cursor_visible = true;
@@ -255,6 +279,8 @@ pub fn run() {
                      "shutdown" => cmd_shutdown(),
                      "ls" => cmd_ls(&args),
                      "cat" => cmd_cat(&args),
+                     "nvi" => crate::apps::nvi::cmd_nvi(&args),
+                     "nuxc" => crate::apps::nuxc::cmd_nuxc(&args),
                      "ps" => cmd_ps(),
                      "kill" => cmd_kill(&args),
                      "free" => cmd_free(),
@@ -265,7 +291,7 @@ pub fn run() {
                      "test_ipc" => cmd_test_ipc(),
                      "write" => cmd_write(&args),
                      "test_write" => cmd_test_write(),
-                     "exec" => test_exec_hello(),
+                     "exec" => cmd_exec(&args),
                      "top" => cmd_top(),
                      "tree" => cmd_tree(&args),
                      "cp" => cmd_cp(&args),
@@ -308,6 +334,7 @@ pub fn run() {
                      "ip" => cmd_ip(&args),
                      "netstat" => cmd_netstat(),
                      "ping" => cmd_ping(&args),
+                     "sshd" => crate::apps::sshd::main(),
                      "youtube" => cmd_real_youtube(&args),
                      "google" => cmd_google(&args),
                      "format" => cmd_format(&args),
@@ -343,50 +370,47 @@ fn cmd_nuxc(args: &[&str]) {
 
 
 fn cmd_help() {
-    video::put_str("Available commands:\n");
-    video::put_str("  help     - Show this menu\n");
-    video::put_str("  echo     - Print text\n");
-    video::put_str("  clear    - Clear screen\n");
-    video::put_str("  history  - Show command history (Stub)\n");
-    video::put_str("\n--- Filesystem ---\n");
-    video::put_str("  ls [dir] - List contents\n");
-    video::put_str("  cd <dir> - Change directory\n");
-    video::put_str("  pwd      - Print working directory\n");
-    video::put_str("  cat <f>  - Read and print file\n");
-    video::put_str("  touch <f>- Create empty file\n");
-    video::put_str("  mkdir <d>- Create directory\n");
-    video::put_str("  rm <f>   - Remove file\n");
-    video::put_str("  rmdir <d>- Remove directory\n");
-    video::put_str("  cp <s,d> - Copy file\n");
-    video::put_str("  mv <s,d> - Move/Rename file\n");
-    video::put_str("  find <n> - Find file by name\n");
-    video::put_str("  du/df    - Disk usage stats\n");
-    video::put_str("  mount/umount - Mount filesystems\n");
-    video::put_str("\n--- Process & System ---\n");
-    video::put_str("  ps       - List processes\n");
-    video::put_str("  top      - Monitor processes\n");
-    video::put_str("  kill <p> - Kill process by PID\n");
-    video::put_str("  killall  - Kill by name\n");
-    video::put_str("  nice/renice - Priority control\n");
-    video::put_str("  bg/fg/jobs  - Job control\n");
-    video::put_str("  free     - Memory usage\n");
-    video::put_str("  uname    - Kernel info\n");
-    video::put_str("  uptime   - System uptime\n");
-    video::put_str("  date     - System time\n");
-    video::put_str("  dmesg    - Kernel buffer\n");
-    video::put_str("  lsblk    - Block devices\n");
-    video::put_str("  reboot   - Restart\n");
-    video::put_str("  shutdown - Power off\n");
-    video::put_str("\n--- Network & User ---\n");
-    video::put_str("  ip       - Interface info\n");
-    video::put_str("  netstat  - Network stats\n");
-    video::put_str("  ping     - Test reachability\n");
-    video::put_str("  whoami   - Current user\n");
-    video::put_str("  id/su    - User Identity\n");
-    video::put_str("\n--- Extra ---\n");
-// nux commands disabled
-    video::put_str("  grep/head/tail/wc - Text tools\n");
-    video::put_str("  btrfs_info - Test Btrfs Superblock\n");
+    video::put_str("Ainux OS Native Shell - Available Commands:\n");
+
+    video::put_str("\n--- Development & Native Platform ---\n");
+    video::put_str("  nuxc <src> -o <out> - Native C Compiler (ALO v2)\n");
+    video::put_str("  nvi <file>          - Neo-Vim like Editor\n");
+    video::put_str("  exec <file.alo>     - Execute Native Segmented Binary\n");
+    video::put_str("  view <file>         - Visual File/Hex/Image Viewer\n");
+    video::put_str("  code <file>         - Lightweight code viewer\n");
+
+    video::put_str("\n--- Filesystem Operations ---\n");
+    video::put_str("  ls [dir] / tree     - List / Recursive directory contents\n");
+    video::put_str("  cd <dir>  / pwd     - Navigate / Print current directory\n");
+    video::put_str("  cat / touch / stat  - Read / Create / Info on files\n");
+    video::put_str("  mkdir / rmdir       - Directory management\n");
+    video::put_str("  cp / mv / rm        - Copy / Move / Delete files\n");
+    video::put_str("  find <name>         - Search for files in the system\n");
+    video::put_str("  mount / umount      - Disk & partition management\n");
+    video::put_str("  sync                - Flush filesystem buffers to disk\n");
+    video::put_str("  chmod / chown       - File permission & ownership tools\n");
+
+    video::put_str("\n--- System & Process Management ---\n");
+    video::put_str("  ps / top / jobs     - Task & performance monitoring\n");
+    video::put_str("  kill / killall      - Terminate processes by PID or Name\n");
+    video::put_str("  free / lsblk        - Memory / Block device statistics\n");
+    video::put_str("  uname / uptime      - System & Kernel identity\n");
+    video::put_str("  dmesg               - View kernel message buffer\n");
+    video::put_str("  reboot / shutdown   - Power & Restart control\n");
+
+    video::put_str("\n--- Networking & Remote Access ---\n");
+    video::put_str("  ip addr             - View IP (DHCP/Static) & Status\n");
+    video::put_str("  ping <host>         - ICMP Network Connectivity Test\n");
+    video::put_str("  sshd                - Start Remote SSH Gateway (Port 22)\n");
+    video::put_str("  netstat             - Monitor Open Sockets & Connections\n");
+    video::put_str("  google <query>      - Sovereign CLI Search Engine\n");
+
+    video::put_str("\n--- Text Processing & Utilities ---\n");
+    video::put_str("  grep / head / tail  - High-speed stream filtering\n");
+    video::put_str("  wc <file>           - Word, line, and byte counters\n");
+    video::put_str("  clock / cal         - Modern Clock / Calendar systems\n");
+    video::put_str("  ascii_tube <id>     - Native ASCII Video Streaming\n");
+    video::put_str("  clear / help        - UI management & this menu\n");
 }
 
 fn cmd_btrfs_info() {
@@ -416,26 +440,21 @@ fn cmd_cd(args: &[&str]) {
     if args.len() < 2 { set_cwd("/"); return; }
     let path = resolve_path(args[1]);
     
+    if path == "/" {
+        set_cwd("/");
+        return;
+    }
+
     // Verify existence (naive)
     let root = vfs::ROOT.lock();
     if let Some(root_inode) = root.as_ref() {
-        // TODO: Proper VFS traversal. lookup() usually finds inside root.
-        // We need lookup_path(path) in VFS.
-        // For now, if path is just a name in root or "/" or "..".
-        // Stub: Support only 1 level deep or root relative for this demo
-        
-        if path == "/" {
-            set_cwd("/");
-            return;
-        }
-        
         // Strip leading slash for lookup in root
         let relative = if path.starts_with("/") { &path[1..] } else { &path };
         
         if let Ok(_) = root_inode.lookup(relative) {
              set_cwd(&path);
         } else {
-             video::put_str("Directory not found (Only root-level dirs supported in stub VFS)\n");
+             video::put_str("Directory not found.\n");
         }
     }
 }
@@ -857,22 +876,50 @@ fn cmd_test_write() {
     }
 }
 
-pub fn test_exec_hello() {
-    video::put_str("Testing Exec hello.elf...\n");
-    match crate::process::loader::load_elf_from_file("hello.elf") {
+pub fn cmd_exec(args: &[&str]) {
+    if args.len() < 2 {
+        video::put_str("Usage: exec <filename>\n");
+        return;
+    }
+    let filename = args[1];
+    
+    // Check file exists and read magic
+    let root = vfs::ROOT.lock();
+    let mut magic = [0u8; 4];
+    if let Some(r) = root.as_ref() {
+        if let Ok(inode) = r.lookup(filename) {
+            if let Ok(handle) = inode.open(0) {
+                let _ = handle.read(&mut magic, 0);
+            } else {
+                video::put_str("exec: Cannot open file.\n");
+                return;
+            }
+        } else {
+            video::put_str("exec: File not found.\n");
+            return;
+        }
+    }
+    core::mem::drop(root);
+
+    video::put_str(&format!("Executing {}...\n", filename));
+
+    let result = if &magic == b"ALO\x02" || &magic == b"ALO\0" {
+        crate::process::loader::load_alo_from_file(filename)
+    } else if magic[0] == 0x7F && &magic[1..4] == b"ELF" {
+        crate::process::loader::load_elf_from_file(filename)
+    } else {
+        video::put_str("exec: Unknown executable format.\n");
+        return;
+    };
+
+    match result {
         Ok(pid) => {
-            video::put_str("Spawned hello.elf. PID: ");
-            video::put_char((b'0' + pid as u8) as char); // Simple digit print
-            video::put_str("\nWaiting...\n");
-            
+            video::put_str(&format!("Spawned PID: {}\n", pid));
             crate::process::scheduler::wait_pid(pid);
-            
-            video::put_str("Child exited.\n");
+            video::put_str("Process exited.\n");
         },
-        Err(e) => {
-            video::put_str("Failed to load hello.elf: ");
-            // video::put_str(alloc::format!("{:?}", e).as_str()); // format! needs alloc prelude?
-            video::put_str("LoadError\n");
+        Err(_) => {
+            video::put_str("exec: Failed to load executable.\n");
         }
     }
 }
@@ -1196,49 +1243,11 @@ fn cmd_sync() {
     video::put_str("Syncing buffers... Done.\n");
 }
 
-
-fn cmd_cal(args: &[&str]) {
-    // Current time for default
-    let now = rtc::read_time();
-    let mut month = now.month as usize;
-    let mut year = now.year;
-    
-    // Parse Flags
-    let mut highlight_day = false;
-    let mut args_filtered = alloc::vec::Vec::new();
-    for arg in args {
-        if *arg == "-d" {
-            highlight_day = true;
-        } else {
-            args_filtered.push(*arg);
-        }
-    }
-    
-    // Optional args: cal [month] [year]
-    if args_filtered.len() >= 2 {
-        if let Ok(m) = u8::from_str_radix(args_filtered[1], 10) {
-             month = m as usize;
-        }
-    }
-    if args_filtered.len() >= 3 {
-        // Simple parse
-        let mut y = 0;
-        for c in args_filtered[2].bytes() { if c >= b'0' && c <= b'9' { y = y * 10 + (c - b'0') as usize; } }
-        if y > 0 { year = y; }
-    }
-
-    if month < 1 || month > 12 {
-        video::put_str("Invalid month. (1-12)\n");
-        return;
-    }
-
-    // Print Header
+fn print_month(month: usize, year: usize, highlight_day: bool, now_month: usize, now_year: usize, now_day: usize) {
     let month_names = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     video::put_str(&format!("     {} {}\n", month_names[month], year));
     video::put_str("Su Mo Tu We Th Fr Sa\n");
 
-    // Calculate Day of Week for 1st of month
-    // Zeller's algorithms
     let q = 1;
     let m = if month < 3 { month + 12 } else { month };
     let y_z = if month < 3 { year - 1 } else { year };
@@ -1246,18 +1255,14 @@ fn cmd_cal(args: &[&str]) {
     let j = y_z / 100;
 
     let h = (q + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
-    // h: 0=Sat, 1=Sun, 2=Mon ...
-    // Map to 0=Sun, 1=Mon... 
     let start_day = if h == 0 { 6 } else { h - 1 };
 
-    // Days in month
     let days_in_month = match month {
         4 | 6 | 9 | 11 => 30,
         2 => if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 29 } else { 28 },
         _ => 31,
     };
 
-    // Print spaces
     for _ in 0..start_day {
         video::put_str("   ");
     }
@@ -1265,21 +1270,15 @@ fn cmd_cal(args: &[&str]) {
     for day in 1..=days_in_month {
         video::put_str(&format!("{:2} ", day));
         
-        // Highlight logic
-        if highlight_day && month == now.month as usize && year == now.year && day == now.day as usize {
+        if highlight_day && month == now_month && year == now_year && day == now_day {
             // Draw Box
             unsafe {
                 let cx = *video::CONSOLE_X.lock();
                 let cy = *video::CONSOLE_Y.lock();
-                // We just printed 3 chars. Cursor is at cx.
-                // Box covers the 2 digits at cx-3 and cx-2.
-                // Check if we didn't wrap? put_str handles basic wrapping if width exceeded but here we control newlines.
-                
-                let start_cx = if cx >= 3 { cx - 3 } else { 0 }; // Safety
+                let start_cx = if cx >= 3 { cx - 3 } else { 0 };
                 let px = (start_cx * 8) as i64;
                 let py = (cy * 12) as i64;
                 
-                // Draw Hollow White Box (16x12)
                 video::draw_rect(px, py, 16, 1, 0xFFFFFF); // Top
                 video::draw_rect(px, py + 11, 16, 1, 0xFFFFFF); // Bottom
                 video::draw_rect(px, py, 1, 12, 0xFFFFFF); // Left
@@ -1291,7 +1290,59 @@ fn cmd_cal(args: &[&str]) {
             video::put_char('\n');
         }
     }
-    video::put_char('\n');
+    video::put_str("\n\n");
+}
+
+fn cmd_cal(args: &[&str]) {
+    let now = rtc::read_time();
+    let mut month = now.month as usize;
+    let mut year = now.year;
+    
+    let mut highlight_day = true; // highlight by default if current date
+    let mut full_year = false;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i] {
+            "prev" => {
+                if month == 1 { month = 12; year -= 1; }
+                else { month -= 1; }
+                highlight_day = false;
+            },
+            "next" => {
+                if month == 12 { month = 1; year += 1; }
+                else { month += 1; }
+                highlight_day = false;
+            },
+            "-y" => {
+                if i + 1 < args.len() {
+                    let mut y = 0;
+                    for c in args[i+1].bytes() { if c >= b'0' && c <= b'9' { y = y * 10 + (c - b'0') as usize; } }
+                    if y > 0 { year = y; }
+                    full_year = true;
+                    i += 1;
+                }
+            },
+            "-m" => {
+                if i + 1 < args.len() {
+                    let mut m = 0;
+                    for c in args[i+1].bytes() { if c >= b'0' && c <= b'9' { m = m * 10 + (c - b'0') as usize; } }
+                    if m > 0 && m <= 12 { month = m; }
+                    i += 1;
+                }
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if full_year {
+        for m in 1..=12 {
+            print_month(m, year, highlight_day, now.month as usize, now.year, now.day as usize);
+        }
+    } else {
+        print_month(month, year, highlight_day, now.month as usize, now.year, now.day as usize);
+    }
 }
 
 fn cmd_clock() {
@@ -1305,12 +1356,9 @@ fn cmd_clock() {
        let height = *video::FRAMEBUFFER_HEIGHT.lock();
        let pitch = *video::FRAMEBUFFER_PITCH.lock();
        
-       if fb_addr != 0 {
-           let ptr = fb_addr as *mut u32;
-           for i in 0..(height * pitch / 4) {
-               *ptr.add(i) = 0x101010;
-           }
-       }
+        if fb_addr != 0 {
+            video::fill_rect(0, 0, width as i64, height as i64, 0x101010);
+        }
     }
     
     let width = *video::FRAMEBUFFER_WIDTH.lock() as i64;
@@ -1360,8 +1408,8 @@ fn cmd_clock() {
         if t.seconds != last_second {
             last_second = t.seconds;
 
-            // Redraw Face
-            video::fill_rect(cx - radius - 5, cy - radius - 5, radius * 2 + 10, radius * 2 + 10, 0x101010);
+            // Redraw Face (Fullscreen Gray)
+            video::fill_rect(0, 0, width, height, 0x101010);
 
             // Draw Rim
             video::draw_circle(cx, cy, radius, 0xFF8800);

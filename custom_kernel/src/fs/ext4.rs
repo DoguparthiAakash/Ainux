@@ -1076,6 +1076,18 @@ impl FileHandle for Ext4File {
         Ok(bytes_written)
     }
     
+    fn truncate(&self) -> VfsResult<()> {
+        let mut inode = self.fs.read_inode(self.inode_num)?;
+        inode.size_lo = 0;
+        inode.size_hi = 0;
+        // Simple truncate: just clear blocks. In a real OS, we'd free them.
+        for i in 0..15 {
+            inode.block[i] = 0;
+        }
+        self.fs.write_inode(self.inode_num, inode)?;
+        Ok(())
+    }
+
     fn close(&self) -> VfsResult<()> {
         Ok(())
     }

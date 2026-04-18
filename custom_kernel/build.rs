@@ -58,6 +58,11 @@ fn main() {
         .flag("-mno-sse")
         .flag("-mno-sse2")
         .flag("-mcmodel=kernel")
+        .flag("-Wno-unused-variable")
+        .flag("-Wno-unused-but-set-variable")
+        .flag("-Wno-unused-function")
+        .flag("-Wno-unused-parameter")
+        .flag("-Wno-address-of-packed-member")
         .flag("-nostdlib")
         .flag("-O2") // Optimization
         .include("src/c")

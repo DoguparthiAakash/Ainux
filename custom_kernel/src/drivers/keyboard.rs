@@ -210,6 +210,7 @@ extern "C" fn rust_keyboard_handler() {
 fn decode_scancode(code: u8) -> Option<char> {
     unsafe {
         let base = match code {
+            0x01 => '\x1B', // Escape
             // Numbers
             0x02 => '1', 0x03 => '2', 0x04 => '3', 0x05 => '4',
             0x06 => '5', 0x07 => '6', 0x08 => '7', 0x09 => '8',

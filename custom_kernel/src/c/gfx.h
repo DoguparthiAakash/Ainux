@@ -12,7 +12,7 @@
 #define COLOR_GRAY   0x808080
 #define COLOR_DARK_GRAY 0x404040
 
-void gfx_init(void *framebuffer_addr, uint64_t width, uint64_t height, uint64_t pitch);
+void gfx_init(void *framebuffer_addr, uint64_t width, uint64_t height, uint64_t pitch, uint8_t bpp);
 void gfx_put_pixel(int x, int y, uint32_t color);
 void gfx_draw_rect(int x, int y, int w, int h, uint32_t color);
 void gfx_fill_rect(int x, int y, int w, int h, uint32_t color);

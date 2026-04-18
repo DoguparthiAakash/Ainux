@@ -40,8 +40,7 @@ pub fn tick() {
     drop(tasks);
     
     // Find next task to run
-    let mut next_task_id = 0;
-    
+    crate::net::poll();
     schedule();
 }
 
@@ -71,7 +70,7 @@ pub fn spawn(func: extern "C" fn()) {
             task.state = TaskState::Ready;
             
             // Setup Stack
-            let stack_top = task.stack.as_ptr() as u64 + 4096;
+            let stack_top = task.stack.as_ptr() as u64 + 16384;
             let mut sp = stack_top & !0xF;
             unsafe {
                 sp -= 8;

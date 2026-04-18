@@ -29,12 +29,26 @@ fi
 
 # Populate with hello.txt
 echo "Hello World from Ext4!" > hello.txt
+debugfs -w -R "rm hello.txt" disk2.img || true
 debugfs -w -R "write hello.txt hello.txt" disk2.img || echo "debugfs failed (optional)"
 
 # Build and Inject Userspace Hello
 echo "Building hello.c..."
 gcc -static -nostdlib -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables -Ttext=0x400000 -e _start src/c/hello.c -o hello.elf
+debugfs -w -R "rm hello.elf" disk2.img || true
 debugfs -w -R "write hello.elf hello.elf" disk2.img || echo "debugfs (hello.elf) failed"
+
+# Hybrid Nux-LLVM Compiler Step
+echo "Building test.nux using LLVM Hybrid Compiler..."
+python3 tools/nux_llvm.py tools/test.nux tools/test.ll
+if command -v clang >/dev/null 2>&1; then
+    clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 tools/test.ll -o test.elf
+    debugfs -w -R "rm test.elf" disk2.img || true
+    debugfs -w -R "write test.elf test.elf" disk2.img || echo "debugfs (test.elf) failed"
+else
+    echo "Warning: Clang not installed. Skipping LLVM backend compilation step."
+    echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
+fi
 
 # Detect KVM
 if [ -e /dev/kvm ]; then

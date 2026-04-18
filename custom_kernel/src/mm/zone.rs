@@ -156,27 +156,11 @@ impl ZoneAllocator {
     
     pub fn alloc(&mut self, size: usize) -> Result<*mut u8, ()> {
         if size == 0 { return Err(()); }
-        
-        let cpu_id = 0;
-        if let Some(cache) = self.per_cpu_caches.get(cpu_id) {
-            if let Some(ptr) = cache.lock().get() {
-                return Ok(ptr);
-            }
-        }
-        
         self.get_zone(size).lock().alloc()
     }
     
     pub fn free(&mut self, ptr: *mut u8, size: usize) {
         let zone_size = size.next_power_of_two().max(8);
-        
-        let cpu_id = 0;
-        if let Some(cache) = self.per_cpu_caches.get(cpu_id) {
-            if cache.lock().put(ptr) {
-                return;
-            }
-        }
-        
         if let Some(zone) = self.zones.get(&zone_size) {
             zone.lock().free(ptr);
         }

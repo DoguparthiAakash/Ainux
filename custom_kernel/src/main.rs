@@ -14,6 +14,7 @@ mod mm;
 pub mod drivers;
 pub mod apps;
 pub mod fs;
+pub mod net;
 
 pub mod api;
 pub mod shell;
@@ -134,6 +135,7 @@ pub extern "C" fn _start() -> ! {
     
     // Initialize PCI
     drivers::pci::init();
+    net::init();
     
     // Initialize Simulated WiFi (Atheros)
     if let Some(root) = drivers::iokit::registry::REGISTRY.lock().root.clone() {
@@ -204,84 +206,8 @@ pub extern "C" fn _start() -> ! {
     unsafe { asm!("sti"); }
     let _ = write!(serial, "Interrupts Enabled.\n");
 
-    // ----------- Enter Userspace -----------
-    let _ = write!(serial, "Preparing Userspace...\n");
-    crate::drivers::video::put_str("Entering Ring 3...\n");
-
-    // 1. Allocate a frame for User Code + Stack
-    // We'll map it to 0x400000 (standard load address usually, but arbitrary here)
-    let user_base = 0x400000;
-    
-    {
-        let mut pmm_lock = mm::pmm::PMM.lock();
-        if let Some(ref mut pmm) = *pmm_lock {
-             if let Some(frame) = pmm.alloc_frame() {
-                 unsafe {
-                     // Unmap first just in case
-                     unsafe { mm::vmm::unmap_page(user_base); }
-                     
-                     // Map it as USER | WRITABLE | PRESENT
-                     // User bit (bit 2) MUST be set.
-                     // 0x07 = Present | RW | User
-                     match mm::vmm::map_page(user_base, frame, 0x07) {
-                         Ok(_) => {},
-                         Err(e) => {
-                             let _ = write!(serial, "Failed to map user page: {}\n", e);
-                         }
-                     }
-                     
-                     // 2. Copy code to this page.
-                     let ptr = user_base as *mut u8;
-                     
-                     // Minimal User Payload (Assembly):
-                     // mov rax, 1 (Syscall ID = Write)
-                     // mov rdi, 0 (FD - ignored)
-                     // lea rsi, [rip + offset] (String)
-                     // mov rdx, 12 (Len)
-                     // syscall
-                     // jmp $
-                     
-                     let code: [u8; 40] = [
-                         0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1
-                         0x48, 0x31, 0xff,                         // xor rdi, rdi
-                         0x48, 0x8d, 0x35, 0x0c, 0x00, 0x00, 0x00, // lea rsi, [rip + 12]
-                         0x48, 0xc7, 0xc2, 0x0c, 0x00, 0x00, 0x00, // mov rdx, 12
-                         0x0f, 0x05,                               // syscall
-                         0xeb, 0xfe,                               // jmp $
-                         // String "Hello User!\n"
-                         b'H', b'e', b'l', b'l', b'o', b' ', b'U', b's', b'e', b'r', b'!', b'\n' 
-                     ];
-                     
-                     // Fix LEA offset:
-                     // 0: mov rax (7)
-                     // 7: xor rdi (3)
-                     // 10: lea rsi (7). End is 17.
-                     // 17: mov rdx (7).
-                     // 24: syscall (2).
-                     // 26: jmp (2).
-                     // 28: String starts.
-                     // Target: 28. Current RIP (after LEA): 17. Diff: 11 (0x0B).
-                     // Encoded LEA: 48 8d 35 0c ... -> 0x0c is 12.
-                     // We need 11.
-                     
-                     let mut final_code = code;
-                     final_code[13] = 0x0B; 
-                     
-                     for i in 0..final_code.len() {
-                         *ptr.add(i) = final_code[i];
-                     }
-                     
-                     // 3. Spawn Task (PID 1)
-                     /*
-                     let stack_top = user_base + 4096;
-                     process::scheduler::spawn_user(user_base, stack_top, 0);
-                     */
-                 }
-             } else {
-                 let _ = write!(serial, "Failed to alloc user frame.\n");
-             }
-        }
-    }
+    // Userspace bootstrap will now be handled securely by loader.rs via VFS.
+    // Proceed directly to VFS mounting and Shell...
 
     // Initialize VFS
     match fs::ext4::parse_superblock() {

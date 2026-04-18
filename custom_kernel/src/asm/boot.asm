@@ -2,6 +2,8 @@
 ; Ainux Multiboot Boot Stub — 32-bit Protected Mode → 64-bit Long Mode
 ; Passes Multiboot info struct pointer to Rust kernel_main(info_ptr: u64)
 ; Maps first 4GB identity + higher-half for ACPI/hardware access
+;
+; OPTIMIZED: Merged PD loops, fixed STOSD count, NX+PGE enabled
 ; =============================================================================
 
 global _start_multiboot
@@ -15,13 +17,30 @@ global MULTIBOOT_MAGIC_VAL
 section .multiboot
 align 4
     dd 0x1BADB002            ; Multiboot1 magic
-    dd 0x00000003            ; Flags: ALIGN(0) | MEMINFO(1)
-    dd -(0x1BADB002 + 0x00000003) ; Checksum
+    dd 0x00000007            ; Flags: ALIGN(0) | MEMINFO(1) | VIDEO(2)
+    dd -(0x1BADB002 + 0x00000007) ; Checksum
+    dd 0                     ; header_addr
+    dd 0                     ; load_addr
+    dd 0                     ; load_end_addr
+    dd 0                     ; bss_end_addr
+    dd 0                     ; entry_addr
+    dd 0                     ; mode_type (0 = linear graphics)
+    dd 0                     ; width (auto)
+    dd 0                     ; height (auto)
+    dd 32                    ; depth (32 bpp preferred)
 
 section .data
 align 8
 MULTIBOOT_INFO_PTR: dq 0    ; Will hold physical address of multiboot_info
 MULTIBOOT_MAGIC_VAL: dq 0   ; Will hold the magic number from EAX
+
+; Table of PD base addresses for the unified fill loop
+align 8
+pd_table:
+    dd boot_pd0              ; PD index 0: maps 0x00000000 - 0x3FFFFFFF
+    dd boot_pd1              ; PD index 1: maps 0x40000000 - 0x7FFFFFFF
+    dd boot_pd2              ; PD index 2: maps 0x80000000 - 0xBFFFFFFF
+    dd boot_pd3              ; PD index 3: maps 0xC0000000 - 0xFFFFFFFF
 
 section .bss
 align 4096
@@ -52,28 +71,12 @@ _start_multiboot:
 
     mov esp, stack_top
 
-    ; ---- Zero out page tables ----
+    ; ---- Zero out ALL page tables in one shot ----
+    ; 7 tables × 4096 bytes = 28672 bytes = 7168 dwords
+    ; Tables are contiguous in BSS: pml4, pdpt, pd0, pd1, pd2, pd3, pd_high
     mov edi, boot_pml4
     xor eax, eax
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pdpt
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pd0
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pd1
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pd2
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pd3
-    mov ecx, 4096
-    rep stosd
-    mov edi, boot_pd_high
-    mov ecx, 4096
+    mov ecx, 7168            ; 7 × 1024 dwords = 7 × 4096 bytes
     rep stosd
 
     ; ---- PML4[0] → PDPT (identity map) ----
@@ -84,22 +87,19 @@ _start_multiboot:
     ; ---- PML4[511] → same PDPT (higher-half) ----
     mov [boot_pml4 + 511 * 8], eax
 
-    ; ---- PDPT[0] → PD0 (0-1GB) ----
+    ; ---- PDPT[0..3] → PD0..PD3 ----
     mov eax, boot_pd0
     or eax, 0b11
     mov [boot_pdpt], eax
 
-    ; ---- PDPT[1] → PD1 (1-2GB) ----
     mov eax, boot_pd1
     or eax, 0b11
     mov [boot_pdpt + 1 * 8], eax
 
-    ; ---- PDPT[2] → PD2 (2-3GB) ----
     mov eax, boot_pd2
     or eax, 0b11
     mov [boot_pdpt + 2 * 8], eax
 
-    ; ---- PDPT[3] → PD3 (3-4GB) ----
     mov eax, boot_pd3
     or eax, 0b11
     mov [boot_pdpt + 3 * 8], eax
@@ -109,67 +109,62 @@ _start_multiboot:
     or eax, 0b11
     mov [boot_pdpt + 510 * 8], eax
 
-    ; ---- Fill PD0: 512 × 2MB = 1GB at 0x00000000 ----
-    mov ecx, 0
-.map_pd0:
-    mov eax, ecx
-    shl eax, 21              ; eax = ecx * 2MB
+    ; ---- Unified PD fill: 4 PDs × 512 entries each ----
+    ; Maps full 4GB identity using 2MB huge pages
+    ; PD_high mirrors PD0 for higher-half kernel access
+    ;
+    ; Outer loop: ebx = PD index (0..3), using pd_table for base addresses
+    ; Inner loop: ecx = entry index (0..511)
+    ; Physical address = (ebx * 512 + ecx) << 21
+    ; Flags: Present(0) + Writable(1) + HugePage(7) = 0x83
+    ; Kernel PD_high entries also get GLOBAL(8) = 0x183
+
+    xor ebx, ebx             ; PD index = 0
+.fill_pd_outer:
+    mov esi, [pd_table + ebx * 4]  ; ESI = base of current PD
+    xor ecx, ecx             ; entry index = 0
+
+.fill_pd_inner:
+    ; Compute physical page: (ebx * 512 + ecx) * 2MB
+    mov eax, ebx
+    shl eax, 9               ; eax = ebx * 512
+    add eax, ecx             ; eax = ebx * 512 + ecx
+    shl eax, 21              ; eax = physical address (2MB aligned)
     or eax, 0b10000011       ; Present + Writable + HugePage
-    mov [boot_pd0 + ecx * 8], eax
-    mov [boot_pd_high + ecx * 8], eax  ; Same mapping for higher-half kernel
+
+    mov [esi + ecx * 8], eax ; Write PD entry
+
+    ; For PD0 (ebx==0): also mirror into boot_pd_high with GLOBAL bit
+    test ebx, ebx
+    jnz .skip_high
+    mov edx, eax
+    or edx, (1 << 8)         ; Add GLOBAL flag for kernel mappings
+    mov [boot_pd_high + ecx * 8], edx
+.skip_high:
+
     inc ecx
     cmp ecx, 512
-    jne .map_pd0
+    jne .fill_pd_inner
 
-    ; ---- Fill PD1: 512 × 2MB = 1GB at 0x40000000 ----
-    mov ecx, 0
-.map_pd1:
-    mov eax, ecx
-    add eax, 512             ; offset by 512 entries (1GB)
-    shl eax, 21
-    or eax, 0b10000011
-    mov [boot_pd1 + ecx * 8], eax
-    inc ecx
-    cmp ecx, 512
-    jne .map_pd1
+    inc ebx
+    cmp ebx, 4
+    jne .fill_pd_outer
 
-    ; ---- Fill PD2: 512 × 2MB = 1GB at 0x80000000 ----
-    mov ecx, 0
-.map_pd2:
-    mov eax, ecx
-    add eax, 1024            ; offset by 1024 entries (2GB)
-    shl eax, 21
-    or eax, 0b10000011
-    mov [boot_pd2 + ecx * 8], eax
-    inc ecx
-    cmp ecx, 512
-    jne .map_pd2
-
-    ; ---- Fill PD3: 512 × 2MB = 1GB at 0xC0000000 ----
-    mov ecx, 0
-.map_pd3:
-    mov eax, ecx
-    add eax, 1536            ; offset by 1536 entries (3GB)
-    shl eax, 21
-    or eax, 0b10000011
-    mov [boot_pd3 + ecx * 8], eax
-    inc ecx
-    cmp ecx, 512
-    jne .map_pd3
-
-    ; ---- Enable PAE (CR4 bit 5) ----
+    ; ---- Enable PAE (CR4.PAE bit 5) + PGE (CR4.PGE bit 7) ----
+    ; PGE enables GLOBAL bit in page table entries for TLB persistence
     mov eax, cr4
-    or eax, 1 << 5
+    or eax, (1 << 5) | (1 << 7)
     mov cr4, eax
 
     ; ---- Load PML4 into CR3 ----
     mov eax, boot_pml4
     mov cr3, eax
 
-    ; ---- Enable Long Mode (EFER.LME, MSR 0xC0000080 bit 8) ----
+    ; ---- Enable Long Mode + NX (EFER.LME bit 8 + EFER.NXE bit 11) ----
+    ; NX enables the No-Execute bit in page tables for W^X enforcement
     mov ecx, 0xC0000080
     rdmsr
-    or eax, 1 << 8
+    or eax, (1 << 8) | (1 << 11)
     wrmsr
 
     ; ---- Enable Paging + Protection (CR0.PG | CR0.PE) ----

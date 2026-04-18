@@ -31,6 +31,19 @@ impl IdtEntry {
             reserved: 0,
         }
     }
+
+    /// Create an IDT entry with a specific IST index (1-7)
+    fn new_with_ist(handler: u64, selector: u16, flags: u8, ist_index: u8) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector,
+            ist: ist_index & 0x7,
+            flags,
+            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+            reserved: 0,
+        }
+    }
 }
 
 #[repr(C, align(16))]
@@ -50,13 +63,21 @@ static mut IDT: Idt = Idt {
 
 pub fn init() {
     unsafe {
+        // Divide-by-Zero (INT0) - No Error Code
+        let div_handler = divide_error_handler as u64;
+        IDT.entries[0] = IdtEntry::new(div_handler, 0x08, 0x8E);
+
         // Breakpoint (INT3) - No Error Code
         let bp_handler = breakpoint_handler as u64;
         IDT.entries[3] = IdtEntry::new(bp_handler, 0x08, 0x8E);
 
-        // Double Fault (INT8) - Has Error Code
+        // Invalid Opcode (INT6) - No Error Code
+        let ud_handler = invalid_opcode_handler as u64;
+        IDT.entries[6] = IdtEntry::new(ud_handler, 0x08, 0x8E);
+
+        // Double Fault (INT8) - Has Error Code, uses IST1 for fault isolation
         let df_handler = double_fault_handler as u64;
-        IDT.entries[8] = IdtEntry::new(df_handler, 0x08, 0x8E);
+        IDT.entries[8] = IdtEntry::new_with_ist(df_handler, 0x08, 0x8E, 1);
 
         // General Protection Fault (INT13) - Has Error Code
         let gp_handler = gp_fault_handler as u64;
@@ -74,17 +95,23 @@ pub fn init() {
         let kb_handler = crate::drivers::keyboard::keyboard_handler_addr();
         IDT.entries[33] = IdtEntry::new(kb_handler, 0x08, 0x8E);
 
-        // IRQ12: Mouse (32 + 12 = 44)
+        // IRQ12: Mouse (44)
         let mouse_handler = crate::drivers::mouse::mouse_handler_addr();
         IDT.entries[44] = IdtEntry::new(mouse_handler, 0x08, 0x8E);
 
-        // Fill ALL remaining IRQ vectors (32-47) with a stub handler
-        // that just sends EOI and returns, preventing GP faults from
-        // unexpected hardware interrupts (e.g., ATA at IRQ14 / vector 46)
+        // IRQ11: RTL8139 (32 + 11 = 43)
+        let net_handler = rtl8139_handler_addr();
+        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+
+        // IRQ11: RTL8139 (32 + 11 = 43)
+        let net_handler = rtl8139_handler_addr();
+        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+
+        // Fill ALL remaining IRQ vectors (32-47)
         let stub = irq_stub_handler_addr();
         for vec in 32..=47 {
             // Skip vectors with real handlers
-            if vec == 32 || vec == 33 || vec == 44 {
+            if vec == 32 || vec == 33 || vec == 43 || vec == 44 {
                 continue;
             }
             IDT.entries[vec] = IdtEntry::new(stub, 0x08, 0x8E);
@@ -128,9 +155,53 @@ extern "C" fn breakpoint_handler() {
     );
 }
 
+// -- Exception Handlers (No Error Code) --
+
+#[unsafe(naked)]
+extern "C" fn divide_error_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+        "call rust_divide_error_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "iretq"
+    );
+}
+
+#[unsafe(naked)]
+extern "C" fn invalid_opcode_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+        "call rust_invalid_opcode_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "iretq"
+    );
+}
+
 exception_err_handler!(double_fault_handler, rust_double_fault_handler);
 exception_err_handler!(gp_fault_handler, rust_gp_fault_handler);
 exception_err_handler!(page_fault_handler, rust_page_fault_handler);
+
+#[no_mangle]
+extern "C" fn rust_divide_error_handler(rip: u64) {
+    unsafe {
+        print_serial("DIVIDE BY ZERO at RIP: ");
+        print_hex(rip);
+        print_serial("\n");
+    }
+    loop {}
+}
+
+#[no_mangle]
+extern "C" fn rust_invalid_opcode_handler(rip: u64) {
+    unsafe {
+        print_serial("INVALID OPCODE at RIP: ");
+        print_hex(rip);
+        print_serial("\n");
+    }
+    loop {}
+}
 
 #[no_mangle]
 extern "C" fn rust_breakpoint_handler() {
@@ -139,7 +210,10 @@ extern "C" fn rust_breakpoint_handler() {
 
 #[no_mangle]
 extern "C" fn rust_double_fault_handler(_err: u64) {
-    unsafe { print_serial("DOUBLE FAULT\n"); }
+    // Running on IST1 stack — safe even with corrupted kernel stack
+    unsafe {
+        print_serial("DOUBLE FAULT (IST1)\n");
+    }
     loop {}
 }
 
@@ -160,18 +234,17 @@ extern "C" fn rust_page_fault_handler(err: u64) {
     let cr2: u64;
     unsafe { 
         asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); 
-        print_serial("PAGE FAULT at ");
+        print_serial("PAGE FAULT at CR2=");
         print_hex(cr2);
-        print_serial(" Err: ");
+        print_serial(" Err=");
         print_hex(err);
+        // Decode error code bits
+        if err & 1 != 0 { print_serial(" [PRESENT]"); }
+        if err & 2 != 0 { print_serial(" [WRITE]"); } else { print_serial(" [READ]"); }
+        if err & 4 != 0 { print_serial(" [USER]"); } else { print_serial(" [KERNEL]"); }
+        if err & 8 != 0 { print_serial(" [RSVD]"); }
+        if err & 16 != 0 { print_serial(" [IFETCH]"); }
         print_serial("\n");
-        
-        // Stack Dump?
-        // let rsp: u64;
-        // asm!("mov {}, rsp", out(reg) rsp);
-        // print_serial("RSP: ");
-        // print_hex(rsp);
-        // print_serial("\n");
     }
     loop {}
 }
@@ -239,10 +312,29 @@ fn irq_stub_handler_addr() -> u64 {
     irq_stub_handler_wrapper as u64
 }
 
+#[unsafe(naked)]
+extern "C" fn rtl8139_handler() {
+    unsafe {
+        naked_asm!(
+            "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+            "call rust_rtl8139_handler",
+            "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+            "iretq"
+        );
+    }
+}
+
+#[no_mangle]
+extern "C" fn rust_rtl8139_handler() {
+    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
+    unsafe { crate::cpu::pic::notify_eoi(11); } // IRQ11
+}
+
+pub fn rtl8139_handler_addr() -> u64 { rtl8139_handler as u64 }
+
 #[no_mangle]
 extern "C" fn rust_irq_stub_handler() {
     unsafe {
-        // Send EOI to both PIC master and slave
         crate::cpu::pic::notify_eoi(0);
     }
 }

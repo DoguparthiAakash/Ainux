@@ -1,5 +1,6 @@
 use core::arch::{asm, naked_asm};
 use core::mem::size_of;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // Segment Selectors
 pub const KERNEL_CODE: u16 = 0x08;
@@ -43,6 +44,16 @@ impl Tss {
 
 // Global TSS Instance
 pub static mut TSS: Tss = Tss::new();
+
+// IST stack sizes (8KB each — enough for fault handlers)
+const IST_STACK_SIZE: usize = 8192;
+
+// IST stack storage (statically allocated, page-aligned)
+#[repr(C, align(4096))]
+struct IstStack([u8; IST_STACK_SIZE]);
+
+static mut IST1_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+static mut IST2_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -127,6 +138,14 @@ unsafe fn set_tss_descriptor(index: usize, tss: &'static Tss) {
 
 pub fn init() {
     unsafe {
+        // Setup IST stacks in TSS for fault isolation
+        // IST1 = Double Fault stack (prevents triple fault on corrupted RSP)
+        // IST2 = NMI stack (NMI can arrive at any time, needs dedicated stack)
+        let ist1_top = IST1_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+        let ist2_top = IST2_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+        TSS.ist1 = ist1_top;
+        TSS.ist2 = ist2_top;
+
         // Setup TSS Descriptor
         set_tss_descriptor(5, &TSS);
 

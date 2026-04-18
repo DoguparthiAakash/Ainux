@@ -102,19 +102,7 @@ unsafe fn active_pml4() -> &'static mut PageTable {
     &mut *(virt_pml4 as *mut PageTable)
 }
 
-unsafe fn get_next_table(entry: &mut u64) -> Option<&'static mut PageTable> {
-    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
-
-    // Clear NX bit to allow execution
-    if *entry & NX != 0 {
-        *entry &= !NX;
-    }
-
-    // Enforce USER bit for Ring 3 access paths
-    if *entry & USER == 0 {
-        *entry |= USER;
-    }
-
+unsafe fn get_next_table(entry: &mut u64, hhdm_offset: u64) -> Option<&'static mut PageTable> {
     if *entry & PRESENT == 0 {
         // Allocate a new page table frame
         let mut pmm_lock = PMM.lock();
@@ -135,14 +123,29 @@ unsafe fn get_next_table(entry: &mut u64) -> Option<&'static mut PageTable> {
     }
 }
 
+/// Get a next-level table without allocating (read-only traversal).
+/// Returns None if the entry is not present.
+unsafe fn get_existing_table(entry: u64, hhdm_offset: u64) -> Option<&'static mut PageTable> {
+    if entry & PRESENT == 0 {
+        return None;
+    }
+    let phys_addr = entry & 0x000FFFFFFFFFF000;
+    let virt_addr = phys_addr + hhdm_offset;
+    Some(&mut *(virt_addr as *mut PageTable))
+}
+
 // ---- Public Mapping API ----
 
 pub unsafe fn map_page(virt: u64, phys: u64, flags: u64) -> Result<(), &'static str> {
-    let pml4 = active_pml4();
+    // Cache HHDM offset once — eliminates 4+ atomic loads per page walk
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let cr3 = read_cr3();
+    let phys_pml4 = cr3 & 0x000FFFFFFFFFF000;
+    let pml4 = &mut *((phys_pml4 + hhdm_offset) as *mut PageTable);
 
-    let p4 = get_next_table(&mut pml4.entries[p4_index(virt)]).ok_or("Failed to alloc P3")?;
-    let p3 = get_next_table(&mut p4.entries[p3_index(virt)]).ok_or("Failed to alloc P2")?;
-    let p2 = get_next_table(&mut p3.entries[p2_index(virt)]).ok_or("Failed to alloc P1")?;
+    let p4 = get_next_table(&mut pml4.entries[p4_index(virt)], hhdm_offset).ok_or("Failed to alloc P3")?;
+    let p3 = get_next_table(&mut p4.entries[p3_index(virt)], hhdm_offset).ok_or("Failed to alloc P2")?;
+    let p2 = get_next_table(&mut p3.entries[p2_index(virt)], hhdm_offset).ok_or("Failed to alloc P1")?;
 
     let pt_entry = &mut p2.entries[p1_index(virt)];
 
@@ -158,26 +161,44 @@ pub unsafe fn map_page(virt: u64, phys: u64, flags: u64) -> Result<(), &'static 
     Ok(())
 }
 
+/// Map a 2MB huge page (PD-level mapping, no PT needed).
+/// `virt` and `phys` must be 2MB-aligned.
+pub unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64) -> Result<(), &'static str> {
+    if virt & 0x1FFFFF != 0 || phys & 0x1FFFFF != 0 {
+        return Err("2MB map: addresses not 2MB-aligned");
+    }
+
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let cr3 = read_cr3();
+    let phys_pml4 = cr3 & 0x000FFFFFFFFFF000;
+    let pml4 = &mut *((phys_pml4 + hhdm_offset) as *mut PageTable);
+
+    let p4 = get_next_table(&mut pml4.entries[p4_index(virt)], hhdm_offset).ok_or("Failed to alloc P3")?;
+    let p3 = get_next_table(&mut p4.entries[p3_index(virt)], hhdm_offset).ok_or("Failed to alloc P2")?;
+
+    // Write directly to PD entry with HUGE_PAGE flag — no PT level
+    p3.entries[p2_index(virt)] = phys | flags | HUGE_PAGE | PRESENT;
+    flush_tlb(virt);
+    Ok(())
+}
+
 pub unsafe fn unmap_page(virt: u64) {
-    let pml4 = active_pml4();
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let cr3 = read_cr3();
+    let phys_pml4 = cr3 & 0x000FFFFFFFFFF000;
+    let pml4 = &mut *((phys_pml4 + hhdm_offset) as *mut PageTable);
 
-    let idx4 = p4_index(virt);
-    if pml4.entries[idx4] & PRESENT == 0 { return; }
-    let p4 = match get_next_table(&mut pml4.entries[idx4]) {
+    let p4 = match get_existing_table(pml4.entries[p4_index(virt)], hhdm_offset) {
         Some(t) => t,
         None => return,
     };
 
-    let idx3 = p3_index(virt);
-    if p4.entries[idx3] & PRESENT == 0 { return; }
-    let p3 = match get_next_table(&mut p4.entries[idx3]) {
+    let p3 = match get_existing_table(p4.entries[p3_index(virt)], hhdm_offset) {
         Some(t) => t,
         None => return,
     };
 
-    let idx2 = p2_index(virt);
-    if p3.entries[idx2] & PRESENT == 0 { return; }
-    let p2 = match get_next_table(&mut p3.entries[idx2]) {
+    let p2 = match get_existing_table(p3.entries[p2_index(virt)], hhdm_offset) {
         Some(t) => t,
         None => return,
     };
@@ -235,3 +256,4 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
 
     pt[p1_idx] = paddr | flags | 1;
 }
+

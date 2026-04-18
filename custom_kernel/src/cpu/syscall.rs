@@ -101,11 +101,7 @@ extern "C" fn syscall_handler() {
 
 #[no_mangle]
 extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-    unsafe {
-        crate::drivers::video::put_str("SC: ");
-        crate::cpu::idt::print_hex(id);
-        crate::drivers::video::put_char('\n');
-    }
+    // Hot path — no debug output, no heap allocation
     match id {
         1 => { // Write
             // a1 = fd, a2 = ptr, a3 = len.
@@ -118,22 +114,47 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
                  return 0; // Invalid Pointer
             }
 
-            // Copy from User
-            let mut buf = alloc::vec![0u8; len];
-            if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf[0..len]).is_err() {
-                 return 0;
-            }
-            
-            // Simple FD map: 0,1,2 = Console. >2 = File.
-            if fd <= 2 {
-                if let Ok(s) = core::str::from_utf8(&buf) {
-                    video::put_str(s);
-                    return a3;
+            // Use stack buffer for small writes (avoids heap allocation)
+            // Falls back to heap for larger writes
+            if len <= 512 {
+                let mut stack_buf = [0u8; 512];
+                if crate::mm::user::copy_from_user(a2 as *const u8, &mut stack_buf[0..len]).is_err() {
+                    return 0;
+                }
+                if fd <= 2 {
+                    if let Ok(s) = core::str::from_utf8(&stack_buf[..len]) {
+                        video::put_str(s);
+                        return a3;
+                    } else {
+                        for &b in &stack_buf[..len] {
+                            video::put_char(b as char);
+                        }
+                        return a3;
+                    }
+                } else {
+                    let n = crate::process::scheduler::process_write(fd, &stack_buf[..len]);
+                    if n >= 0 { return n as u64; }
                 }
             } else {
-                // File Write
-                let n = crate::process::scheduler::process_write(fd, &buf);
-                if n >= 0 { return n as u64; }
+                // Large write: fall back to heap
+                let mut buf = alloc::vec![0u8; len];
+                if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf[0..len]).is_err() {
+                    return 0;
+                }
+                if fd <= 2 {
+                    if let Ok(s) = core::str::from_utf8(&buf) {
+                        video::put_str(s);
+                        return a3;
+                    } else {
+                        for &b in &buf {
+                            video::put_char(b as char);
+                        }
+                        return a3;
+                    }
+                } else {
+                    let n = crate::process::scheduler::process_write(fd, &buf);
+                    if n >= 0 { return n as u64; }
+                }
             }
             0
         }
@@ -217,10 +238,20 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         7 => { // Sys_read (fd, buf, len)
              let fd = a1 as usize;
              let len = a3 as usize;
-             // Safety: Limit size
-             if len > 8192 { return u64::MAX; }
-             let mut buf = alloc::vec![0u8; len];
+             if len == 0 || len > 8192 { return u64::MAX; }
              
+             // Check if STDIN
+             if fd == 0 {
+                 if let Some(c) = crate::drivers::keyboard::pop_char() {
+                     let mut buf = [c as u8; 1];
+                     if crate::mm::user::copy_to_user(a2 as *mut u8, &buf[0..1]).is_ok() {
+                         return 1;
+                     }
+                 }
+                 return 0; // Would block (0 bytes read for now)
+             }
+             
+             let mut buf = alloc::vec![0u8; len];
              let n = crate::process::scheduler::process_read(fd, &mut buf);
              if n >= 0 {
                   // Copy back
@@ -243,6 +274,10 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         61 => { // sys_wait(pid)
             crate::process::scheduler::wait_pid(a1 as usize) as u64
         },
+        24 => { // sys_yield()
+            crate::process::scheduler::yield_now();
+            0
+        },
         10 => { // sys_uptime() -> ms
              unsafe { crate::process::scheduler::get_ticks() * 10 }
         },
@@ -256,8 +291,30 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
              crate::process::scheduler::clone_task(a1, a2) as u64
         },
         20 => crate::sem::sys_agent_op(a1, a2, a3),
+        40 => sys_socket(a1),
+        41 => sys_bind(a1, a2),
+        42 => sys_listen(a1),
+        43 => sys_accept(a1),
         _ => 0
     }
+}
+
+fn sys_socket(proto: u64) -> u64 {
+    // 1 = TCP
+    if proto != 1 { return u64::MAX; }
+    crate::net::syscall_socket_tcp() as u64
+}
+
+fn sys_bind(fd: u64, port: u64) -> u64 {
+    crate::net::syscall_bind(fd as usize, port as u16) as u64
+}
+
+fn sys_listen(fd: u64) -> u64 {
+    crate::net::syscall_listen(fd as usize) as u64
+}
+
+fn sys_accept(fd: u64) -> u64 {
+    crate::net::syscall_accept(fd as usize) as u64
 }
 
 fn sys_sleep(ms: u64) -> u64 {

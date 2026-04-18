@@ -2,7 +2,7 @@ use spin::Mutex;
 
 // C FFI declarations
 extern "C" {
-    fn gfx_init(framebuffer_addr: *mut u8, width: u64, height: u64, pitch: u64);
+    fn gfx_init(framebuffer_addr: *mut u8, width: u64, height: u64, pitch: u64, bpp: u8);
     fn c_draw_char(x: i32, y: i32, c: u8, fg_color: u32, bg_color: u32);
     fn c_clear_screen(color: u32);
 }
@@ -17,7 +17,8 @@ pub static FRAMEBUFFER_ADDR: spin::Mutex<u64> = spin::Mutex::new(0);
 pub static FRAMEBUFFER_WIDTH: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static FRAMEBUFFER_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static FRAMEBUFFER_PITCH: spin::Mutex<usize> = spin::Mutex::new(0);
-pub static FRAMEBUFFER_BPP: spin::Mutex<usize> = spin::Mutex::new(0);
+pub static FRAMEBUFFER_BPP: spin::Mutex<u8> = spin::Mutex::new(0);
+pub static FRAMEBUFFER_TYPE: spin::Mutex<u8> = spin::Mutex::new(0);
 
 // VGA Buffer Address in Higher Half (0xFFFFFFFF80000000 + 0xB8000)
 pub const VGA_HHDM_ADDR: u64 = 0xFFFFFFFF800B8000;
@@ -56,8 +57,9 @@ pub fn init() {
         let width = *FRAMEBUFFER_WIDTH.lock() as u64;
         let height = *FRAMEBUFFER_HEIGHT.lock() as u64;
         let pitch = *FRAMEBUFFER_PITCH.lock() as u64;
+        let bpp = *FRAMEBUFFER_BPP.lock();
         
-        unsafe { gfx_init(fb_addr as *mut u8, width, height, pitch); }
+        unsafe { gfx_init(fb_addr as *mut u8, width, height, pitch, bpp); }
         *CONSOLE_WIDTH.lock() = (width / 8) as usize;
         *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
         fast_clear(0x00000000);
@@ -179,10 +181,12 @@ pub fn draw_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
     let fb_width = *FRAMEBUFFER_WIDTH.lock() as i64;
     let fb_height = *FRAMEBUFFER_HEIGHT.lock() as i64;
     let fb_pitch = *FRAMEBUFFER_PITCH.lock();
+    let fb_bpp = *FRAMEBUFFER_BPP.lock() as usize;
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr == 0 { return; }
 
-    let ptr = fb_addr as *mut u32;
+    let ptr = fb_addr as *mut u8;
+    let bytes_per_pixel = fb_bpp / 8;
 
     for row in 0..h {
         let draw_y = y + row;
@@ -192,9 +196,15 @@ pub fn draw_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
             let draw_x = x + col;
             if draw_x < 0 || draw_x >= fb_width { continue; }
             
-            let offset = (draw_y as usize * fb_pitch / 4) + draw_x as usize;
+            let offset = (draw_y as usize * fb_pitch) + (draw_x as usize * bytes_per_pixel);
             unsafe {
-                *ptr.add(offset) = color;
+                if fb_bpp == 32 {
+                    *(ptr.add(offset) as *mut u32) = color;
+                } else if fb_bpp == 24 {
+                    *ptr.add(offset) = (color & 0xFF) as u8;
+                    *ptr.add(offset + 1) = ((color >> 8) & 0xFF) as u8;
+                    *ptr.add(offset + 2) = ((color >> 16) & 0xFF) as u8;
+                }
             }
         }
     }
@@ -224,14 +234,22 @@ pub fn draw_pixel(x: i64, y: i64, color: u32) {
     let height = *FRAMEBUFFER_HEIGHT.lock() as i64;
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     let fb_pitch = *FRAMEBUFFER_PITCH.lock();
+    let fb_bpp = *FRAMEBUFFER_BPP.lock() as usize;
     
     if fb_addr == 0 { return; }
     if x < 0 || x >= width || y < 0 || y >= height { return; }
 
-    let offset = (y as usize * fb_pitch / 4) + x as usize;
-    let ptr = fb_addr as *mut u32;
+    let bytes_per_pixel = fb_bpp / 8;
+    let offset = (y as usize * fb_pitch) + (x as usize * bytes_per_pixel);
+    let ptr = fb_addr as *mut u8;
     unsafe {
-        *ptr.add(offset) = color;
+        if fb_bpp == 32 {
+            *(ptr.add(offset) as *mut u32) = color;
+        } else if fb_bpp == 24 {
+            *ptr.add(offset) = (color & 0xFF) as u8;
+            *ptr.add(offset + 1) = ((color >> 8) & 0xFF) as u8;
+            *ptr.add(offset + 2) = ((color >> 16) & 0xFF) as u8;
+        }
     }
 }
 

@@ -174,25 +174,74 @@ pub fn current_cpu_id() -> u32 {
     unsafe { lapic_read(LAPIC_ID) >> 24 }
 }
 
-/// Configure the LAPIC timer for periodic interrupts
+/// Calibrated LAPIC timer ticks per millisecond (set by init_timer)
+pub static LAPIC_TICKS_PER_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Configure the LAPIC timer for periodic interrupts, calibrated via PIT
 pub fn init_timer(frequency_hz: u32) {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    let _ = write!(serial, "APIC: Configuring LAPIC timer at {} Hz\n", frequency_hz);
+    let _ = write!(serial, "APIC: Calibrating LAPIC timer via PIT...\n");
 
     unsafe {
-        // Set divider to 16
+        // ---- PIT-based calibration ----
+        // Use PIT Channel 2 in one-shot mode as a reference clock.
+        // PIT base frequency = 1,193,182 Hz
+        // We measure how many LAPIC ticks elapse in ~10ms.
+
+        const PIT_FREQ: u32 = 1_193_182;
+        const CALIBRATE_MS: u32 = 10;
+        let pit_count: u16 = (PIT_FREQ / (1000 / CALIBRATE_MS)) as u16;
+
+        // Set LAPIC timer divider to 16
         lapic_write(LAPIC_TIMER_DIV, 0x03);
 
-        // Configure timer: periodic mode, vector 32
-        lapic_write(LAPIC_TIMER_LVT, TIMER_VECTOR | TIMER_PERIODIC);
+        // Start LAPIC timer with max initial count (one-shot, masked)
+        lapic_write(LAPIC_TIMER_LVT, 0x10000); // Masked one-shot
+        lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
 
-        // Calibrate: Use a rough estimate. A real OS would calibrate against PIT/HPET.
-        // For ~100 Hz with typical bus speeds, use a large initial count.
-        // This is approximate — real calibration needed for production.
-        let initial_count = 10_000_000 / frequency_hz;
+        // Program PIT Channel 2 for one-shot (mode 0), lo/hi byte
+        // Port 0x61: bits [0] = gate, [1] = speaker
+        let gate: u8;
+        asm!("in al, 0x61", out("al") gate, options(nomem, nostack, preserves_flags));
+        // Enable gate (bit 0), disable speaker (bit 1)
+        let gate_val = (gate & 0xFC) | 0x01;
+        asm!("out 0x61, al", in("al") gate_val, options(nomem, nostack, preserves_flags));
+
+        // PIT Channel 2, mode 0 (one-shot), lobyte/hibyte
+        asm!("out dx, al", in("dx") 0x43u16, in("al") 0xB0u8, options(nomem, nostack, preserves_flags));
+
+        // Write count (lo then hi)
+        let lo = (pit_count & 0xFF) as u8;
+        let hi = (pit_count >> 8) as u8;
+        asm!("out dx, al", in("dx") 0x42u16, in("al") lo, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") 0x42u16, in("al") hi, options(nomem, nostack, preserves_flags));
+
+        // Wait for PIT Channel 2 output to go high (bit 5 of port 0x61)
+        loop {
+            let status: u8;
+            asm!("in al, 0x61", out("al") status, options(nomem, nostack, preserves_flags));
+            if status & 0x20 != 0 {
+                break;
+            }
+        }
+
+        // Read how many LAPIC ticks elapsed
+        let remaining = lapic_read(LAPIC_TIMER_CUR);
+        let elapsed = 0xFFFFFFFF - remaining;
+        let ticks_per_ms = elapsed as u64 / CALIBRATE_MS as u64;
+
+        LAPIC_TICKS_PER_MS.store(ticks_per_ms, Ordering::Relaxed);
+
+        let _ = write!(serial, "APIC: LAPIC ticks/ms = {} (elapsed {} in {}ms)\n",
+            ticks_per_ms, elapsed, CALIBRATE_MS);
+
+        // Now configure the real periodic timer
+        let initial_count = (ticks_per_ms * 1000 / frequency_hz as u64) as u32;
+        lapic_write(LAPIC_TIMER_LVT, TIMER_VECTOR | TIMER_PERIODIC);
         lapic_write(LAPIC_TIMER_INIT, initial_count);
 
-        let _ = write!(serial, "APIC: Timer configured (initial_count={})\n", initial_count);
+        let _ = write!(serial, "APIC: Timer configured at {} Hz (initial_count={})\n",
+            frequency_hz, initial_count);
     }
 }
 

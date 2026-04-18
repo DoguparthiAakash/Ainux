@@ -29,7 +29,20 @@ pub struct MultibootInfo {
     pub config_table: u32,
     pub boot_loader_name: u32,
     pub apm_table: u32,
-    // VBE fields follow...
+    pub vbe_control_info: u32,
+    pub vbe_mode_info: u32,
+    pub vbe_mode: u16,
+    pub vbe_interface_seg: u16,
+    pub vbe_interface_off: u16,
+    pub vbe_interface_len: u16,
+
+    pub framebuffer_addr: u64,
+    pub framebuffer_pitch: u32,
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    pub framebuffer_bpp: u8,
+    pub framebuffer_type: u8,
+    pub color_info: [u8; 6],
 }
 
 #[repr(C, packed)]
@@ -109,6 +122,30 @@ impl BitmapPmm {
         let info = unsafe { &*(info_phys as *const MultibootInfo) };
         let flags = info.flags;
         let _ = write!(serial, "PMM: Multiboot flags={:#x}\n", flags);
+        
+        // Parse Graphics Info (Bit 12)
+        if flags & (1 << 12) != 0 {
+            let fb_addr = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_addr)) };
+            let fb_pitch = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_pitch)) };
+            let fb_width = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_width)) };
+            let fb_height = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_height)) };
+            let fb_bpp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_bpp)) };
+            let fb_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_type)) };
+            
+            let _ = write!(serial, "PMM: VESA Graphics Mode Detected!\n");
+            let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
+            let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
+            
+            // Inject to Video Driver 
+            *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = fb_addr;
+            *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
+            *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
+            *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
+            *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
+            *crate::drivers::video::FRAMEBUFFER_TYPE.lock() = fb_type;
+        } else {
+            let _ = write!(serial, "PMM: No VESA Framebuffer provided by GRUB. Outputting to Legacy Text Mode.\n");
+        }
 
         // Flag bit 6: mmap_* fields are valid
         if flags & (1 << 6) != 0 {
@@ -323,23 +360,77 @@ impl BitmapPmm {
 
     // ---- Bitmap Manipulation ----
 
+    /// Batch-mark a region as used using aligned u64 word operations
     fn mark_region_used(&mut self, base: u64, len: usize) {
         let start_frame = (base / PAGE_SIZE as u64) as usize;
         let end_frame = ((base + len as u64 + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as usize;
-        for i in start_frame..end_frame {
-            if i < self.total_frames {
-                self.set_bit(i);
+        let end_frame = end_frame.min(self.total_frames);
+
+        if start_frame >= end_frame { return; }
+
+        let start_word = start_frame / 64;
+        let end_word = (end_frame + 63) / 64;
+
+        // Handle partial first word
+        if start_frame % 64 != 0 {
+            let bits_from = start_frame % 64;
+            let bits_to = if end_frame / 64 == start_word { end_frame % 64 } else { 64 };
+            let mask = ((1u64 << (bits_to - bits_from)) - 1) << bits_from;
+            if start_word < self.bitmap.len() {
+                self.bitmap[start_word] |= mask;
+            }
+        }
+
+        // Handle full words in the middle
+        let full_start = if start_frame % 64 == 0 { start_word } else { start_word + 1 };
+        let full_end = end_frame / 64;
+        for idx in full_start..full_end.min(self.bitmap.len()) {
+            self.bitmap[idx] = !0;  // All bits set = all used
+        }
+
+        // Handle partial last word
+        if end_frame % 64 != 0 && end_frame / 64 > start_word {
+            let last_word = end_frame / 64;
+            let mask = (1u64 << (end_frame % 64)) - 1;
+            if last_word < self.bitmap.len() {
+                self.bitmap[last_word] |= mask;
             }
         }
     }
 
+    /// Batch-free a region using aligned u64 word operations
     fn free_region(&mut self, base: u64, len: usize) {
         let start_frame = (base / PAGE_SIZE as u64) as usize;
         let num_frames = len / PAGE_SIZE;
-        for i in 0..num_frames {
-            let frame = start_frame + i;
-            if frame < self.total_frames {
-                self.clear_bit(frame);
+        let end_frame = (start_frame + num_frames).min(self.total_frames);
+
+        if start_frame >= end_frame { return; }
+
+        let start_word = start_frame / 64;
+
+        // Handle partial first word
+        if start_frame % 64 != 0 {
+            let bits_from = start_frame % 64;
+            let bits_to = if end_frame / 64 == start_word { end_frame % 64 } else { 64 };
+            let mask = ((1u64 << (bits_to - bits_from)) - 1) << bits_from;
+            if start_word < self.bitmap.len() {
+                self.bitmap[start_word] &= !mask;
+            }
+        }
+
+        // Handle full words in the middle
+        let full_start = if start_frame % 64 == 0 { start_word } else { start_word + 1 };
+        let full_end = end_frame / 64;
+        for idx in full_start..full_end.min(self.bitmap.len()) {
+            self.bitmap[idx] = 0;  // All bits clear = all free
+        }
+
+        // Handle partial last word
+        if end_frame % 64 != 0 && end_frame / 64 > start_word {
+            let last_word = end_frame / 64;
+            let mask = (1u64 << (end_frame % 64)) - 1;
+            if last_word < self.bitmap.len() {
+                self.bitmap[last_word] &= !mask;
             }
         }
     }
@@ -373,23 +464,33 @@ impl BitmapPmm {
         }
     }
 
-    // ---- Allocation ----
+    // ---- Allocation (BSF-Accelerated) ----
+
+    /// Find first free bit in a u64 using BSF/TZCNT hardware instruction.
+    /// Returns bit index (0-63) of the first zero bit, or None if all set.
+    #[inline(always)]
+    fn find_first_free(word: u64) -> Option<u32> {
+        let inverted = !word;  // Invert: 1 = free
+        if inverted == 0 {
+            return None;  // All bits set = no free frames
+        }
+        // Use trailing_zeros() which compiles to TZCNT/BSF on x86_64
+        Some(inverted.trailing_zeros())
+    }
 
     pub fn alloc_frame(&mut self) -> Option<u64> {
-        // Next-fit search with wraparound
+        // Next-fit search with BSF acceleration: O(1) per word instead of O(64)
         let len = self.bitmap.len();
         for scan in 0..len {
             let idx = (self.last_idx + scan) % len;
             if self.bitmap[idx] != !0 {
-                for bit in 0..64 {
-                    if (self.bitmap[idx] & (1 << bit)) == 0 {
-                        let frame = idx * 64 + bit;
-                        if frame < self.total_frames {
-                            self.set_bit(frame);
-                            self.last_idx = idx;
-                            self.used_frames.fetch_add(1, Ordering::Relaxed);
-                            return Some(frame as u64 * PAGE_SIZE as u64);
-                        }
+                if let Some(bit) = Self::find_first_free(self.bitmap[idx]) {
+                    let frame = idx * 64 + bit as usize;
+                    if frame < self.total_frames {
+                        self.bitmap[idx] |= 1u64 << bit;
+                        self.last_idx = idx;
+                        self.used_frames.fetch_add(1, Ordering::Relaxed);
+                        return Some(frame as u64 * PAGE_SIZE as u64);
                     }
                 }
             }
@@ -402,7 +503,7 @@ impl BitmapPmm {
         if count == 0 { return None; }
         if count == 1 { return self.alloc_frame(); }
 
-        // Brute force scan for `count` contiguous free frames
+        // Scan for `count` contiguous free frames
         let mut run_start = 0;
         let mut run_len = 0;
 
@@ -411,10 +512,11 @@ impl BitmapPmm {
                 if run_len == 0 { run_start = frame; }
                 run_len += 1;
                 if run_len >= count {
-                    // Found! Mark all as used
-                    for i in run_start..(run_start + count) {
-                        self.set_bit(i);
-                    }
+                    // Found! Mark all as used via batch operation
+                    self.mark_region_used(
+                        run_start as u64 * PAGE_SIZE as u64,
+                        count * PAGE_SIZE,
+                    );
                     self.used_frames.fetch_add(count, Ordering::Relaxed);
                     return Some(run_start as u64 * PAGE_SIZE as u64);
                 }
@@ -445,12 +547,18 @@ impl BitmapPmm {
         self.hhdm_offset
     }
 
+    /// Hardware-accelerated stats using popcount (compiled to POPCNT on x86_64)
     pub fn get_stats(&self) -> (usize, usize) {
-        let mut used = 0;
-        for i in 0..self.total_frames {
-            if self.test_bit(i) {
-                used += 1;
-            }
+        let mut used = 0usize;
+        for i in 0..self.bitmap.len() {
+            used += self.bitmap[i].count_ones() as usize;
+        }
+        // Adjust for any bits beyond total_frames in the last word
+        let tail_bits = self.total_frames % 64;
+        if tail_bits != 0 {
+            let last_idx = self.bitmap.len() - 1;
+            let extra = self.bitmap[last_idx] >> tail_bits;
+            used -= extra.count_ones() as usize;
         }
         (used, self.total_frames)
     }
@@ -464,3 +572,4 @@ impl BitmapPmm {
         self.total_frames
     }
 }
+

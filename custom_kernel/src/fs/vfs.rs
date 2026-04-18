@@ -61,6 +61,7 @@ pub trait Inode: Send + Sync {
 pub trait FileHandle: Send + Sync + core::fmt::Debug {
     fn read(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
     fn write(&self, buf: &[u8], offset: u64) -> VfsResult<usize>;
+    fn truncate(&self) -> VfsResult<()>;
     fn close(&self) -> VfsResult<()>;
 }
 

@@ -96,27 +96,31 @@ impl IOService for RTL8139 {
                  let tx2_phys = pmm.alloc_frame().unwrap();
                  let tx3_phys = pmm.alloc_frame().unwrap();
                  
-                 // Store IO Base globally for send_packet
-                 RTL8139_IO_BASE = io_base;
-                 RTL8139_TX_PHYS[0] = tx0_phys;
-                 RTL8139_TX_PHYS[1] = tx1_phys;
-                 RTL8139_TX_PHYS[2] = tx2_phys;
-                 RTL8139_TX_PHYS[3] = tx3_phys;
-                 
-                 video::put_str(&alloc::format!("RTL8139: RX Buffer at {:#x}\n", rx_phys));
-                 
-                 // 3. Init RX Buffer
-                 Self::outl(io_base + RX_BUF, rx_phys as u32);
-                 
-                 // 4. Init IM/ISR
-                 Self::outw(io_base + IMR, 0x0005); // TOK + ROK (Transmit OK, Receive OK)
-                 
-                 // 5. Build RCR (Receive Config Register)
-                 // ABP (Accept Broadcast/Physical/Multicast) | WRAP
-                 Self::outl(io_base + 0x44, 0xF | (1 << 7));
-                 
-                 // 6. Enable RE/TE
-                 Self::outb(io_base + COMMAND, 0x0C);
+                  // Store IO Base globally
+                  RTL8139_IO_BASE = io_base;
+                  RTL8139_TX_PHYS[0] = tx0_phys;
+                  RTL8139_TX_PHYS[1] = tx1_phys;
+                  RTL8139_TX_PHYS[2] = tx2_phys;
+                  RTL8139_TX_PHYS[3] = tx3_phys;
+                  RTL8139_RX_PHYS = rx_phys;
+                  
+                  video::put_str(&alloc::format!("RTL8139: RX Buffer at {:#x}\n", rx_phys));
+                  
+                  // 3. Init RX Buffer
+                  Self::outl(io_base + RX_BUF, rx_phys as u32);
+                  
+                  // 4. Init IM/ISR
+                  Self::outw(io_base + IMR, 0x0005); // TOK + ROK (Transmit OK, Receive OK)
+                  
+                  // 5. Build RCR (Receive Config Register)
+                  // ABP (Accept Broadcast/Physical/Multicast) | WRAP
+                  Self::outl(io_base + 0x44, 0x0F | (1 << 7));
+                  
+                  // 6. Enable RE/TE
+                  Self::outb(io_base + COMMAND, 0x0C);
+
+                  // 7. Unmask IRQ 11 in PIC
+                  unsafe { crate::cpu::pic::unmask_irq(11); }
             }
         }
         
@@ -129,10 +133,13 @@ impl IOService for RTL8139 {
     }
 }
 
-// Global state for simple access from send_packet (since we lack a proper driver instance passing mechanism yet)
+// Global state for simple access
 static mut RTL8139_IO_BASE: u16 = 0;
 static mut RTL8139_TX_PHYS: [u64; 4] = [0; 4];
 static mut RTL8139_TX_CUR: usize = 0;
+static mut RTL8139_RX_PHYS: u64 = 0;
+static mut RTL8139_RX_OFFSET: usize = 0;
+
 pub static mut RTL8139_FRAMEWORK: Option<u8> = Some(1); // Marker
 
 impl RTL8139 {
@@ -144,29 +151,83 @@ impl RTL8139 {
             let cur_tx = RTL8139_TX_CUR;
             let phys_addr = RTL8139_TX_PHYS[cur_tx];
             
-            // 1. Copy data to the DMA buffer
-            // Only works if we have HHDM offset to map phys -> virt
             let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
             let virt_addr = phys_addr + hhdm;
             let ptr = virt_addr as *mut u8;
             
-            // Limit size
             let len = if data.len() > 1792 { 1792 } else { data.len() };
             core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
             
-            // 2. Write Address (TSAD)
-            // TSAD0 = offset 0x20, TSAD1 = 0x24...
             Self::outl(io_base + 0x20 + (cur_tx as u16 * 4), phys_addr as u32);
-            
-            // 3. Write Status/Length (TSD)
-            // TSD0 = 0x10...
-            // Size | Early TX Threshold (0)
             Self::outl(io_base + 0x10 + (cur_tx as u16 * 4), len as u32);
             
-            // 4. Update index
             RTL8139_TX_CUR = (cur_tx + 1) % 4;
-            
-            video::put_str("[NET] Transmitted Frame\n");
         }
+    }
+
+    pub fn receive_packet<F>(mut handler: F) where F: FnMut(&[u8]) {
+        unsafe {
+            let io_base = RTL8139_IO_BASE;
+            if io_base == 0 { return; }
+
+            // Check if buffer is empty
+            if (Self::inb(io_base + COMMAND) & 0x01) != 0 {
+                return;
+            }
+
+            let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            let rx_virt = RTL8139_RX_PHYS + hhdm;
+            
+            while (Self::inb(io_base + COMMAND) & 0x01) == 0 {
+                let offset = RTL8139_RX_OFFSET;
+                let ptr = (rx_virt + offset as u64) as *const u16;
+                
+                let header = *ptr;
+                let status = header;
+                let len = *ptr.add(1);
+
+                if (status & 1) == 0 { break; } // Packet not OK
+
+                let data_ptr = (rx_virt + offset as u64 + 4) as *const u8;
+                let packet = core::slice::from_raw_parts(data_ptr, len as usize - 4);
+                
+                handler(packet);
+
+                // Update offset (aligned to 4 bytes as per RTL8139 spec)
+                let mut new_offset = (offset + len as usize + 4 + 3) & !3;
+                if new_offset >= 8192 {
+                    new_offset %= 8192;
+                }
+                RTL8139_RX_OFFSET = new_offset;
+                Self::outw(io_base + 0x38, (new_offset as i16 - 16) as u16); // CBR
+            }
+        }
+    }
+
+    pub fn handle_interrupt() {
+        unsafe {
+            let io_base = RTL8139_IO_BASE;
+            if io_base == 0 { return; }
+
+            let isr = Self::inw(io_base + ISR);
+            if (isr & 0x01) != 0 { // ROK
+                // We'll process packets in the network stack processing loop
+            }
+            
+            // Ack all interrupts
+            Self::outw(io_base + ISR, isr);
+        }
+    }
+
+    unsafe fn inb(port: u16) -> u8 {
+        let mut val: u8;
+        core::arch::asm!("in al, dx", out("al") val, in("dx") port, options(nostack, preserves_flags));
+        val
+    }
+
+    unsafe fn inw(port: u16) -> u16 {
+        let mut val: u16;
+        core::arch::asm!("in ax, dx", out("ax") val, in("dx") port, options(nostack, preserves_flags));
+        val
     }
 }
