@@ -171,6 +171,20 @@ pub fn set_kernel_stack(stack_top: u64) {
     }
 }
 
+/// Load the BSP's GDT on an Application Processor.
+/// Does NOT touch TSS or load TR — avoids GP fault from "busy" TSS descriptor.
+/// APs are parked and never do ring transitions, so TSS is not needed.
+pub fn init_ap() {
+    unsafe {
+        let gdt_ptr = GdtPointer {
+            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
+            base: GDT.as_ptr() as u64,
+        };
+        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+        load_segments();
+    }
+}
+
 #[unsafe(naked)]
 unsafe extern "C" fn load_segments() {
     naked_asm!(
@@ -182,9 +196,11 @@ unsafe extern "C" fn load_segments() {
         "mov ax, 0x10",      // Load data segment
         "mov ds, ax",
         "mov es, ax",
-        "mov fs, ax",
-        "mov gs, ax",
+        // NOTE: fs and gs intentionally NOT reloaded here.
+        // Reloading them would zero FS_BASE/GS_BASE MSRs on AMD64,
+        // destroying per-CPU state pointers.
         "mov ss, ax",
         "ret",
     );
 }
+

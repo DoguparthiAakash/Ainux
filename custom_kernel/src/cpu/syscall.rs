@@ -1,5 +1,6 @@
 use core::arch::{asm, naked_asm};
 use crate::drivers::video;
+use crate::cpu::control::{rdmsr, wrmsr};
 
 const MSR_EFER: u32 = 0xC0000080;
 const MSR_STAR: u32 = 0xC0000081;
@@ -28,18 +29,6 @@ pub unsafe fn init() {
     KERNEL_STACK_PTR = rsp; // Use boot stack for now
 }
 
-unsafe fn wrmsr(msr: u32, val: u64) {
-    let low = val as u32;
-    let high = (val >> 32) as u32;
-    asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nostack));
-}
-
-unsafe fn rdmsr(msr: u32) -> u64 {
-    let low: u32;
-    let high: u32;
-    asm!("rdmsr", out("eax") low, out("edx") high, in("ecx") msr, options(nostack));
-    ((high as u64) << 32) | (low as u64)
-}
 
 pub unsafe fn syscall(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     let ret: u64;

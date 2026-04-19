@@ -750,8 +750,27 @@ impl Ext4Inode {
             new_inode.links_count = 2; // . and parent ref?
             
             // Initialize Directory Block with . and ..
-            // Stub: We'll write an empty block.
-            let buf = alloc::vec![0u8; self.fs.block_size as usize];
+            let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
+            unsafe {
+                let dot_ptr = buf.as_mut_ptr();
+                let dotdot_ptr = buf.as_mut_ptr().add(12);
+                
+                // .
+                let dot = dot_ptr as *mut DirEntry2;
+                (*dot).inode = inode_num;
+                (*dot).rec_len = 12;
+                (*dot).name_len = 1;
+                (*dot).file_type = 2; // Directory
+                core::ptr::copy_nonoverlapping(".".as_ptr(), dot_ptr.add(8), 1);
+                
+                // ..
+                let dotdot = dotdot_ptr as *mut DirEntry2;
+                (*dotdot).inode = self.inode_num;
+                (*dotdot).rec_len = (self.fs.block_size - 12) as u16;
+                (*dotdot).name_len = 2;
+                (*dotdot).file_type = 2;
+                core::ptr::copy_nonoverlapping("..".as_ptr(), dotdot_ptr.add(8), 2);
+            }
             if !self.fs.write_block(block, &buf) { return Err(VfsError::IOError); }
         }
         
@@ -788,14 +807,15 @@ impl Ext4Inode {
              let entry = unsafe { &mut *entry_ptr };
              // if entry.inode == 0 { break; } 
              if entry.rec_len == 0 { 
-                 crate::drivers::video::put_str("Ext4: Zero RecLen! Break.\n");
-                 break; 
+                 if offset == 0 {
+                     // Block is all zeros. Initialize as one big empty entry.
+                     entry.rec_len = self.fs.block_size as u16;
+                     entry.inode = 0;
+                 } else {
+                     crate::drivers::video::put_str("Ext4: Zero RecLen! Break.\n");
+                     break; 
+                 }
              }
-             
-             // crate::drivers::video::put_str("Ext4: Entry Inode NonZero\n");
-
-             
-             let real_len = (8 + entry.name_len as u16 + 3) & !3;
              
              let real_len = (8 + entry.name_len as u16 + 3) & !3;
              let available = entry.rec_len - real_len;

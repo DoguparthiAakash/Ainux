@@ -60,3 +60,22 @@ pub fn check_cpu_state() {
 pub fn sync_cpu_state() {
     // No-op for UP (Uniprocessor) kernel
 }
+
+/// Writes a 64-bit value to a Model Specific Register (MSR).
+/// # Safety
+/// Writing to invalid MSRs or setting invalid bits can cause a General Protection Fault.
+pub unsafe fn wrmsr(msr: u32, val: u64) {
+    let low = val as u32;
+    let high = (val >> 32) as u32;
+    asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nostack, preserves_flags));
+}
+
+/// Reads a 64-bit value from a Model Specific Register (MSR).
+/// # Safety
+/// Reading from invalid MSRs can cause a General Protection Fault.
+pub unsafe fn rdmsr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    asm!("rdmsr", out("eax") low, out("edx") high, in("ecx") msr, options(nostack, preserves_flags));
+    ((high as u64) << 32) | (low as u64)
+}

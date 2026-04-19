@@ -3,7 +3,7 @@ use spin::Mutex;
 // C FFI declarations
 extern "C" {
     fn gfx_init(framebuffer_addr: *mut u8, width: u64, height: u64, pitch: u64, bpp: u8);
-    fn c_draw_char(x: i32, y: i32, c: u8, fg_color: u32, bg_color: u32);
+    fn c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32);
     fn c_clear_screen(color: u32);
 }
 
@@ -71,6 +71,13 @@ pub fn init() {
     }
 }
 
+/// Return (width, height) of the framebuffer, or (0, 0) if text mode.
+pub fn get_resolution() -> (usize, usize) {
+    let w = *FRAMEBUFFER_WIDTH.lock();
+    let h = *FRAMEBUFFER_HEIGHT.lock();
+    (w, h)
+}
+
 pub fn clear() {
     fast_clear(0x00000000);
     // Reset cursor
@@ -111,6 +118,22 @@ fn scroll_screen() {
     }
 }
 
+pub fn prepare_y_for_height(height: usize) -> usize {
+    let mut y = CONSOLE_Y.lock();
+    let console_h = *CONSOLE_HEIGHT.lock();
+    
+    if *y + height > console_h {
+        let overflow = (*y + height) - console_h;
+        for _ in 0..overflow {
+            scroll_screen();
+            if *y > 0 {
+                *y -= 1;
+            }
+        }
+    }
+    *y
+}
+
 pub fn put_char(c: char) {
     let mut x = CONSOLE_X.lock();
     let mut y = CONSOLE_Y.lock();
@@ -135,7 +158,7 @@ pub fn put_char(c: char) {
         if fb_addr != 0 {
             // Pixel Graphics Mode
             unsafe {
-                c_draw_char(*x as i32, *y as i32, c as u8, 0xFFFFFFFF, 0x00000000);
+                c_draw_char(*x as i32, *y as i32, c as u32, 0xFFFFFFFF, 0x00000000);
             }
         } else {
             // Legacy VGA Text Mode Fallback
@@ -259,7 +282,7 @@ pub fn fill_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
 
 pub fn draw_char_raw(x: usize, y: usize, c: char, fg: u32) {
     unsafe {
-        c_draw_char(x as i32, y as i32, c as u8, fg, 0); // Transparent BG? Assume 0 is transparent/ignored or we don't care
+        c_draw_char(x as i32, y as i32, c as u32, fg, 0); // Transparent BG? Assume 0 is transparent/ignored or we don't care
     }
 }
 
@@ -320,5 +343,45 @@ pub fn copy_buffer(buffer: &[u32]) {
     let ptr = fb_addr as *mut u32;
     unsafe {
         core::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr, buffer.len());
+    }
+}
+
+pub fn draw_char_at(x: usize, y: usize, c: u32, fg: u32) {
+    if *FRAMEBUFFER_ADDR.lock() != 0 {
+        unsafe {
+            c_draw_char(x as i32, y as i32, c, fg, 0x00000000);
+        }
+    }
+}
+
+pub fn draw_tui_box(x: usize, y: usize, w: usize, h: usize, fg: u32) {
+    if w < 2 || h < 2 { return; }
+    
+    // Corners
+    draw_char_at(x, y, 0x2554, fg); // ╔
+    draw_char_at(x + w - 1, y, 0x2557, fg); // ╗
+    draw_char_at(x, y + h - 1, 0x255A, fg); // ╚
+    draw_char_at(x + w - 1, y + h - 1, 0x255D, fg); // ╝
+    
+    // Horizontal lines
+    for i in 1..(w - 1) {
+        draw_char_at(x + i, y, 0x2550, fg); // ═
+        draw_char_at(x + i, y + h - 1, 0x2550, fg); // ═
+    }
+    
+    // Vertical lines
+    for j in 1..(h - 1) {
+        draw_char_at(x, y + j, 0x2551, fg); // ║
+        draw_char_at(x + w - 1, y + j, 0x2551, fg); // ║
+    }
+}
+
+pub fn draw_tui_title_box(x: usize, y: usize, w: usize, h: usize, title: &str, fg: u32) {
+    draw_tui_box(x, y, w, h, fg);
+    if title.len() > 0 && title.len() < w - 2 {
+        let start_x = x + (w - title.len()) / 2;
+        for (i, c) in title.chars().enumerate() {
+            draw_char_at(start_x + i, y, c as u32, fg);
+        }
     }
 }

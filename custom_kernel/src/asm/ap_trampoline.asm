@@ -81,8 +81,9 @@ ap_lm_entry:
     mov gs, ax
     mov ss, ax
 
-    ; Set temporary stack (4KB at 0x9000)
-    mov rsp, 0x9000
+    ; Set temporary stack BELOW trampoline (grows down from 0x7C00 into safe memory)
+    ; MUST NOT use 0x9000 — stack grows into trampoline data at 0x8FF0!
+    mov rsp, 0x7C00
 
     ; Load ap_entry address from data area
     mov rax, [0x8FF8]

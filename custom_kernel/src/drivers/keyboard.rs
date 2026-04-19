@@ -86,7 +86,13 @@ pub fn init() {
 }
 
 pub fn pop_char() -> Option<char> {
-    KEY_BUFFER.lock().pop()
+    let mut result = None;
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+        result = KEY_BUFFER.lock().pop();
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+    result
 }
 
 pub fn is_ctrl_active() -> bool {

@@ -2,10 +2,13 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::vec;
+use alloc::format;
 use crate::drivers::{keyboard, video, rtc};
 use crate::fs::vfs;
 use core::fmt::Write;
 use spin::Mutex;
+use alloc::sync::Arc;
+use crate::alloc::string::ToString;
 
 static CWD: Mutex<String> = Mutex::new(String::new());
 
@@ -50,6 +53,46 @@ fn resolve_path(path: &str) -> String {
         }
     }
     resolved
+}
+
+/// Resolves a path to an Inode by walking the VFS tree.
+fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
+    let resolved = resolve_path(path);
+    let mut current = vfs::root();
+    
+    if resolved == "/" {
+        return Ok(current);
+    }
+    
+    // Skip leading / since we start from root
+    let components = resolved[1..].split('/');
+    for comp in components {
+        if comp.is_empty() { continue; }
+        current = current.lookup(comp)?;
+    }
+    
+    Ok(current)
+}
+
+/// Resolves a path to its parent inode and the child name.
+fn find_parent_and_name(path: &str) -> vfs::VfsResult<(Arc<dyn vfs::Inode>, String)> {
+    let resolved = resolve_path(path);
+    if resolved == "/" { return Err(vfs::VfsError::PermissionDenied); }
+    
+    let mut components: Vec<&str> = resolved.split('/').collect();
+    // Remove empty components from split
+    components.retain(|s| !s.is_empty());
+    
+    if components.is_empty() { return Err(vfs::VfsError::NotFound); }
+    
+    let name = components.pop().unwrap().to_string();
+    
+    let mut current = vfs::root();
+    for comp in components {
+        current = current.lookup(comp)?;
+    }
+    
+    Ok((current, name))
 }
 
 
@@ -281,6 +324,9 @@ pub fn run() {
                      "cat" => cmd_cat(&args),
                      "nvi" => crate::apps::nvi::cmd_nvi(&args),
                      "nuxc" => crate::apps::nuxc::cmd_nuxc(&args),
+                     "nuxa" => crate::apps::nuxa::cmd_nuxa(&args),
+                     "nuxv" => crate::apps::nuxv::cmd_nuxv(&args),
+                     "run" => cmd_run(&args),
                      "ps" => cmd_ps(),
                      "kill" => cmd_kill(&args),
                      "free" => cmd_free(),
@@ -341,7 +387,16 @@ pub fn run() {
                      "ascii_tube" => cmd_youtube(&args),
                      "cd" => cmd_cd(&args),
                      "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
-                     _ => video::put_str("Unknown command. Type 'help'.\n"),
+                     "hfetch" => crate::apps::hfetch::cmd_hfetch(&args),
+                     "hinfo" => crate::apps::hinfo::main(&args),
+                     "examples" => cmd_examples(),
+                     _ => {
+                         if args.len() >= 2 && args[1] == "-prop" {
+                             cmd_prop(&args);
+                         } else {
+                             video::put_str("Unknown command. Type 'help'.\n");
+                         }
+                     },
                  }
              }
         }
@@ -373,7 +428,8 @@ fn cmd_help() {
     video::put_str("Ainux OS Native Shell - Available Commands:\n");
 
     video::put_str("\n--- Development & Native Platform ---\n");
-    video::put_str("  nuxc <src> -o <out> - Native C Compiler (ALO v2)\n");
+    video::put_str("  run <file>          - Unified Runner (.c, .s, .v, .q)\n");
+    video::put_str("  nuxc / nuxa / nuxv  - Native C / ASM / Voyager Compilers\n");
     video::put_str("  nvi <file>          - Neo-Vim like Editor\n");
     video::put_str("  exec <file.alo>     - Execute Native Segmented Binary\n");
     video::put_str("  view <file>         - Visual File/Hex/Image Viewer\n");
@@ -388,12 +444,11 @@ fn cmd_help() {
     video::put_str("  find <name>         - Search for files in the system\n");
     video::put_str("  mount / umount      - Disk & partition management\n");
     video::put_str("  sync                - Flush filesystem buffers to disk\n");
-    video::put_str("  chmod / chown       - File permission & ownership tools\n");
 
-    video::put_str("\n--- System & Process Management ---\n");
+    video::put_str("\n--- System & Voyager-Quantum ---\n");
     video::put_str("  ps / top / jobs     - Task & performance monitoring\n");
-    video::put_str("  kill / killall      - Terminate processes by PID or Name\n");
     video::put_str("  free / lsblk        - Memory / Block device statistics\n");
+    video::put_str("  hfetch / hinfo      - System & hardware diagnostic info\n");
     video::put_str("  uname / uptime      - System & Kernel identity\n");
     video::put_str("  dmesg               - View kernel message buffer\n");
     video::put_str("  reboot / shutdown   - Power & Restart control\n");
@@ -409,7 +464,6 @@ fn cmd_help() {
     video::put_str("  grep / head / tail  - High-speed stream filtering\n");
     video::put_str("  wc <file>           - Word, line, and byte counters\n");
     video::put_str("  clock / cal         - Modern Clock / Calendar systems\n");
-    video::put_str("  ascii_tube <id>     - Native ASCII Video Streaming\n");
     video::put_str("  clear / help        - UI management & this menu\n");
 }
 
@@ -437,25 +491,20 @@ fn cmd_btrfs_info() {
 
 
 fn cmd_cd(args: &[&str]) {
-    if args.len() < 2 { set_cwd("/"); return; }
-    let path = resolve_path(args[1]);
+    let path_input = if args.len() < 2 { "/" } else { args[1] };
+    let path = resolve_path(path_input);
     
-    if path == "/" {
-        set_cwd("/");
-        return;
-    }
-
-    // Verify existence (naive)
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        // Strip leading slash for lookup in root
-        let relative = if path.starts_with("/") { &path[1..] } else { &path };
-        
-        if let Ok(_) = root_inode.lookup(relative) {
-             set_cwd(&path);
-        } else {
-             video::put_str("Directory not found.\n");
-        }
+    match find_inode(&path) {
+        Ok(inode) => {
+            if let Ok(stat) = inode.stat() {
+                if stat.file_type == vfs::FileType::Directory {
+                    set_cwd(&path);
+                } else {
+                    video::put_str("cd: Not a directory.\n");
+                }
+            }
+        },
+        Err(_) => video::put_str("cd: Directory not found.\n"),
     }
 }
 
@@ -480,45 +529,138 @@ fn cmd_kill(args: &[&str]) {
 }
 // --- New Commands ---
 
-fn cmd_stat(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: stat <file>\n"); return; }
-    let path = resolve_path(args[1]);
-    let name = path.rsplit('/').next().unwrap_or(&path);
-    
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        match root_inode.lookup(name) {
-            Ok(inode) => {
-                match inode.stat() {
-                    Ok(stat) => {
-                        video::put_str("File: "); video::put_str(name); video::put_char('\n');
-                        video::put_str("Size: "); 
-                        print_digit((stat.size % 100) as u8); // TODO: full u64 print
-                        video::put_str(" B\n");
-                        
-                        video::put_str("Type: ");
-                        match stat.file_type {
-                            vfs::FileType::File => video::put_str("File\n"),
-                            vfs::FileType::Directory => video::put_str("Directory\n"),
-                            _ => video::put_str("Other\n"),
-                        }
-                        
-                        video::put_str("Mode: ");
-                        // Print octal approx
-                        print_digit(((stat.mode >> 6) & 7) as u8);
-                        print_digit(((stat.mode >> 3) & 7) as u8);
-                        print_digit((stat.mode & 7) as u8);
-                        video::put_char('\n');
-                        
-                        video::put_str("Uid: "); print_digit((stat.uid % 100) as u8); video::put_char('\n');
-                        video::put_str("Gid: "); print_digit((stat.gid % 100) as u8); video::put_char('\n');
-                    },
-                    Err(_) => video::put_str("Stat failed.\n"),
+fn calculate_dir_size(inode: &Arc<dyn vfs::Inode>) -> u64 {
+    let mut total = 0;
+    if let Ok(files) = inode.read_dir() {
+        for name in files {
+            if name == "." || name == ".." { continue; }
+            if let Ok(child) = inode.lookup(&name) {
+                if let Ok(stat) = child.stat() {
+                    if stat.file_type == vfs::FileType::Directory {
+                        total += calculate_dir_size(&child);
+                    } else {
+                        total += stat.size;
+                    }
                 }
-            },
-            Err(_) => video::put_str("File not found.\n"),
+            }
         }
     }
+    total
+}
+
+fn cmd_prop(args: &[&str]) {
+    if args.len() < 1 { return; }
+    let path_input = args[0]; // If called from _ handler
+    let path = resolve_path(path_input);
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    
+    let cur_x = *video::CONSOLE_X.lock();
+    let cur_y = video::prepare_y_for_height(10);
+    
+    video::draw_tui_title_box(cur_x, cur_y, 40, 10, "FILE PROPERTIES", 0x00FFCC00);
+    
+    let root = vfs::ROOT.lock();
+    if let Some(r) = root.as_ref() {
+        if let Ok(inode) = r.lookup(name) {
+            if let Ok(stat) = inode.stat() {
+                let mut line = 1;
+                let mut fields = vec![
+                    (format!("Name: {}", name)),
+                    (format!("Path: {}", path)),
+                    (format!("Size: {} Bytes", stat.size)),
+                    (format!("Type: {:?}", stat.file_type)),
+                    (format!("UID: {}  GID: {}", stat.uid, stat.gid)),
+                    (format!("Mode: o{:o}", stat.mode)),
+                ];
+                
+                if stat.file_type == vfs::FileType::Directory {
+                    let total_size = calculate_dir_size(&inode);
+                    fields.push(format!("Total Content Size: {} B", total_size));
+                }
+                
+                 for f in fields {
+                    *video::CONSOLE_X.lock() = cur_x + 2;
+                    *video::CONSOLE_Y.lock() = cur_y + line;
+                    video::put_str(&f);
+                    line += 1;
+                }
+            }
+        } else {
+             video::put_str("  Status: Not Found");
+        }
+    } else {
+        match find_inode(&path) {
+            Ok(inode) => {
+                if let Ok(stat) = inode.stat() {
+                    let mut line = 1;
+                    let mut fields = vec![
+                        (format!("Name: {}", name)),
+                        (format!("Path: {}", path)),
+                        (format!("Size: {} Bytes", stat.size)),
+                        (format!("Type: {:?}", stat.file_type)),
+                        (format!("UID: {}  GID: {}", stat.uid, stat.gid)),
+                        (format!("Mode: o{:o}", stat.mode)),
+                    ];
+                    
+                    if stat.file_type == vfs::FileType::Directory {
+                        let total_size = calculate_dir_size(&inode);
+                        fields.push(format!("Total Content Size: {} B", total_size));
+                    }
+                    
+                    for f in fields {
+                        *video::CONSOLE_X.lock() = cur_x + 2;
+                        *video::CONSOLE_Y.lock() = cur_y + line;
+                        video::put_str(&f);
+                        line += 1;
+                    }
+                }
+            },
+            Err(_) => {
+                video::put_str("  Status: Not Found");
+            }
+        }
+    }
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = cur_y + 11;
+}
+
+fn cmd_stat(args: &[&str]) {
+    if args.len() < 2 { video::put_str("Usage: stat <file>\n"); return; }
+    cmd_prop(&args[1..]);
+}
+
+fn cmd_examples() {
+    video::put_str("Deploying Universal Industrial Test Suite...\n");
+    
+    let examples = [
+        ("hello.c", "#include <stdio.h>\nint main() {\n  printf(\"Hello from Ainux C!\\n\");\n  return 0;\n}"),
+        ("test.s", ".section .text\n.global _start\n_start:\n  movq $1, %rax\n  movq $1, %rdi\n  syscall\n  ret"),
+        ("logic.v", "PUSH 100\nPUSH 100\nPUSH 50\nPUSH 50\nRECT\nEXIT"),
+        ("sim.q", "Q_SET\nQ_HAD 0\nQ_MEAS 0\nPRINT\nEXIT"),
+    ];
+    
+    for (name, content) in examples {
+        match find_parent_and_name(name) {
+            Ok((parent, base)) => {
+                let inode_res = match parent.lookup(&base) {
+                    Ok(i) => Ok(i),
+                    Err(_) => parent.create(&base, vfs::FileType::File),
+                };
+                
+                if let Ok(inode) = inode_res {
+                    if let Ok(h) = inode.open(0) {
+                        let _ = h.truncate();
+                        let _ = h.write(content.as_bytes(), 0);
+                        video::put_str(&format!("  [+] Created {}\n", name));
+                    }
+                }
+            },
+            Err(_) => {
+                video::put_str(&format!("  [!] Failed to resolve path for {}\n", name));
+            }
+        }
+    }
+    video::put_str("Done. Try 'run hello.c' or 'sim.q -prop'\n");
 }
 
 fn u16_from_str(s: &str) -> Option<u16> {
@@ -544,23 +686,20 @@ fn cmd_chmod(args: &[&str]) {
     if args.len() < 3 { video::put_str("Usage: chmod <mode> <file>\n"); return; }
     let mode_str = args[1];
     let path = resolve_path(args[2]);
-    let name = path.rsplit('/').next().unwrap_or(&path); // Naive
     
     let mode = match octal_from_str(mode_str) {
         Some(m) => m,
         None => { video::put_str("Invalid mode (use octal, e.g. 755)\n"); return; }
     };
     
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        if let Ok(inode) = root_inode.lookup(name) {
+    match find_inode(&path) {
+        Ok(inode) => {
              match inode.chmod(mode) {
                  Ok(_) => video::put_str("Chmod success.\n"),
                  Err(_) => video::put_str("Chmod failed.\n"),
              }
-        } else {
-             video::put_str("File not found.\n");
-        }
+        },
+        Err(_) => video::put_str("File not found.\n"),
     }
 }
 
@@ -568,40 +707,35 @@ fn cmd_chown(args: &[&str]) {
     if args.len() < 3 { video::put_str("Usage: chown <uid> <file>\n"); return; }
     let uid_str = args[1];
     let path = resolve_path(args[2]);
-    let name = path.rsplit('/').next().unwrap_or(&path);
     
     let uid = match u16_from_str(uid_str) {
         Some(u) => u,
         None => { video::put_str("Invalid uid\n"); return; }
     };
     
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        if let Ok(inode) = root_inode.lookup(name) {
+    match find_inode(&path) {
+        Ok(inode) => {
              // Basic: set gid=uid for now
              match inode.chown(uid, uid) {
                  Ok(_) => video::put_str("Chown success.\n"),
                  Err(_) => video::put_str("Chown failed.\n"),
              }
-        } else {
-             video::put_str("File not found.\n");
-        }
+        },
+        Err(_) => video::put_str("File not found.\n"),
     }
 }
 
 fn cmd_rm(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: rm <file>\n"); return; }
-    let path = resolve_path(args[1]);
-    let name = path.rsplit('/').next().unwrap_or(&path);
     
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        // We need to call unlink on the PARENT directory.
-        // For now, assuming everything is in root.
-        match root_inode.unlink(name) {
-            Ok(_) => video::put_str("Deleted.\n"),
-            Err(_) => video::put_str("Delete failed (Not found?).\n"),
-        }
+    match find_parent_and_name(args[1]) {
+        Ok((parent, name)) => {
+            match parent.unlink(&name) {
+                Ok(_) => video::put_str("Deleted.\n"),
+                Err(_) => video::put_str("Delete failed.\n"),
+            }
+        },
+        Err(_) => video::put_str("Path not found.\n"),
     }
 }
 
@@ -644,7 +778,17 @@ fn cmd_time() {
     let am_pm = if t.hours >= 12 { "PM" } else { "AM" };
     let hour_12 = if t.hours == 0 { 12 } else if t.hours > 12 { t.hours - 12 } else { t.hours };
 
-    video::put_str(&format!("{} {:02}, {}  {:02}:{:02}:{:02} {} UTC\n", m_str, t.day, t.year, hour_12, t.minutes, t.seconds, am_pm));
+    let time_str = format!("{} {:02}, {}  {:02}:{:02}:{:02} {}", m_str, t.day, t.year, hour_12, t.minutes, t.seconds, am_pm);
+    
+    let cur_x = *video::CONSOLE_X.lock();
+    let cur_y = video::prepare_y_for_height(3);
+    
+    video::draw_tui_title_box(cur_x, cur_y, time_str.len() + 4, 3, "SYSTEM TIME", 0x00AAAAFF);
+    *video::CONSOLE_X.lock() = cur_x + 2;
+    *video::CONSOLE_Y.lock() = cur_y + 1;
+    video::put_str(&time_str);
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = cur_y + 3;
 }
 
 fn cmd_shutdown() {
@@ -653,72 +797,41 @@ fn cmd_shutdown() {
 }
 
 fn cmd_ls(args: &[&str]) {
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-        // If args[1], resolve it. Else use CWD.
-        // Currently VFS only reads ROOT inode content.
-        // So we just show root content but pretend it's CWD if CWD==/
-        
-        let target = if args.len() > 1 { resolve_path(args[1]) } else { get_cwd() };
-        
-        // Need VFS walk. 
-        // Logic: if target == "/", read root_inode.
-        // if target == "/dir", lookup "dir", then read it.
-        
-        let target_inode = if target == "/" {
-             // Clone ARC? No, we have &Inode via deref?
-             // We need to return an Arc clone or ref.
-             // root_inode is Arc<dyn Inode>.
-             Ok(root_inode.clone())
-        } else {
-             // Strip leading /
-             let rel = &target[1..];
-             root_inode.lookup(rel)
-        };
-        
-        match target_inode {
-            Ok(inode) => {
-                 match inode.read_dir() {
-                     Ok(files) => {
-                         for name in files {
-                             video::put_str(&name);
-                             video::put_char('\n');
-                         }
-                     },
-                     Err(_) => video::put_str("Error listing directory.\n"),
-                 }
-            },
-            Err(_) => video::put_str("Directory not found.\n"),
-        }
-    } else {
-        video::put_str("VFS not initialized.\n");
+    let target = if args.len() < 2 { get_cwd() } else { resolve_path(args[1]) };
+    
+    match find_inode(&target) {
+        Ok(inode) => {
+            match inode.read_dir() {
+                Ok(files) => {
+                    for name in files {
+                        video::put_str(&name);
+                        video::put_char('\n');
+                    }
+                },
+                Err(_) => video::put_str("ls: Error reading directory.\n"),
+            }
+        },
+        Err(_) => video::put_str("ls: Directory not found.\n"),
     }
 }
 
 fn cmd_cat(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: cat <filename>\n"); return; }
-    let path = resolve_path(args[1]);
-    let name = path.rsplit('/').next().unwrap_or(&path); // Naive
     
-    // Stub: Always lookup in ROOT for now because resolving full path objects is hard without "Walk"
-    // Using simple lookup in root for demo
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         match root_inode.lookup(name) { // name is "file.txt"
-             Ok(inode) => {
-                 if let Ok(handle) = inode.open(0) {
-                      let mut buf = vec![0u8; 1024]; 
-                      if let Ok(n) = handle.read(&mut buf, 0) {
-                          if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
-                               video::put_str(s); video::put_char('\n');
-                          } else {
-                               video::put_str("<Binary Content>\n");
-                          }
+    match find_inode(args[1]) {
+        Ok(inode) => {
+             if let Ok(handle) = inode.open(0) {
+                  let mut buf = vec![0u8; 4096]; 
+                  if let Ok(n) = handle.read(&mut buf, 0) {
+                      if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+                           video::put_str(s); video::put_char('\n');
+                      } else {
+                           video::put_str("<Binary Content>\n");
                       }
-                 }
-             },
-             Err(_) => video::put_str("File not found in root (Path traversal limited).\n"),
-         }
+                  }
+             }
+        },
+        Err(_) => video::put_str("cat: File not found.\n"),
     }
 }
 
@@ -765,14 +878,18 @@ fn print_digit(val: u8) {
 fn cmd_uptime() {
     let ticks = crate::process::scheduler::get_ticks();
     let seconds = ticks / 100;
-    // Simple print
-    video::put_str("Uptime: ");
-    print_digit((seconds / 60) as u8); // Minutes
-    video::put_char('m');
-    video::put_char(' ');
-    print_digit((seconds % 60) as u8); // Seconds
-    video::put_char('s');
-    video::put_str("\n");
+    let up_str = format!("{}m {}s", seconds / 60, seconds % 60);
+    
+    let cur_x = *video::CONSOLE_X.lock();
+    let cur_y = video::prepare_y_for_height(3);
+    
+    video::draw_tui_title_box(cur_x, cur_y, up_str.len() + 12, 3, "UPTIME", 0x0000FF00);
+    *video::CONSOLE_X.lock() = cur_x + 2;
+    *video::CONSOLE_Y.lock() = cur_y + 1;
+    video::put_str("System active: ");
+    video::put_str(&up_str);
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = cur_y + 3;
 }
 
 fn cmd_test_threads() {
@@ -844,35 +961,43 @@ extern "C" fn ipc_sender() {
 
 
 fn cmd_test_write() {
-    video::put_str("Testing File Write...\n");
-    let filename = "hello.txt";
-    let text = "UpdatedContent!";
+    video::put_str("Testing Relative File Write...\n");
+    let filename = "test_rel.txt";
+    let text = "RelativeSuccess!";
     
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         // 1. Write
-         if let Ok(inode) = root_inode.lookup(filename) {
-             if let Ok(handle) = inode.open(0) {
-                  match handle.write(text.as_bytes(), 0) {
-                      Ok(_) => video::put_str("Write Success.\n"),
-                      Err(_) => video::put_str("Write Failed.\n"),
-                  }
-             }
-         }
-         
-         // 2. Read Back
-         if let Ok(inode) = root_inode.lookup(filename) {
-             if let Ok(handle) = inode.open(0) {
-                  let mut buf = vec![0u8; 32];
-                  if let Ok(n) = handle.read(&mut buf, 0) {
-                      if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
-                          video::put_str("Read Back: ");
-                          video::put_str(s);
-                          video::put_str("\n");
-                      }
-                  }
-             }
-         }
+    // 1. Write via helpers
+    match find_parent_and_name(filename) {
+        Ok((parent, name)) => {
+            let inode_res = match parent.lookup(&name) {
+                Ok(i) => Ok(i),
+                Err(_) => parent.create(&name, vfs::FileType::File),
+            };
+            
+            if let Ok(inode) = inode_res {
+                if let Ok(handle) = inode.open(0) {
+                    let _ = handle.write(text.as_bytes(), 0);
+                    video::put_str("Write Success.\n");
+                }
+            }
+        },
+        Err(_) => video::put_str("Test Failed: Cannot find parent.\n"),
+    }
+    
+    // 2. Read Back via find_inode
+    match find_inode(filename) {
+        Ok(inode) => {
+            if let Ok(handle) = inode.open(0) {
+                let mut buf = vec![0u8; 32];
+                if let Ok(n) = handle.read(&mut buf, 0) {
+                    video::put_str("Read Back: ");
+                    if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+                        video::put_str(s);
+                    }
+                    video::put_str("\n");
+                }
+            }
+        },
+        Err(_) => video::put_str("Read Back Failed.\n"),
     }
 }
 
@@ -884,22 +1009,21 @@ pub fn cmd_exec(args: &[&str]) {
     let filename = args[1];
     
     // Check file exists and read magic
-    let root = vfs::ROOT.lock();
     let mut magic = [0u8; 4];
-    if let Some(r) = root.as_ref() {
-        if let Ok(inode) = r.lookup(filename) {
+    match find_inode(filename) {
+        Ok(inode) => {
             if let Ok(handle) = inode.open(0) {
                 let _ = handle.read(&mut magic, 0);
             } else {
                 video::put_str("exec: Cannot open file.\n");
                 return;
             }
-        } else {
+        },
+        Err(_) => {
             video::put_str("exec: File not found.\n");
             return;
         }
     }
-    core::mem::drop(root);
 
     video::put_str(&format!("Executing {}...\n", filename));
 
@@ -942,21 +1066,47 @@ fn cmd_top() {
     video::clear();
 }
 
-fn cmd_tree(_args: &[&str]) {
-    // Recursive ls (Stub for now: just ls root)
-    video::put_str(".\n");
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         match root_inode.read_dir() {
-             Ok(files) => {
-                 for name in files {
-                     video::put_str("├── ");
-                     video::put_str(&name);
-                     video::put_char('\n');
-                 }
-             },
-             Err(_) => {},
-         }
+fn cmd_run(args: &[&str]) {
+    if args.len() < 2 {
+        video::put_str("Usage: run <filename>\n");
+        return;
+    }
+    let filename = args[1];
+    
+    if filename.ends_with(".v") || filename.ends_with(".q") {
+        crate::process::voyager_vm::run_voyager_file(filename);
+    } else if filename.ends_with(".s") || filename.ends_with(".asm") {
+        let target = "/tmp/exec.alo";
+        crate::apps::nuxa::cmd_nuxa(&["nuxa", filename, "-o", target]);
+        cmd_exec(&["exec", target]);
+    } else if filename.ends_with(".c") {
+        let target = "/tmp/exec.alo";
+        crate::apps::nuxc::cmd_nuxc(&["nuxc", filename, "-o", target]);
+        cmd_exec(&["exec", target]);
+    } else {
+        video::put_str("run: Unsupported file extension.\n");
+    }
+}
+
+fn cmd_tree(args: &[&str]) {
+    let target = if args.len() < 2 { get_cwd() } else { resolve_path(args[1]) };
+    video::put_str(&target);
+    video::put_char('\n');
+    
+    match find_inode(&target) {
+        Ok(inode) => {
+             match inode.read_dir() {
+                 Ok(files) => {
+                     for name in files {
+                         video::put_str("├── ");
+                         video::put_str(&name);
+                         video::put_char('\n');
+                     }
+                 },
+                 Err(_) => {},
+             }
+        },
+        Err(_) => video::put_str("Path not found.\n"),
     }
 }
 
@@ -969,37 +1119,44 @@ fn cmd_dmesg() {
 
 fn cmd_cp(args: &[&str]) {
     if args.len() < 3 { video::put_str("Usage: cp <src> <dst>\n"); return; }
-    // Read Src
-    let src = args[1];
-    let dst = args[2];
+    let src_path = args[1];
+    let dst_path = args[2];
     
     let mut data = Vec::new();
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-          if let Ok(inode) = root_inode.lookup(src) {
-              if let Ok(handle) = inode.open(0) {
-                   let mut buf = vec![0u8; 4096];
-                   if let Ok(n) = handle.read(&mut buf, 0) {
-                       for i in 0..n { data.push(buf[i]); }
-                   }
-              }
-          } else {
-               video::put_str("Src not found.\n"); return;
-          }
-           
-          // Write Dst (Needs create/write support)
-          // For now, assume create if not exists
-          // crate::drivers::video::put_str("Copying... (Write stubbed)\n");
-          if let Ok(_) = root_inode.create(dst, vfs::FileType::File) {
-               if let Ok(inode) = root_inode.lookup(dst) {
-                   if let Ok(handle) = inode.open(0) {
+    
+    // Read Src
+    match find_inode(src_path) {
+        Ok(inode) => {
+            if let Ok(handle) = inode.open(0) {
+                 let mut buf = vec![0u8; 4096];
+                 if let Ok(n) = handle.read(&mut buf, 0) {
+                     for i in 0..n { data.push(buf[i]); }
+                 }
+            }
+        },
+        Err(_) => { video::put_str("Src not found.\n"); return; }
+    }
+    
+    // Write Dst
+    match find_parent_and_name(dst_path) {
+        Ok((parent, name)) => {
+            let inode = match parent.lookup(&name) {
+                Ok(inv) => Ok(inv),
+                Err(_) => parent.create(&name, vfs::FileType::File),
+            };
+            
+            match inode {
+                Ok(inv) => {
+                    if let Ok(handle) = inv.open(0) {
+                        let _ = handle.truncate();
                         let _ = handle.write(&data, 0);
                         video::put_str("Copied.\n");
-                   }
-               }
-          } else {
-               video::put_str("Create failed (Read-only FS?).\n");
-          }
+                    }
+                },
+                Err(_) => video::put_str("Copy failed: Could not create destination.\n"),
+            }
+        },
+        Err(_) => video::put_str("Copy failed: Destination path invalid.\n"),
     }
 }
 
@@ -1029,23 +1186,27 @@ fn cmd_rmdir(args: &[&str]) {
 
 fn cmd_mkdir(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: mkdir <dir>\n"); return; }
-    let root = vfs::ROOT.lock();
-    if let Some(inode) = root.as_ref() {
-        match inode.mkdir(args[1]) {
-            Ok(_) => video::put_str("Created directory.\n"),
-            Err(_) => video::put_str("Failed to create directory.\n"),
-        }
+    match find_parent_and_name(args[1]) {
+        Ok((parent, name)) => {
+            match parent.mkdir(&name) {
+                Ok(_) => video::put_str("Created directory.\n"),
+                Err(_) => video::put_str("Failed to create directory.\n"),
+            }
+        },
+        Err(_) => video::put_str("Path not found.\n"),
     }
 }
 
 fn cmd_touch(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: touch <file>\n"); return; }
-    let root = vfs::ROOT.lock();
-    if let Some(inode) = root.as_ref() {
-        match inode.create(args[1], vfs::FileType::File) {
-            Ok(_) => video::put_str("Touched.\n"),
-            Err(_) => video::put_str("Failed.\n"),
-        }
+    match find_parent_and_name(args[1]) {
+        Ok((parent, name)) => {
+            match parent.create(&name, vfs::FileType::File) {
+                Ok(_) => video::put_str("Touched.\n"),
+                Err(_) => video::put_str("Failed.\n"),
+            }
+        },
+        Err(_) => video::put_str("Path not found.\n"),
     }
 }
 
@@ -1294,6 +1455,7 @@ fn print_month(month: usize, year: usize, highlight_day: bool, now_month: usize,
 }
 
 fn cmd_cal(args: &[&str]) {
+    let month_names = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     let now = rtc::read_time();
     let mut month = now.month as usize;
     let mut year = now.year;
@@ -1336,13 +1498,27 @@ fn cmd_cal(args: &[&str]) {
         i += 1;
     }
 
+    let cur_x = *video::CONSOLE_X.lock();
+    let box_height = if full_year { 100 } else { 10 };
+    let cur_y = video::prepare_y_for_height(box_height);
+    
+    let title = format!("{} CALENDAR", if full_year { format!("{}", year) } else { month_names[month].to_uppercase() });
+    video::draw_tui_title_box(cur_x, cur_y, 25, box_height, &title, 0x00FF8800);
+    
+    *video::CONSOLE_X.lock() = cur_x + 2;
+    *video::CONSOLE_Y.lock() = cur_y + 1;
+
     if full_year {
         for m in 1..=12 {
             print_month(m, year, highlight_day, now.month as usize, now.year, now.day as usize);
+            video::put_char('\n');
         }
     } else {
         print_month(month, year, highlight_day, now.month as usize, now.year, now.day as usize);
     }
+    
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = cur_y + box_height;
 }
 
 fn cmd_clock() {
@@ -1470,12 +1646,12 @@ fn cmd_write(args: &[&str]) {
     // 1. Read existing file if any
     let mut file_content = Vec::new();
     let abs_path = resolve_path(filename);
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         if let Ok(inode) = root_inode.lookup(filename) {
-             if let Ok(handle) = inode.open(0) {
+    
+    match find_inode(filename) {
+        Ok(inode) => {
+            if let Ok(handle) = inode.open(0) {
                  // Basic read all
-                 let mut buf = vec![0u8; 1024];
+                 let mut buf = vec![0u8; 4096];
                  let mut offset = 0;
                  loop {
                      if let Ok(n) = handle.read(&mut buf, offset) {
@@ -1484,8 +1660,9 @@ fn cmd_write(args: &[&str]) {
                          offset += n as u64;
                      } else { break; }
                  }
-             }
-         }
+            }
+        },
+        Err(_) => {} // New File
     }
     
     // Editor State
@@ -1549,36 +1726,18 @@ fn cmd_write(args: &[&str]) {
                  video::put_str("Exited Editor.\n");
                  break;
             } else if ch == 19 { // Ctrl+S
-                 // Write to File
-                 if let Some(root_inode) = root.as_ref() {
-                      // Remove old file first? simple overwrite logic needed in VFS
-                      // For now, let's try creating/overwriting
-                      // We need create support in shell or VFS.
-                      // Since we don't have easy create yet, we rely on `touch` having created it or existing file.
-                      // Or we implement create logic properly.
-                      
-                      // For now, try to open. If fail, parent.create() - implemented?
-                      // Use VFS create.
-                      let dir_name = if abs_path.contains('/') {
-                          let pos = abs_path.rfind('/').unwrap();
-                          if pos == 0 { "/" } else { &abs_path[..pos] }
-                      } else { "." };
-                      let base_name = if abs_path.contains('/') {
-                          let pos = abs_path.rfind('/').unwrap();
-                          &abs_path[pos+1..]
-                      } else { &abs_path };
-                      
-                      let dir_node = if dir_name == "/" {
-                          root.as_ref().map(|i| i.clone())
-                      } else {
-                          root_inode.lookup(dir_name).ok()
-                      };
-
-                      if let Some(dir) = dir_node {
-                          // Try create
-                          if let Ok(inode) = dir.create(base_name, vfs::FileType::File) {
-                               if let Ok(handle) = inode.open(0) {
+                 // Write to File via VFS Helper
+                 match find_parent_and_name(&abs_path) {
+                     Ok((parent, name)) => {
+                         let inode_res = match parent.lookup(&name) {
+                             Ok(i) => Ok(i),
+                             Err(_) => parent.create(&name, vfs::FileType::File),
+                         };
+                         
+                         if let Ok(inode) = inode_res {
+                              if let Ok(handle) = inode.open(0) {
                                    let bytes = buffer.as_bytes();
+                                   let _ = handle.truncate();
                                    match handle.write(bytes, 0) {
                                        Ok(_) => {
                                             unsafe {
@@ -1592,23 +1751,15 @@ fn cmd_write(args: &[&str]) {
                                             video::put_str(" [ERR]   ");
                                        }
                                    }
-                               }
-                          } else {
-                              // Maybe exists? lookup and write
-                              if let Ok(inode) = dir.lookup(base_name) {
-                                  if let Ok(handle) = inode.open(0) {
-                                       let bytes = buffer.as_bytes();
-                                       let _ = handle.write(bytes, 0);
-                                        unsafe {
-                                            *video::CONSOLE_X.lock() = 0;
-                                            *video::CONSOLE_Y.lock() = 0;
-                                        }
-                                        video::put_str(" [SAVED] ");
-                                  }
                               }
-                          }
-                      }
+                         }
+                     },
+                     Err(_) => {
+                          unsafe { *video::CONSOLE_X.lock() = 0; *video::CONSOLE_Y.lock() = 0; }
+                          video::put_str(" [PATH ERR] ");
+                     }
                  }
+
             } else if ch == 0x08 || ch == 0x7F { // Backspace
                  if cursor > 0 {
                      buffer.remove(cursor - 1);
@@ -1636,14 +1787,12 @@ fn cmd_view(args: &[&str]) {
     if args.len() < 2 { video::put_str("Usage: view <filename>\n"); return; }
     let filename = args[1];
     
-    let path = resolve_path(filename);
-    let root = vfs::ROOT.lock();
-    if let Some(root_inode) = root.as_ref() {
-         if let Ok(inode) = root_inode.lookup(&path) {
+    match find_inode(filename) {
+         Ok(inode) => {
              if let Ok(handle) = inode.open(0) {
                  // Read File
                  let mut data = Vec::new();
-                 let mut buf = vec![0u8; 1024];
+                 let mut buf = vec![0u8; 4096];
                  let mut offset = 0;
                  loop {
                      if let Ok(n) = handle.read(&mut buf, offset) {
@@ -1720,7 +1869,8 @@ fn cmd_view(args: &[&str]) {
                      } 
                  }
              }
-         } else {
+         },
+         Err(_) => {
              video::put_str("File not found.\n");
          }
     }
