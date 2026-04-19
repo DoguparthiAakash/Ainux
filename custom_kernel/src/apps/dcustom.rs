@@ -9,13 +9,13 @@ use alloc::format;
 use crate::drivers::video::{self, THEME};
 use crate::drivers::keyboard;
 
-pub const WP_BG: u32 = 0x000000AA;    // Whiptail Blue
-pub const WP_BOX: u32 = 0x00AAAAAA;   // Dialog Gray
-pub const WP_SHADOW: u32 = 0x00555555;// Shadow Dark Gray
-pub const WP_TITLE: u32 = 0x00AA0000; // Title Bar Red-ish
-pub const WP_SEL: u32 = 0x00AA0000;   // Selected Red
-pub const WP_TEXT: u32 = 0x00000000;  // Black text
-pub const WP_WHITE: u32 = 0xFFFFFFFF; // White text
+pub const WP_BG: u32 = 0x00111122;    // Midnight Blue-Black
+pub const WP_BOX: u32 = 0x002D2D2D;   // Deep Charcoal Gray
+pub const WP_SHADOW: u32 = 0x000F0F0F;// Near Black Shadow
+pub const WP_TITLE: u32 = 0x000088AA; // Teal Header
+pub const WP_SEL: u32 = 0x0000AAAA;   // Cyan Highlight
+pub const WP_TEXT: u32 = 0x00DDDDDD;  // Soft White Text
+pub const WP_WHITE: u32 = 0xFFFFFFFF; // Pure White
 
 const COLOR_LIST: [(&str, u32); 12] = [
     ("Black",   0x00000000), ("White",   0xFFFFFFFF), ("Red",     0x00FF0000),
@@ -246,14 +246,14 @@ pub fn draw_dialog(d: &Dialog) {
 }
 
 pub fn draw_box_lines(x: usize, y: usize, w: usize, h: usize, fg: u32, bg: u32) {
-    video::put_char_at(x, y, '+', fg, bg);
-    video::put_char_at(x + w - 1, y, '+', fg, bg);
-    for i in 1..(w - 1) { video::put_char_at(x + i, y, '-', fg, bg); }
-    for i in 1..(h - 1) { video::put_char_at(x, y + i, '|', fg, bg); }
-    for i in 1..(h - 1) { video::put_char_at(x + w - 1, y + i, '|', fg, bg); }
-    for i in 1..(w - 1) { video::put_char_at(x + i, y + h - 1, '-', fg, bg); }
-    video::put_char_at(x, y + h - 1, '+', fg, bg);
-    video::put_char_at(x + w - 1, y + h - 1, '+', fg, bg);
+    video::put_char_at(x, y, '╔', fg, bg);
+    video::put_char_at(x + w - 1, y, '╗', fg, bg);
+    for i in 1..(w - 1) { video::put_char_at(x + i, y, '═', fg, bg); }
+    for i in 1..(h - 1) { video::put_char_at(x, y + i, '║', fg, bg); }
+    for i in 1..(h - 1) { video::put_char_at(x + w - 1, y + i, '║', fg, bg); }
+    for i in 1..(w - 1) { video::put_char_at(x + i, y + h - 1, '═', fg, bg); }
+    video::put_char_at(x, y + h - 1, '╚', fg, bg);
+    video::put_char_at(x + w - 1, y + h - 1, '╝', fg, bg);
 }
 
 pub fn draw_input_box(title: &'static str, prompt: &str, buffer: &str, masked: bool) {

@@ -75,12 +75,19 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
     int px = x * 8;
     int py = y * 12;  // 12 pixel line height
     
+    // Draw Font Bits (Top 8 pixels)
     for (int dy = 0; dy < 8; dy++) {
         uint8_t row = glyph[dy];
         for (int dx = 0; dx < 8; dx++) {
             uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
-            if (color != bg_color) gfx_put_pixel_safe(px + dx, py + dy, color);
-            else gfx_put_pixel_safe(px + dx, py + dy, color);
+            gfx_put_pixel_safe(px + dx, py + dy, color);
+        }
+    }
+    
+    // Fill Gap (Bottom 4 pixels) with background color
+    for (int dy = 8; dy < 12; dy++) {
+        for (int dx = 0; dx < 8; dx++) {
+            gfx_put_pixel_safe(px + dx, py + dy, bg_color);
         }
     }
 }

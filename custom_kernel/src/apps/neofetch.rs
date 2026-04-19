@@ -176,7 +176,7 @@ pub fn cmd_neofetch() {
 
     video::put_str("\n");
     video::put_str(logo[0]); video::put_str("root@ainux\n");
-    video::put_str(logo[1]); video::put_str("───────────────────────────\n");
+    video::put_str(logo[1]); video::put_str("████████████████████████████\n");
     video::put_str(logo[2]); video::put_str("OS:         Ainux v0.2 x86_64\n");
     video::put_str(logo[3]); video::put_str("Kernel:     Ainux Kernel (GRUB/SMP)\n");
     video::put_str(logo[4]); video::put_str(&format!("Uptime:     {}\n", uptime));

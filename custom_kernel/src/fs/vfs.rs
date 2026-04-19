@@ -113,9 +113,21 @@ pub fn resolve_path(path: &str) -> VfsResult<Arc<dyn Inode>> {
         if rel_path.is_empty() {
              return Ok(m.fs.root_inode());
         }
-        return m.fs.root_inode().lookup(rel_path);
+        return recursive_lookup(m.fs.root_inode(), rel_path);
     }
     
     // Default to root
-    root().lookup(path)
+    recursive_lookup(root(), path)
+}
+
+fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() { return Ok(start); }
+    
+    let mut current = start;
+    for bit in path.split('/') {
+        if bit.is_empty() { continue; }
+        current = current.lookup(bit)?;
+    }
+    Ok(current)
 }

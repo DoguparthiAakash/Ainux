@@ -9,6 +9,10 @@ pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None };
 
 static mut TICKS: u64 = 0;
 
+pub fn get_ticks() -> u64 {
+    unsafe { TICKS }
+}
+
 pub fn init() {
     let mut tasks = TASKS.lock();
     // Initialize Task 0 as the current running kernel task
@@ -84,11 +88,6 @@ pub fn set_priority(pid: usize, priority: u8) -> isize {
     }
     -1
 }
-
-pub fn get_ticks() -> u64 {
-    unsafe { TICKS }
-}
-
 pub fn get_current_pid() -> usize {
     crate::cpu::smp::get_current_pid()
 }
