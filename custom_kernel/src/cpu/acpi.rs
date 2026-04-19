@@ -426,6 +426,11 @@ pub fn power_off() {
     drop(state); // Release lock before I/O
 
     unsafe {
+        // ---- Fallback 1: QEMU / Bochs / VirtualBox specific IO port ----
+        // This is a common "exit" port for emulators to quit immediately.
+        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16);
+        
+        // ---- Main: ACPI S5 Transition ----
         // Write SLP_TYP | SLP_EN (bit 13)
         let val_a = slp_a | 0x2000;
         core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") val_a);
@@ -435,9 +440,10 @@ pub fn power_off() {
             core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") val_b);
         }
 
-        // Halt loop if hardware didn't shut down
+        // ---- Final Fallback: Halt loop ----
         loop {
-            core::arch::asm!("cli; hlt");
+            core::arch::asm!("cli");
+            core::arch::asm!("hlt");
         }
     }
 }

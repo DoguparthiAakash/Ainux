@@ -26,6 +26,9 @@ pub mod ipc;
 // pub mod nux; // Disabled (nux_portable missing)
 
 pub mod sem;
+pub mod config;
+
+pub static LOAD_SAFE_DEFAULTS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 
 pub fn hlt() {
@@ -77,6 +80,10 @@ pub extern "C" fn _start() -> ! {
     mm::heap::init();
     let _ = write!(serial, "Heap Initialized.\n");
 
+    let _ = write!(serial, "Initializing Slab Allocator...\n");
+    mm::slab::init();
+    let _ = write!(serial, "Slab Allocator Initialized.\n");
+
     // ─── Phase 2: Core CPU Structures ───
     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
     let _ = write!(serial, "Initializing GDT...\n");
@@ -86,6 +93,14 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Initializing IDT...\n");
     cpu::idt::init();
     let _ = write!(serial, "IDT Initialized.\n");
+
+    // Initialize BSP's PRCB for per-cpu storage
+    unsafe {
+        let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
+        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
+        cpu::percpu::write_gs_base(bsp_prcb_addr);
+    }
+    let _ = write!(serial, "BSP PRCB Initialized (GS_BASE set).\n");
 
     let _ = write!(serial, "Initializing PIC (legacy)...\n");
     unsafe { cpu::pic::init(); }
@@ -103,7 +118,7 @@ pub extern "C" fn _start() -> ! {
     cpu::smp::init();
 
     // Now we know CPU count — init zone allocator with correct count
-    let cpu_count = cpu::smp::CPU_COUNT.load(core::sync::atomic::Ordering::Relaxed) as usize;
+    let cpu_count = cpu::percpu::get_cpu_count();
     let _ = write!(serial, "Initializing Zone Allocator ({} CPUs)...\n", cpu_count);
     mm::zone::init(cpu_count.max(1));
     let _ = write!(serial, "Zone Allocator Initialized.\n");
@@ -217,6 +232,22 @@ pub extern "C" fn _start() -> ! {
             fs::vfs::init(ext4);
             let _ = write!(serial, "VFS: Initialized.\n");
             
+            // Initialize System Configuration
+            if !LOAD_SAFE_DEFAULTS.load(core::sync::atomic::Ordering::SeqCst) {
+                config::load();
+                let _ = write!(serial, "Config: Loaded from disk.\n");
+            } else {
+                config::reset_to_defaults();
+                let _ = write!(serial, "Config: Safety Mode (Defaults Loaded).\n");
+            }
+
+            // Apply Config (Example: Network)
+            {
+                if let Some(sys_config) = config::CONFIG.lock().as_ref() {
+                    let _ = write!(serial, "Config Applied: Hostname='{}' IP='{}'\n", sys_config.hostname, sys_config.ip_address);
+                }
+            }
+            
             // TEST: Read hello.txt
             let root = fs::vfs::ROOT.lock();
             if let Some(root_inode) = root.as_ref() {
@@ -264,8 +295,9 @@ fn boot_menu() {
     drivers::video::put_str("1. Start Kernel (Shell)\n");
     drivers::video::put_str("2. Network Diagnostics\n");
     drivers::video::put_str("3. Reboot\n");
-    drivers::video::put_str("4. Shutdown\n\n");
-    drivers::video::put_str("Select option [1-4]: ");
+    drivers::video::put_str("4. Shutdown\n");
+    drivers::video::put_str("5. Load Default Config & Start Shell\n\n");
+    drivers::video::put_str("Select option [1-5]: ");
 
     loop {
         if let Some(c) = drivers::keyboard::pop_char() {
@@ -299,6 +331,11 @@ fn boot_menu() {
                         core::arch::asm!("out dx, ax", in("dx") 0x604 as u16, in("ax") 0x2000 as u16);
                         loop { core::arch::asm!("hlt"); }
                     }
+                },
+                '5' => {
+                    drivers::video::put_str("5\nLoading Defaults...\n");
+                    LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
+                    return;
                 },
                 _ => {}
             }

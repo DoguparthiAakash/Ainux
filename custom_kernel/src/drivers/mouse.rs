@@ -1,35 +1,119 @@
 use core::arch::{asm, naked_asm};
 use crate::cpu::pic::notify_eoi;
+use crate::drivers::video;
+use spin::Mutex;
+
+#[derive(Clone, Copy)]
+pub struct MouseEvent {
+    pub x: isize,
+    pub y: isize,
+    pub buttons: u8, // bit 0: left, bit 1: right, bit 2: middle
+}
+
+const BUFFER_SIZE: usize = 128;
+struct MouseRingBuffer {
+    data: [MouseEvent; BUFFER_SIZE],
+    read_pos: usize,
+    write_pos: usize,
+    count: usize,
+}
+
+impl MouseRingBuffer {
+    const fn new() -> Self {
+        Self {
+            data: [MouseEvent { x: 0, y: 0, buttons: 0 }; BUFFER_SIZE],
+            read_pos: 0,
+            write_pos: 0,
+            count: 0,
+        }
+    }
+    fn push(&mut self, ev: MouseEvent) {
+        if self.count < BUFFER_SIZE {
+            self.data[self.write_pos] = ev;
+            self.write_pos = (self.write_pos + 1) % BUFFER_SIZE;
+            self.count += 1;
+        }
+    }
+    fn pop(&mut self) -> Option<MouseEvent> {
+        if self.count > 0 {
+            let ev = self.data[self.read_pos];
+            self.read_pos = (self.read_pos + 1) % BUFFER_SIZE;
+            self.count -= 1;
+            Some(ev)
+        } else {
+            None
+        }
+    }
+}
+
+static MOUSE_BUFFER: Mutex<MouseRingBuffer> = Mutex::new(MouseRingBuffer::new());
+static mut MOUSE_X: isize = 0;
+static mut MOUSE_Y: isize = 0;
+static mut MOUSE_BUTTONS: u8 = 0;
+
+pub fn pop_event() -> Option<MouseEvent> {
+    MOUSE_BUFFER.lock().pop()
+}
+
+pub fn get_position() -> (isize, isize) {
+    unsafe { (MOUSE_X, MOUSE_Y) }
+}
+
+pub fn get_buttons() -> u8 {
+    unsafe { MOUSE_BUTTONS }
+}
+
+pub fn get_grid_position() -> (usize, usize) {
+    let (x, y) = get_position();
+    // TUI is 8x12 usually
+    ((x / 8) as usize, (y / 12) as usize)
+}
+
+fn update_position(dx: i8, dy: i8, buttons: u8) {
+    unsafe {
+        MOUSE_X += dx as isize;
+        MOUSE_Y -= dy as isize; 
+        MOUSE_BUTTONS = buttons;
+
+        let w = (*video::FRAMEBUFFER_WIDTH.lock() as isize).max(80 * 8);
+        let h = (*video::FRAMEBUFFER_HEIGHT.lock() as isize).max(25 * 12);
+
+        if MOUSE_X < 0 { MOUSE_X = 0; }
+        if MOUSE_Y < 0 { MOUSE_Y = 0; }
+        if MOUSE_X >= w { MOUSE_X = w - 1; }
+        if MOUSE_Y >= h { MOUSE_Y = h - 1; }
+
+        MOUSE_BUFFER.lock().push(MouseEvent {
+            x: MOUSE_X,
+            y: MOUSE_Y,
+            buttons: MOUSE_BUTTONS,
+        });
+    }
+}
 
 pub fn init() {
     unsafe {
         // Enable Auxiliary Device (Mouse)
-        // 1. Wait for Init
         wait_write();
-        outb(0x64, 0xA8); // command: enable aux
+        outb(0x64, 0xA8); 
         
-        // 2. Enable Interrupts
         wait_write();
-        outb(0x64, 0x20); // read command byte
-        wait_read();      // CRITICAL: Wait for controller to put data in 0x60
+        outb(0x64, 0x20); 
+        wait_read();      
         let mut status = inb(0x60);
-        
-        // Ensure Keyboard (bit 0), Mouse (bit 1), and Translation (bit 6) are preserved/enabled
         status |= (1 << 0) | (1 << 1) | (1 << 6); 
         
         wait_write();
-        outb(0x64, 0x60); // write command byte
+        outb(0x64, 0x60); 
         wait_write();
         outb(0x60, status);
         
-        // 3. Defaults
         mouse_write(0xF6); // Set Default
-        mouse_read(); // ACK (0xFA)
+        mouse_read(); 
         
         mouse_write(0xF4); // Enable Streaming
-        mouse_read(); // ACK (0xFA)
+        mouse_read(); 
 
-        // Unmask IRQ12
         crate::cpu::pic::unmask_irq(12);
     }
 }
@@ -86,10 +170,9 @@ extern "C" fn rust_mouse_handler() {
     unsafe {
         let byte = inb(0x60);
         
-        // Simple State Machine
         match MOUSE_CYCLE {
             0 => {
-                if (byte & 0x08) != 0 { // Bit 3 must be 1
+                if (byte & 0x08) != 0 { 
                     MOUSE_BYTE[0] = byte;
                     MOUSE_CYCLE = 1;
                 }
@@ -102,38 +185,15 @@ extern "C" fn rust_mouse_handler() {
                 MOUSE_BYTE[2] = byte;
                 MOUSE_CYCLE = 0;
                 
-                // Process Packet
                 let flags = MOUSE_BYTE[0];
-                let _x = MOUSE_BYTE[1] as i8;
-                let _y = MOUSE_BYTE[2] as i8;
+                let dx = MOUSE_BYTE[1] as i8;
+                let dy = MOUSE_BYTE[2] as i8;
                 
-                // Print "M" to indicate movement
-                 asm!("out dx, al", in("dx") 0x3F8, in("al") 0x4D as u8, options(nomem, nostack, preserves_flags));
-                 
-                 update_position(_x, _y);
+                update_position(dx, dy, flags & 0x07);
             }
             _ => MOUSE_CYCLE = 0,
         }
 
         notify_eoi(12);
     }
-}
-
-static mut MOUSE_X: isize = 400;
-static mut MOUSE_Y: isize = 300;
-
-pub fn get_position() -> (isize, isize) {
-    unsafe { (MOUSE_X, MOUSE_Y) }
-}
-
-fn update_position(dx: i8, dy: i8) {
-    unsafe {
-        MOUSE_X += dx as isize;
-        MOUSE_Y -= dy as isize; // Y is inverted usually
-        if MOUSE_X < 0 { MOUSE_X = 0; }
-        if MOUSE_Y < 0 { MOUSE_Y = 0; }
-        // Clamp to screen? Need access to Width/Height or just assume.
-        if MOUSE_X > 1024 { MOUSE_X = 1024; }
-        if MOUSE_Y > 768 { MOUSE_Y = 768; }
-    }
-}
+}

@@ -158,6 +158,10 @@ pub unsafe fn map_page(virt: u64, phys: u64, flags: u64) -> Result<(), &'static 
 
     *pt_entry = phys | flags;
     flush_tlb(virt);
+    
+    // Maturation: Record allocation in current task metrics
+    crate::process::scheduler::increment_current_page_count();
+    
     Ok(())
 }
 
@@ -255,5 +259,31 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     let pt = slice::from_raw_parts_mut((pt_phys + hhdm_offset) as *mut u64, 512);
 
     pt[p1_idx] = paddr | flags | 1;
+}
+
+/// Creates a new address space (PML4) by copying kernel mappings from the active one.
+pub fn create_address_space() -> u64 {
+    let mut pmm_lock = PMM.lock();
+    if let Some(ref mut pmm) = *pmm_lock {
+        if let Some(pml4_phys) = pmm.alloc_frame() {
+            let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+            let pml4_virt = pml4_phys + hhdm_offset;
+            unsafe {
+                let pml4 = &mut *(pml4_virt as *mut PageTable);
+                pml4.clear();
+                
+                // Copy kernel mappings (top 256 entries)
+                let active = active_pml4();
+                for i in 256..512 {
+                    pml4.entries[i] = active.entries[i];
+                }
+                
+                // Also copy the first entry for identity mapping (TEMPORARY: until bootstrap finished)
+                pml4.entries[0] = active.entries[0];
+            }
+            return pml4_phys;
+        }
+    }
+    0
 }
 

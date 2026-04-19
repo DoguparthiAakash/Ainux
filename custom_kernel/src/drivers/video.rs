@@ -1,10 +1,32 @@
 use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Theme {
+    pub bg: u32,
+    pub fg: u32,
+    pub accent: u32, // Head/Header color
+    pub root: u32,   // root@ainux color
+    pub font_size: u8,
+}
+
+pub static THEME: Mutex<Theme> = Mutex::new(Theme {
+    bg: 0x00000000,
+    fg: 0xFFFFFFFF,
+    accent: 0x00AAAAFF, // Sky blue header
+    root: 0x00FF5555,   // Soft red root
+    font_size: 1,
+});
 
 // C FFI declarations
 extern "C" {
     fn gfx_init(framebuffer_addr: *mut u8, width: u64, height: u64, pitch: u64, bpp: u8);
     fn c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32);
     fn c_clear_screen(color: u32);
+    
+    // Zig-based TUI Core
+    pub fn fast_grid_clear(width: u32, height: u32, fg: u32, bg: u32, char: u32);
+    pub fn draw_tui_shadow(x: u32, y: u32, w: u32, h: u32);
 }
 
 pub static CONSOLE_X: spin::Mutex<usize> = spin::Mutex::new(0);
@@ -40,13 +62,16 @@ fn fast_clear(color: u32) {
     let fb_pitch = *FRAMEBUFFER_PITCH.lock(); // bytes
     let fb_height = *FRAMEBUFFER_HEIGHT.lock();
     
+    // Fallback to theme BG if color is 0 (assuming default clear)
+    let final_color = if color == 0 { THEME.lock().bg } else { color };
+
     // Total u32 words
     let total = (fb_pitch / 4) * fb_height;
     let ptr = fb_addr as *mut u32;
     
     unsafe {
         for i in 0..total {
-            *ptr.add(i) = color;
+            *ptr.add(i) = final_color;
         }
     }
 }
@@ -79,7 +104,8 @@ pub fn get_resolution() -> (usize, usize) {
 }
 
 pub fn clear() {
-    fast_clear(0x00000000);
+    let bg = THEME.lock().bg;
+    fast_clear(bg);
     // Reset cursor
     *CONSOLE_X.lock() = 0;
     *CONSOLE_Y.lock() = 0;
@@ -135,6 +161,14 @@ pub fn prepare_y_for_height(height: usize) -> usize {
 }
 
 pub fn put_char(c: char) {
+    let theme = THEME.lock();
+    let fg = theme.fg;
+    let bg = theme.bg;
+    drop(theme);
+    put_char_colored(c, fg, bg);
+}
+
+pub fn put_char_colored(c: char, fg: u32, bg: u32) {
     let mut x = CONSOLE_X.lock();
     let mut y = CONSOLE_Y.lock();
     let width = *CONSOLE_WIDTH.lock();
@@ -147,31 +181,22 @@ pub fn put_char(c: char) {
             *y = height - 1;
             scroll_screen();
         }
-    } else if c == '\x08' {  // Backspace (Non-destructive move left)
-        if *x > 0 {
-            *x -= 1;
-        }
+    } else if c == '\x08' {
+        if *x > 0 { *x -= 1; }
     } else if c == '\r' {
         *x = 0;
     } else {
         let fb_addr = *FRAMEBUFFER_ADDR.lock();
         if fb_addr != 0 {
-            // Pixel Graphics Mode
-            unsafe {
-                c_draw_char(*x as i32, *y as i32, c as u32, 0xFFFFFFFF, 0x00000000);
-            }
+            unsafe { c_draw_char(*x as i32, *y as i32, c as u32, fg, bg); }
         } else {
-            // Legacy VGA Text Mode Fallback
             let vga_buffer = VGA_HHDM_ADDR as *mut u16;
-            // Ensure bounds are safe
-            let safe_x = (*x).min(79);
-            let safe_y = (*y).min(24);
-            let offset = (safe_y * 80) + safe_x;
-            let vga_char = (c as u16) | (0x0F << 8); // White on black
-            unsafe {
-                core::ptr::write_volatile(vga_buffer.offset(offset as isize), vga_char);
-            }
+            let offset = ((*y).min(24) * 80) + (*x).min(79);
+            // Default white for VGA for now
+            let vga_char = (c as u16) | (0x0F << 8);
+            unsafe { core::ptr::write_volatile(vga_buffer.offset(offset as isize), vga_char); }
         }
+
         *x += 1;
         if *x >= width {
             *x = 0;
@@ -184,14 +209,45 @@ pub fn put_char(c: char) {
     }
 }
 
+pub fn put_str_colored(s: &str, fg: u32, bg: u32) {
+    for c in s.chars() {
+        put_char_colored(c, fg, bg);
+    }
+}
+
 pub fn draw_cursor(color: u32) {
     let x = *CONSOLE_X.lock();
     let y = *CONSOLE_Y.lock();
-    // 8x12 font
-    let draw_x = (x * 8) as i64;
-    let draw_y = (y * 12) as i64;
-    // Draw 8x12 block
-    draw_rect(draw_x, draw_y, 8, 12, color);
+    // draw a small rectangle at the cursor position
+    draw_rect_grid(x, y, 1, 1, 0, color);
+}
+
+/// Draw a character at a specific char-grid coordinate without updating console state.
+pub fn put_char_at(x: usize, y: usize, c: char, fg: u32, bg: u32) {
+    let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr != 0 {
+        unsafe { c_draw_char(x as i32, y as i32, c as u32, fg, bg); }
+    } else {
+        let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+        let offset = (y.min(24) * 80) + x.min(79);
+        let vga_char = (c as u16) | (0x0F << 8);
+        unsafe { core::ptr::write_volatile(vga_buffer.offset(offset as isize), vga_char); }
+    }
+}
+
+/// Draw a filled/outlined rectangle in the character grid.
+pub fn draw_rect_grid(x: usize, y: usize, w: usize, h: usize, fg: u32, bg: u32) {
+    for cy in y..(y + h) {
+        for cx in x..(x + w) {
+            put_char_at(cx, cy, ' ', fg, bg);
+        }
+    }
+}
+
+pub fn put_str_at(x: usize, y: usize, s: &str, fg: u32, bg: u32) {
+    for (i, c) in s.chars().enumerate() {
+        put_char_at(x + i, y, c, fg, bg);
+    }
 }
 
 pub fn put_str(s: &str) {

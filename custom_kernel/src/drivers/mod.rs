@@ -10,4 +10,5 @@ pub mod power;
 pub mod iokit;
 pub mod pci;
 pub mod net;
+pub mod storage;
 pub mod klog;

@@ -304,7 +304,10 @@ impl BitmapPmm {
         // Kernel region (1MB - 4MB approx, conservative)
         pmm.mark_region_used(0x100000, 0x300000);
 
-        let (used, total) = pmm.get_stats_fast();
+        // Recalculate accurately for the counter
+        let (used, total) = pmm.get_stats();
+        pmm.used_frames.store(used, Ordering::Relaxed);
+
         let _ = write!(serial, "PMM: Initialized. Used: {}/{} frames ({} MB free)\n",
             used, total, (total - used) * PAGE_SIZE / (1024 * 1024));
 

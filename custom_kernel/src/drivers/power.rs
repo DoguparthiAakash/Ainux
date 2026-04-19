@@ -11,3 +11,7 @@ pub fn scale_cpu_frequency(mhz: u32) {
 pub fn enter_sleep_state(state: u8) {
     // S-state transition
 }
+
+pub fn shutdown() {
+    crate::cpu::acpi::power_off();
+}

@@ -6,3 +6,7 @@ pub mod nuxv;
 pub mod sshd;
 pub mod hfetch;
 pub mod hinfo;
+pub mod dcustom;
+pub mod settings;
+pub mod metus;
+pub mod awm;

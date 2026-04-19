@@ -81,7 +81,7 @@ impl VoyagerVM {
                     if self.is_quantum {
                         let qid = self.code[self.pc] as usize;
                         self.pc += 1;
-                        video::put_str(&format!("[Quantum] Applied Hadamard to Qubit {}\n", qid));
+                        video::put_str(&format!("[System] Applied State Transformation to Qubit {}\n", qid));
                         // In a real sim we'd rotate amplitudes. Here we just flag superpos.
                     }
                 },
@@ -93,7 +93,7 @@ impl VoyagerVM {
                         let ticks = crate::process::scheduler::get_ticks();
                         let res = (ticks % 2) as i64;
                         self.stack.push(res);
-                        video::put_str(&format!("[Quantum] Measured Qubit {}: {}\n", qid, res));
+                        video::put_str(&format!("[System] Measured State Qubit {}: {}\n", qid, res));
                     }
                 },
                 0xFF => break, // EXIT
@@ -122,5 +122,5 @@ pub fn run_voyager_file(path: &str) {
             }
         }
     }
-    video::put_str("VM: Could not load Voyager binary.\n");
+    video::put_str("VM: Could not load Sovereign binary.\n");
 }

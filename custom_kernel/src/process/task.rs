@@ -22,6 +22,11 @@ pub struct Context {
 
 use crate::security::cap::CapTable;
 
+pub const SIGTERM: u32 = 15;
+pub const SIGKILL: u32 = 9;
+pub const SIGINT: u32 = 2;
+pub const SIGTSTP: u32 = 20;
+
 #[repr(C, align(16))]
 #[derive(Debug, Clone)]
 pub struct Task {
@@ -39,6 +44,13 @@ pub struct Task {
     pub wait_queue: alloc::vec::Vec<usize>, // PIDs waiting on this task
     pub cpu_time_ticks: u64,
     pub priority: u8, // 0=High, 255=Low
+
+    // --- Maturation & Metering ---
+    pub total_cycles: u64,
+    pub last_tsc: u64,
+    pub page_count: usize,
+    pub signals: u32,
+    pub syscall_count: u64,
 }
 
 impl Task {
@@ -58,6 +70,11 @@ impl Task {
             wait_queue: alloc::vec::Vec::new(),
             cpu_time_ticks: 0,
             priority: 128, // Default
+            total_cycles: 0,
+            last_tsc: 0,
+            page_count: 0,
+            signals: 0,
+            syscall_count: 0,
         }
     }
 }

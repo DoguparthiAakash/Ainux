@@ -2,10 +2,10 @@ use crate::gui::graphics::Graphics;
 use crate::drivers::video;
 
 pub fn draw_desktop(buffer: &mut [u32], w: usize, h: usize) {
-    // 1. Wallpaper (Teal)
-    let teal = 0xFF008080;
+    // 1. Wallpaper (Titanium Steel Dark)
+    let titanium = 0xFF1A1C1E;
     for i in 0..buffer.len() {
-        buffer[i] = teal;
+        buffer[i] = titanium;
     }
 }
 

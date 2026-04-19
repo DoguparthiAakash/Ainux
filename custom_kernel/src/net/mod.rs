@@ -67,6 +67,7 @@ pub struct NetStack {
     pub iface: Interface,
     pub sockets: SocketSet<'static>,
     pub dhcp_handle: Option<smoltcp::iface::SocketHandle>,
+    pub icmp_handle: Option<smoltcp::iface::SocketHandle>,
 }
 
 pub static NET_STACK: Mutex<Option<NetStack>> = Mutex::new(None);
@@ -86,10 +87,23 @@ pub fn init() {
     let dhcp_socket = dhcpv4::Socket::new();
     let dhcp_handle = sockets.add(dhcp_socket);
 
+    // Add ICMP socket (for Ping)
+    let icmp_rx_buffer = smoltcp::socket::icmp::PacketBuffer::new(
+        alloc::vec![smoltcp::socket::icmp::PacketMetadata::EMPTY],
+        alloc::vec![0; 256]
+    );
+    let icmp_tx_buffer = smoltcp::socket::icmp::PacketBuffer::new(
+        alloc::vec![smoltcp::socket::icmp::PacketMetadata::EMPTY],
+        alloc::vec![0; 256]
+    );
+    let icmp_socket = smoltcp::socket::icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
+    let icmp_handle = sockets.add(icmp_socket);
+
     *NET_STACK.lock() = Some(NetStack {
         iface,
         sockets,
         dhcp_handle: Some(dhcp_handle),
+        icmp_handle: Some(icmp_handle),
     });
 
     crate::drivers::video::put_str("Net: smoltcp Stack Initialized (DHCP Active).\n");

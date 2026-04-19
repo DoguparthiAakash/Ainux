@@ -107,6 +107,11 @@ pub fn init() {
                     if rtl_driver.probe(&entry.service) > 0 {
                          let _ = rtl_driver.start(&entry.service);
                     }
+
+                    let ath_driver = crate::drivers::net::atheros::AtherosHAL::new();
+                    if ath_driver.probe(&entry.service) > 0 {
+                         let _ = ath_driver.start(&entry.service);
+                    }
                 }
             }
         }

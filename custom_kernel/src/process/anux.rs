@@ -105,6 +105,6 @@ pub fn load_anux_binary(path: &str) -> Result<usize, &'static str> {
     // For now, this is a stub pending the "Simple Loader" logic
     // which just reads the raw bytes.
     
-    crate::drivers::video::put_str("ANUX: Loading Quantum Binary...\n");
+    crate::drivers::video::put_str("ANUX: Loading Native Binary...\n");
     Err("ANUX Loader Not Fully Implemented")
 }

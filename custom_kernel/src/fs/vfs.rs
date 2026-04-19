@@ -2,6 +2,15 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use spin::Mutex;
+pub type ArcInode = Arc<dyn Inode>;
+pub type ArcHandle = Arc<dyn FileHandle>;
+
+pub struct Mount {
+    pub path: String,
+    pub fs: Arc<dyn FileSystem>,
+}
+
+pub static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -42,6 +51,7 @@ pub trait FileSystem: Send + Sync {
 }
 
 pub trait Inode: Send + Sync {
+    fn inode_num(&self) -> u32;
     fn stat(&self) -> VfsResult<FileStat>;
     fn lookup(&self, name: &str) -> VfsResult<Arc<dyn Inode>>;
     fn open(&self, mode: u32) -> VfsResult<Arc<dyn FileHandle>>;
@@ -53,7 +63,8 @@ pub trait Inode: Send + Sync {
     fn mkdir(&self, name: &str) -> VfsResult<Arc<dyn Inode>>;
     fn unlink(&self, name: &str) -> VfsResult<()>;
     fn remove_dir(&self, name: &str) -> VfsResult<()>;
-    fn rename(&self, old_name: &str, new_name: &str) -> VfsResult<()>;
+    fn rename(&self, old_name: &str, new_parent: Arc<dyn Inode>, new_name: &str) -> VfsResult<()>;
+    fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
     fn chmod(&self, mode: u16) -> VfsResult<()>;
     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
 }
@@ -73,4 +84,38 @@ pub fn init(fs: Arc<dyn FileSystem>) {
 
 pub fn root() -> Arc<dyn Inode> {
     ROOT.lock().as_ref().expect("VFS root not initialized").clone()
+}
+
+pub fn mount(path: &str, fs: Arc<dyn FileSystem>) {
+    let mut mounts = MOUNTS.lock();
+    mounts.push(Mount {
+        path: String::from(path),
+        fs,
+    });
+}
+
+pub fn resolve_path(path: &str) -> VfsResult<Arc<dyn Inode>> {
+    // Check mounts first (longest prefix match)
+    let mounts = MOUNTS.lock();
+    let mut best_match: Option<&Mount> = None;
+    
+    for m in mounts.iter() {
+        if path.starts_with(&m.path) {
+            if best_match.is_none() || m.path.len() > best_match.unwrap().path.len() {
+                best_match = Some(m);
+            }
+        }
+    }
+    
+    if let Some(m) = best_match {
+        let rel_path = &path[m.path.len()..];
+        let rel_path = rel_path.trim_start_matches('/');
+        if rel_path.is_empty() {
+             return Ok(m.fs.root_inode());
+        }
+        return m.fs.root_inode().lookup(rel_path);
+    }
+    
+    // Default to root
+    root().lookup(path)
 }

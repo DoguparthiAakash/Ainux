@@ -90,6 +90,15 @@ extern "C" fn syscall_handler() {
 
 #[no_mangle]
 extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    // Increment Syscall Count (Maturity Metering)
+    {
+        let mut tasks = crate::process::scheduler::TASKS.lock();
+        let current_pid = crate::process::scheduler::get_current_pid();
+        if let Some(task) = &mut tasks[current_pid] {
+            task.syscall_count += 1;
+        }
+    }
+
     // Hot path — no debug output, no heap allocation
     match id {
         1 => { // Write
@@ -255,6 +264,38 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         },
         8 => { // Sys_close (fd)
             crate::process::scheduler::process_close(a1 as usize) as u64
+        },
+        9 => { // Sys_kill (pid, sig)
+            crate::process::scheduler::post_signal(a1 as usize, a2 as u32) as u64
+        },
+        30 => { // Sys_query_metrics (pid, buf_ptr)
+            // a1 = pid, a2 = ptr to TaskMetrics
+            if !crate::mm::user::validate_user_ptr(a2, 64) { return u64::MAX; }
+            
+            let mut tasks = crate::process::scheduler::TASKS.lock();
+            if let Some(task) = &tasks[a1 as usize] {
+                // Construct a metrics array/packed data to copy back
+                // For simplicity, let's just copy the fields directly if possible
+                // or use a temporary buffer.
+                let mut metrics = [0u64; 8];
+                metrics[0] = task.id as u64;
+                metrics[1] = task.cpu_time_ticks;
+                metrics[2] = task.total_cycles;
+                metrics[3] = task.page_count as u64;
+                metrics[4] = task.syscall_count;
+                metrics[5] = task.state as u64;
+                metrics[6] = task.priority as u64;
+                metrics[7] = task.signals as u64;
+                
+                drop(tasks);
+                if crate::mm::user::copy_to_user(a2 as *mut u8, unsafe { core::slice::from_raw_parts(&metrics as *const _ as *const u8, 64) }).is_ok() {
+                    0
+                } else {
+                    u64::MAX
+                }
+            } else {
+                u64::MAX
+            }
         },
         60 => { // sys_exit(code)
             crate::process::scheduler::exit_current_task(a1 as isize);

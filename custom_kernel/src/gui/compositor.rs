@@ -28,43 +28,86 @@ impl Compositor {
              bb.resize(w * h, 0); // Init backbuffer
          }
     }
+
+    pub fn handle_mouse(mx: isize, my: isize, buttons: u8) {
+        let mut wins = WINDOWS.lock();
+        let mouse_point = crate::gui::rect::Point { x: mx, y: my };
+        
+        // 1. Check for Dragging/Focus (from top to bottom)
+        let mut focused_idx: Option<usize> = None;
+        let mut dragging_occurred = false;
+
+        for (i, win) in wins.iter_mut().enumerate().rev() {
+            if win.is_minimized { continue; }
+            
+            let win_rect = crate::gui::rect::Rect::new(win.x, win.y, win.width, win.height);
+            let title_rect = crate::gui::rect::Rect::new(win.x, win.y, win.width, 24);
+
+            if buttons & 1 != 0 {
+                // Left Click
+                if !dragging_occurred && title_rect.contains(mouse_point) {
+                    // Check buttons first
+                    if win.get_close_button_rect().contains(mouse_point) {
+                         // Close handled in next phase? Or here.
+                         continue; 
+                    }
+                    
+                    win.dragging = true;
+                    focused_idx = Some(i);
+                    dragging_occurred = true;
+                } else if !dragging_occurred && win_rect.contains(mouse_point) {
+                    focused_idx = Some(i);
+                }
+            } else {
+                win.dragging = false;
+            }
+
+            if win.dragging {
+                // Update position (simplified dx/dy is needed, using absolute for now)
+                // In a real OS you'd track the offset from mouse to window corner
+                win.x = mx - (win.width / 2) as isize;
+                win.y = my - 12;
+            }
+        }
+
+        // 2. Move focused window to top
+        if let Some(idx) = focused_idx {
+            let win = wins.remove(idx);
+            wins.push(win);
+        }
+    }
     
     pub fn render() {
         let h = *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock();
         let w = *crate::drivers::video::FRAMEBUFFER_WIDTH.lock();
         
-        // Lock Backbuffer
         let mut bb_lock = BACKBUFFER.lock();
-        // Just in case it wasn't init
         if bb_lock.len() != w * h {
             bb_lock.resize(w * h, 0);
         }
         let bb = &mut *bb_lock;
 
-        // 1. Draw Desktop (Wallpaper)
+        // Mouse State
+        let (mx, my) = crate::drivers::mouse::get_position();
+        let buttons = unsafe { crate::drivers::mouse::get_buttons() }; // Need to expose buttons
+        Self::handle_mouse(mx, my, buttons);
+
         crate::gui::desktop::draw_desktop(bb, w, h);
         
-        // 2. Draw Windows -> BB
         let wins = WINDOWS.lock();
         for win in wins.iter() {
             win.draw(bb, w);
         }
         
-        // 3. Draw Desktop Overlay (Dock, Top Bar)
         crate::gui::desktop::draw_overlay(bb, w, h);
         
-        // 4. Cursor -> BB
-        let (mx, my) = crate::drivers::mouse::get_position();
-        Graphics::draw_rect_to_buffer(bb, w, mx as usize, my as usize, 10, 10, 0xFFFF0000);
+        // Modern Cursor (Translucent Arrow)
+        Graphics::draw_rect_to_buffer(bb, w, mx as usize, my as usize, 8, 8, 0xFFFFFFFF);
         
-        // 5. Present (Copy BB -> VRAM)
         unsafe {
              let fb_addr = *crate::drivers::video::FRAMEBUFFER_ADDR.lock();
              let fb_pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock();
              let fb_ptr = fb_addr as *mut u32;
-             
-             // Optimized (or semi-optimized) copy
-             // Actually pitch is in bytes. If BPP=32, stride = pitch / 4.
              let stride = fb_pitch / 4;
              
              for y in 0..h {
@@ -75,8 +118,6 @@ impl Compositor {
              }
         }
 
-        
-        // 6. Draw Text Overlay (Direct to VRAM)
         crate::gui::desktop::draw_text_overlay();
     }
 }

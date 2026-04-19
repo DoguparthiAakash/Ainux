@@ -25,13 +25,13 @@ pub fn cmd_nuxv(args: &[&str]) {
                  }
             }
         } else {
-            video::put_str("nuxv: Source not found.\n");
+            video::put_str("VM: Could not load Sovereign binary.\n");
             return;
         }
     }
     core::mem::drop(root);
 
-    video::put_str(&format!("Assembling {} (Voyager-Quantum)...\n", source_file));
+    video::put_str(&format!("Assembling {} (Sovereign Engine)...\n", source_file));
 
     let mut bytecode: Vec<u8> = Vec::new();
     
@@ -85,6 +85,7 @@ pub fn cmd_nuxv(args: &[&str]) {
                 bytecode.push(0x43);
                 let qid = parts[1].parse::<u8>().unwrap_or(0);
                 bytecode.push(qid);
+                video::put_str(&format!("[System] Applied State Transformation to Qubit {}\n", qid));
             },
             "EXIT" => bytecode.push(0xFF),
             _ => video::put_str(&format!("nuxv: Unknown op: {}\n", op)),
@@ -99,7 +100,7 @@ pub fn cmd_nuxv(args: &[&str]) {
             if let Ok(handle) = inode.open(0) {
                  let _ = handle.truncate();
                  let _ = handle.write(&bytecode, 0);
-                 video::put_str(&format!("Success! Produced Voyager bin: {} bytes\n", bytecode.len()));
+                 video::put_str(&format!("Success! Produced Sovereign bin: {} bytes\n", bytecode.len()));
             }
         }
     }

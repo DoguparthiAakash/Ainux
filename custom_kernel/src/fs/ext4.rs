@@ -402,6 +402,10 @@ pub struct Ext4Inode {
 }
 
 impl Inode for Ext4Inode {
+    fn inode_num(&self) -> u32 {
+        self.inode_num
+    }
+
     fn stat(&self) -> VfsResult<FileStat> {
         let mode = self.disk_inode.mode;
         let file_type = if (mode & 0x4000) != 0 { FileType::Directory } else { FileType::File };
@@ -605,63 +609,31 @@ impl Inode for Ext4Inode {
         self.unlink(name)
     }
 
-    fn rename(&self, old_name: &str, new_name: &str) -> VfsResult<()> {
+    fn rename(&self, old_name: &str, new_parent: Arc<dyn Inode>, new_name: &str) -> VfsResult<()> {
         if (self.disk_inode.mode & 0x4000) == 0 {
             return Err(VfsError::NotADirectory);
         }
         
-        // 1. Find inode of old_name
-        let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
-        let mut found_inode = 0;
-        let mut found = false;
+        // 1. Find inode of old_name in current dir (self)
+        let child = self.lookup(old_name)?;
         
-        for i in 0..12 {
-            let block_id = self.disk_inode.block[i];
-            if block_id == 0 { break; }
-            self.fs.read_block(block_id, &mut buf);
-            
-            let mut offset = 0;
-            while offset < buf.len() {
-                let entry_ptr = unsafe { buf.as_ptr().add(offset) as *mut DirEntry2 };
-                let entry = unsafe { &mut *entry_ptr };
-                if entry.rec_len == 0 { break; }
-                
-                if entry.inode != 0 {
-                    let name_len = entry.name_len as usize;
-                     if offset + 8 + name_len <= buf.len() {
-                         let name_slice = unsafe { core::slice::from_raw_parts( 
-                            buf.as_ptr().add(offset + 8), 
-                            name_len 
-                         ) };
-                         if let Ok(s) = core::str::from_utf8(name_slice) {
-                             if s == old_name {
-                                 found_inode = entry.inode;
-                                 found = true;
-                                 break;
-                              }
-                         }
-                     }
-                }
-                offset += entry.rec_len as usize;
-            }
-            if found { break; }
+        // 2. Link in new parent
+        new_parent.link(new_name, child.clone())?;
+        
+        // 3. Unlink from old (self)
+        self.unlink(old_name)
+    }
+
+    fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()> {
+        if (self.disk_inode.mode & 0x4000) == 0 {
+            return Err(VfsError::NotADirectory);
         }
         
-        if !found { return Err(VfsError::NotFound); }
-        
-        // 2. Add new entry
-        let inode_struct = self.fs.read_inode(found_inode)?;
-        let ftype = if (inode_struct.mode & 0x4000) != 0 { FileType::Directory } else { FileType::File };
-        
-        // Important: Use inherent add_dir_entry. Trait doesn't have it.
-        // But we are in Trait Impl! We can call methods of self (Ext4Inode).
-        // Does Ext4Inode have add_dir_entry? Yes (lines 638).
-        if !self.add_dir_entry(self.inode_num, new_name, found_inode, ftype) {
+        let stat = inode.stat()?;
+        if !self.add_dir_entry(self.inode_num, name, inode.inode_num(), stat.file_type) {
              return Err(VfsError::NoSpace);
         }
-        
-        // 3. Unlink old (Calls trait unlink)
-        self.unlink(old_name)
+        Ok(())
     }
 
     fn chmod(&self, mode: u16) -> VfsResult<()> {

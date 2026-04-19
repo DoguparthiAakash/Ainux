@@ -8,22 +8,12 @@ pub struct HybridAllocator {
 
 unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Try Zone Allocator for small, standard alignment allocations
-        // Zone allocator supports powers of 2 from 8 to 4096 (page size)
-        // But our implementation currently uses a mutex, so it's safe.
-        if layout.align() <= 8 && layout.size() <= 2048 && layout.size() > 0 {
-             if let Ok(ptr) = crate::mm::zone::zalloc(layout.size()) {
-                 return ptr;
-             }
-        }
+        // Performance Note: Slab/Zone delegation is temporarily disabled to prevent recursive deadlocks
+        // during multi-core initialization. All allocations fallback to the robust LockedHeap.
         self.heap.alloc(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if layout.align() <= 8 && layout.size() <= 2048 && layout.size() > 0 {
-             crate::mm::zone::zfree(ptr, layout.size());
-             return;
-        }
         self.heap.dealloc(ptr, layout)
     }
 }

@@ -1,0 +1,10 @@
+/mnt/e/bsd_parent/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/log-d6a1e83adfb51998.d: /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/lib.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/macros.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/serde.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/__private_api.rs
+
+/mnt/e/bsd_parent/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/liblog-d6a1e83adfb51998.rlib: /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/lib.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/macros.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/serde.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/__private_api.rs
+
+/mnt/e/bsd_parent/Ainux/custom_kernel/target/x86_64-unknown-none/release/deps/liblog-d6a1e83adfb51998.rmeta: /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/lib.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/macros.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/serde.rs /home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/__private_api.rs
+
+/home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/lib.rs:
+/home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/macros.rs:
+/home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/serde.rs:
+/home/mute/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.29/src/__private_api.rs:

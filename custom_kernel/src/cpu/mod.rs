@@ -8,3 +8,4 @@ pub mod acpi;
 pub mod apic;
 pub mod smp;
 pub mod cpuid;
+pub mod percpu;

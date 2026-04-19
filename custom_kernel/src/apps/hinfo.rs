@@ -166,7 +166,7 @@ fn show_cpu() {
     // Get SMBIOS Processor Info if available
     let (smbios_ver, smbios_man) = detect_smbios_cpu();
 
-    let cpu_count = crate::cpu::smp::CPU_COUNT.load(Ordering::Relaxed);
+    let cpu_count = crate::cpu::percpu::get_cpu_count();
     video::put_str(ASC_CPU);
     video::put_str("\nManufacturer: "); video::put_str(if smbios_man.is_empty() { &vendor } else { &smbios_man });
     video::put_str("\nModel:        "); video::put_str(if smbios_ver.is_empty() { &brand } else { &smbios_ver });

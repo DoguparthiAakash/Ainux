@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use crate::drivers::iokit::service::IOService;
 use crate::drivers::iokit::types::{IOValue, IOResult};
 use crate::drivers::video;
+use smoltcp::phy::{Device, DeviceCapabilities, RxToken, TxToken, Medium};
+use smoltcp::time::Instant;
 
 const VENDOR_ID: i64 = 0x10EC;
 const DEVICE_ID: i64 = 0x8139;
@@ -229,5 +231,63 @@ impl RTL8139 {
         let mut val: u16;
         core::arch::asm!("in ax, dx", out("ax") val, in("dx") port, options(nostack, preserves_flags));
         val
+    }
+}
+
+// ---- smoltcp Device Implementation ----
+
+pub struct RTL8139Device;
+
+impl Device for RTL8139Device {
+    type RxToken<'a> = RTL8139RxToken;
+    type TxToken<'a> = RTL8139TxToken;
+
+    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let mut rx_packet = None;
+        RTL8139::receive_packet(|data| {
+            let mut vec = Vec::new();
+            vec.extend_from_slice(data);
+            rx_packet = Some(vec);
+        });
+
+        rx_packet.map(|data| (RTL8139RxToken { data }, RTL8139TxToken))
+    }
+
+    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        Some(RTL8139TxToken)
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_transmission_unit = 1500;
+        caps.medium = Medium::Ethernet;
+        caps
+    }
+}
+
+pub struct RTL8139RxToken {
+    data: Vec<u8>,
+}
+
+impl RxToken for RTL8139RxToken {
+    fn consume<R, F>(mut self, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        f(&mut self.data)
+    }
+}
+
+pub struct RTL8139TxToken;
+
+impl TxToken for RTL8139TxToken {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let mut buffer = vec![0u8; len];
+        let result = f(&mut buffer);
+        RTL8139::send_packet(&buffer);
+        result
     }
 }

@@ -9,46 +9,12 @@ use core::arch::asm;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use spin::Mutex;
+use crate::cpu::percpu::{CPUS, CPU_COUNT, MAX_CPUS};
 
-// ---- Per-CPU State ----
-
-#[repr(C, align(64))]
-#[derive(Debug)]
-pub struct PerCpuState {
-    pub lapic_id: u32,
-    pub online: bool,
-    pub idle_count: u64,
-    pub current_task_id: usize,
-    pub tss_ptr: *mut crate::cpu::gdt::Tss,
-}
-
-impl PerCpuState {
-    pub const fn new() -> Self {
-        PerCpuState {
-            lapic_id: 0,
-            online: false,
-            idle_count: 0,
-            current_task_id: 0,
-            tss_ptr: core::ptr::null_mut(),
-        }
-    }
-}
-
-// Wrapper to allow Send/Sync for raw pointers in Mutex
-#[derive(Copy, Clone)]
-pub struct SendPtr(pub *mut PerCpuState);
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
-
-pub const MAX_CPUS: usize = 64;
-
-pub static CPU_COUNT: AtomicU32 = AtomicU32::new(1); // BSP = 1
-pub static AP_READY: AtomicBool = AtomicBool::new(false);
 static AP_BOOTED: AtomicU32 = AtomicU32::new(0);
+static AP_READY: AtomicBool = AtomicBool::new(false);
 
-pub static PER_CPU: Mutex<[Option<SendPtr>; MAX_CPUS]> = Mutex::new([None; MAX_CPUS]);
-
-// Trampoline code address (must be below 1MB, page-aligned)
+// ---- SMP Init (BSP orchestrator) ----
 const TRAMPOLINE_ADDR: usize = 0x8000;
 // Offsets within the trampoline binary for patched data
 const TRAMPOLINE_CR3_OFFSET: usize = 0xFF0;     // 8 bytes: BSP's CR3
@@ -125,18 +91,18 @@ pub extern "C" fn ap_entry() -> ! {
     // Load the shared IDT so fault handlers work on this core.
     crate::cpu::idt::init();
 
+    // Initialize this AP's PRCB for per-cpu storage
+    unsafe {
+        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
+        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr);
+        crate::cpu::percpu::write_gs_base(prcb_addr);
+    }
+
     // Signal that this AP is online.
-    // The BSP is polling AP_READY and will not send the next SIPI
-    // until it sees this flag, giving us a clean handoff.
     AP_READY.store(true, Ordering::SeqCst);
 
-    // AP idle loop — interrupts disabled, just park.
-    // When the scheduler supports multi-core dispatch, it will
-    // send an IPI to wake this core and enable interrupts.
     loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
+        unsafe { asm!("hlt", options(nomem, nostack)); }
     }
 }
 
@@ -234,25 +200,17 @@ pub fn init() {
     let _ = write!(serial, "========================================\n\n");
 }
 
-pub fn get_current_task_id() -> usize {
-    let id: usize;
+pub fn get_current_pid() -> usize {
+    let pid: usize;
     unsafe {
-        asm!(
-            "mov {0:r}, gs:[16]", // current_task_id is at offset 16 for repr(C)
-            out(reg) id,
-            options(nostack, nomem, preserves_flags)
-        );
+        asm!("mov {}, gs:[16]", out(reg) pid, options(nostack, nomem, preserves_flags));
     }
-    id
+    pid
 }
 
-pub fn set_current_task_id(id: usize) {
+pub fn set_current_pid(pid: usize) {
     unsafe {
-        asm!(
-            "mov gs:[16], {0:r}",
-            in(reg) id,
-            options(nostack, nomem, preserves_flags)
-        );
+        asm!("mov gs:[16], {}", in(reg) pid, options(nostack, nomem, preserves_flags));
     }
 }
 
