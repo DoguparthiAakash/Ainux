@@ -7,13 +7,11 @@ use crate::drivers::{video, keyboard, mouse};
 use crate::fs::vfs::{ROOT, FileType, ArcInode};
 
 // IDE Aesthetics (PUA characters for boxes used internally by video driver)
-// nvix/anvim Aesthetics (Titanium Steel / Neovim Palette)
-const COLOR_BG: u32 = 0x1A1B26;     // Deep Charcoal
-const COLOR_FG: u32 = 0xA9B1D6;     // Steel Blue-Grey Text
-const COLOR_BAR_BG: u32 = 0x24283B; // Darker Indigo Status Line
-const COLOR_BAR_FG: u32 = 0x7AA2F7; // Electric Blue Accents
-const COLOR_HL: u32 = 0xE0AF68;     // Amber Highlight
-const COLOR_ACCENT: u32 = 0xBB9AF7; // Purple Accent
+const COLOR_BG: u32 = 0x0000AA;    // Bright Blue
+const COLOR_FG: u32 = 0xFFFFFF;    // White
+const COLOR_BAR_BG: u32 = 0xAAAAAA;// Light Grey
+const COLOR_BAR_FG: u32 = 0x000000;// Black
+const COLOR_HL: u32 = 0xFFFF55;    // Yellow Select
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Mode {
@@ -73,8 +71,13 @@ pub fn cmd_nvix(args: &[&str]) {
             // Background Clear (Zig)
             video::fast_grid_clear(console_w as u32, console_h as u32, COLOR_FG, COLOR_BG, ' ' as u32);
             
-            // Neovim Status Line (Bottom)
-            draw_neovim_status_line(filename, cy, cx, buffer.len(), mode);
+            // Top Bar
+            video::draw_rect_grid(0, 0, console_w, 1, COLOR_BAR_FG, COLOR_BAR_BG);
+            draw_top_menu(menu_index, mode == Mode::Menu);
+            
+            // Bottom Bar
+            video::draw_rect_grid(0, console_h - 1, console_w, 1, COLOR_BAR_FG, COLOR_BAR_BG);
+            draw_status_bar(filename, cy, buffer.len());
 
             // Editor Frame
             video::draw_tui_title_box(0, 1, console_w, console_h - 2, filename, COLOR_FG);
