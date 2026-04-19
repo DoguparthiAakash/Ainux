@@ -166,7 +166,8 @@ pub extern "C" fn _start() -> ! {
     
     // Test ATA
     let _ = write!(serial, "ATA TEST START\n");
-    if drivers::ata::identify() {
+    let mut ident_buf = [0u16; 256];
+    if drivers::ata::identify_buffer(&mut ident_buf) {
        let _ = write!(serial, "ATA Drive 0 Identified.\n");
        
        // DEBUG: Manually read LBA 2

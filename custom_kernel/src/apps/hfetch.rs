@@ -163,30 +163,48 @@ pub fn cmd_hfetch(args: &[&str]) {
 
     let theme = video::THEME.lock();
     let r_col = theme.root;
-    let a_col = theme.accent;
+    let a_col = 0x0000AAAA; // Industrial Cyan
     let f_col = theme.fg;
-    let b_col = theme.bg;
+    let b_col = 0x00111122; // Midnight blue
     drop(theme);
 
+    // --- RENDER HEADER ---
     video::put_str("\n");
     video::put_str_colored(logo[0], a_col, b_col); 
-    video::put_str_colored("root", r_col, b_col);
+    video::put_str_colored(" root", r_col, b_col);
     video::put_str_colored("@", f_col, b_col);
     video::put_str_colored("ainux", f_col, b_col);
-    video::put_str(" (hfetch)\n");
+    video::put_str_colored(" (Sovereign HFetch)\n", a_col, b_col);
 
-    video::put_str_colored(logo[1], a_col, b_col); video::put_str_colored("───────────────────────────\n", a_col, b_col);
-    video::put_str_colored(logo[2], a_col, b_col); video::put_str("OS:         Ainux v0.2 x86_64\n");
-    video::put_str_colored(logo[3], a_col, b_col); video::put_str("Kernel:     Ainux Sovereign Kernel\n");
-    video::put_str_colored(logo[4], a_col, b_col); video::put_str(&format!("Uptime:     {}\n", uptime));
-    video::put_str_colored(logo[5], a_col, b_col); video::put_str("Shell:      ainux-sh (sovereign)\n");
-    video::put_str_colored(logo[6], a_col, b_col); video::put_str(&format!("CPU:        {}\n", cpu_brand));
-    video::put_str_colored(logo[7], a_col, b_col); video::put_str(&format!("Cores:      {} ({} online)\n", cpu_cores, cpu_count));
-    video::put_str_colored(logo[8], a_col, b_col); video::put_str(&format!("GPU:        {}\n", gpu));
-    video::put_str_colored(logo[9], a_col, b_col); video::put_str(&format!("Memory:     {} MiB / {} MiB\n", used_ram, total_ram));
-    video::put_str_colored(logo[10], a_col, b_col); video::put_str(&format!("Resolution: {}\n", resolution));
-    video::put_str_colored(logo[11], a_col, b_col); video::put_str(&format!("Features:   {}\n", feat_str.trim()));
-    video::put_str_colored(logo[12], a_col, b_col); video::put_str(&format!("Arch:       AMD64 ({})\n", cpu_vendor));
+    // --- RENDER ROWS (SEQUENTIAL) ---
+    // Mapping of logo line index to (Label, Value)
+    let info = [
+        ("───────────────────────────────", ""),                 // 1
+        ("OS:         ", "Ainux v0.2 x86_64"),                    // 2
+        ("Kernel:     ", "Ainux Sovereign Kernel"),               // 3
+        ("Uptime:     ", &uptime),                                // 4
+        ("Shell:      ", "ainux-sh (sovereign)"),                 // 5
+        ("CPU:        ", &cpu_brand),                             // 6
+        ("Cores:      ", &format!("{} ({} online)", cpu_cores, cpu_count)), // 7
+        ("GPU:        ", &gpu),                                   // 8
+        ("Memory:     ", &format!("{} / {} MiB", used_ram, total_ram)), // 9
+        ("Resolution: ", &resolution),                            // 10
+        ("Features:   ", feat_str.trim()),                        // 11
+        ("Arch:       ", &format!("AMD64 ({})", cpu_vendor)),      // 12
+    ];
+
+    for i in 1..=12 {
+        video::put_str_colored(logo[i], a_col, b_col);
+        if info[i-1].1.is_empty() {
+             video::put_str_colored(info[i-1].0, a_col, b_col);
+        } else {
+             video::put_str_colored(info[i-1].0, a_col, b_col);
+             video::put_str_colored(info[i-1].1, f_col, b_col);
+        }
+        video::put_str("\n");
+    }
+
+    // --- RENDER FOOTER ---
     video::put_str_colored(logo[13], a_col, b_col); video::put_str("\n");
     video::put_str_colored(logo[14], a_col, b_col); video::put_str_colored("████████████████████████████\n", a_col, b_col);
     video::put_str_colored(logo[15], a_col, b_col); video::put_str_colored("████████████████████████████\n", a_col, b_col);
