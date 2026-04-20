@@ -29,31 +29,33 @@ pub fn main() {
         let current_time = crate::cpu::cpuid::rdtsc();
         let time_delta = current_time.wrapping_sub(last_sample_time);
         
-        let tasks = TASKS.lock();
-        let mut row = 4;
-        
-        draw_table_header();
+        {
+            let lock = TASKS.lock();
+            if let Some(tasks) = lock.as_ref() {
+                let mut row = 4;
+                draw_table_header();
+                for i in 0..MAX_TASKS {
+                    let task = &tasks[i];
+                    if task.state != TaskState::Free {
+                        // Calculate CPU %
+                        let cycle_delta = task.total_cycles.wrapping_sub(last_cycles[i]);
+                        let cpu_usage = if time_delta > 0 {
+                            (cycle_delta * 100) / time_delta
+                        } else {
+                            0
+                        };
+                        
+                        // Update baseline
+                        last_cycles[i] = task.total_cycles;
 
-        for i in 0..MAX_TASKS {
-            if let Some(task) = &tasks[i] {
-                // Calculate CPU %
-                let cycle_delta = task.total_cycles.wrapping_sub(last_cycles[i]);
-                let cpu_usage = if time_delta > 0 {
-                    (cycle_delta * 100) / time_delta
-                } else {
-                    0
-                };
-                
-                // Update baseline
-                last_cycles[i] = task.total_cycles;
-
-                // Draw Row
-                draw_task_row(row, task, cpu_usage as u32);
-                row += 1;
+                        // Draw Row
+                        draw_task_row(row, task, cpu_usage as u32);
+                        row += 1;
+                    }
+                }
             }
         }
         last_sample_time = current_time;
-        drop(tasks);
 
         draw_footer();
 

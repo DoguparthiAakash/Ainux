@@ -92,10 +92,10 @@ extern "C" fn syscall_handler() {
 extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     // Increment Syscall Count (Maturity Metering)
     {
-        let mut tasks = crate::process::scheduler::TASKS.lock();
-        let current_pid = crate::process::scheduler::get_current_pid();
-        if let Some(task) = &mut tasks[current_pid] {
-            task.syscall_count += 1;
+        let mut lock = crate::process::scheduler::TASKS.lock();
+        if let Some(tasks) = lock.as_mut() {
+            let current_pid = crate::process::scheduler::get_current_pid();
+            tasks[current_pid].syscall_count += 1;
         }
     }
 
@@ -272,8 +272,9 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64) -> u64 {
             // a1 = pid, a2 = ptr to TaskMetrics
             if !crate::mm::user::validate_user_ptr(a2, 64) { return u64::MAX; }
             
-            let mut tasks = crate::process::scheduler::TASKS.lock();
-            if let Some(task) = &tasks[a1 as usize] {
+            let mut lock = crate::process::scheduler::TASKS.lock();
+            if let Some(tasks) = lock.as_mut() {
+                let task = &tasks[a1 as usize];
                 // Construct a metrics array/packed data to copy back
                 // For simplicity, let's just copy the fields directly if possible
                 // or use a temporary buffer.

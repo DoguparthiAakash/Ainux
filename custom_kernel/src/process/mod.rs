@@ -5,3 +5,4 @@ pub mod loader;
 pub mod fd;
 pub mod voyager_vm;
 pub mod scheduler_ule;
+pub mod isolation;

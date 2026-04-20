@@ -33,7 +33,7 @@ pub struct Task {
     pub id: usize,
     pub context: Context,
     pub state: TaskState,
-    pub stack: [u8; 16384], 
+    pub stack: Option<alloc::boxed::Box<[u8; 32768]>>, 
     pub cr3: u64, // Page Table Physical Address (0 if kernel task)
     pub userspace_stack_top: u64,
     pub caps: CapTable,
@@ -51,15 +51,17 @@ pub struct Task {
     pub page_count: usize,
     pub signals: u32,
     pub syscall_count: u64,
+    pub vruntime: u64, // Virtual runtime (cycles / priority) for WFS
 }
 
 impl Task {
-    pub fn new_free() -> Self {
+    /// Creates a minimal task structure without allocating a stack yet.
+    pub fn new_empty() -> Self {
         Self {
             id: 0,
-            context: Context { rsp:0, r15:0, r14:0, r13:0, r12:0, rbx:0, rbp:0, rip:0 },
+            context: Context::default(),
             state: TaskState::Free,
-            stack: [0; 16384],
+            stack: None,
             cr3: 0,
             userspace_stack_top: 0,
             caps: CapTable::new(),
@@ -69,12 +71,41 @@ impl Task {
             exit_code: 0,
             wait_queue: alloc::vec::Vec::new(),
             cpu_time_ticks: 0,
-            priority: 128, // Default
+            priority: 128,
             total_cycles: 0,
             last_tsc: 0,
             page_count: 0,
             signals: 0,
             syscall_count: 0,
+            vruntime: 0,
         }
+    }
+
+    /// Resets the task state. Allocates a new stack if none exists.
+    pub fn reset(&mut self, id: usize) {
+        self.id = id;
+        self.context = Context::default();
+        self.state = TaskState::Free;
+        
+        // Ensure a heap-allocated stack exists
+        if self.stack.is_none() {
+             self.stack = Some(alloc::boxed::Box::new([0; 32768]));
+        }
+        self.cr3 = 0;
+        self.userspace_stack_top = 0;
+        self.caps = CapTable::new();
+        self.sleep_ticks = 0;
+        self.fds = crate::process::fd::FileDescriptorTable::new();
+        self.parent_id = None;
+        self.exit_code = 0;
+        self.wait_queue = alloc::vec::Vec::new();
+        self.cpu_time_ticks = 0;
+        self.priority = 128;
+        self.total_cycles = 0;
+        self.last_tsc = 0;
+        self.page_count = 0;
+        self.signals = 0;
+        self.syscall_count = 0;
+        self.vruntime = 0;
     }
 }

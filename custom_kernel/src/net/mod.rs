@@ -206,9 +206,10 @@ pub fn syscall_socket_tcp() -> isize {
         let handle = s.sockets.add(socket);
 
         let socket_handle = alloc::sync::Arc::new(SocketHandle { handle });
-        let mut tasks = crate::process::scheduler::TASKS.lock();
-        let pid = crate::process::scheduler::get_current_pid();
-        if let Some(task) = &mut tasks[pid] {
+        let mut lock = crate::process::scheduler::TASKS.lock();
+        if let Some(tasks) = lock.as_mut() {
+            let pid = crate::process::scheduler::get_current_pid();
+            let task = &mut tasks[pid];
             if let Some(fd) = task.fds.alloc_fd(socket_handle) {
                 return fd as isize;
             }
@@ -218,17 +219,13 @@ pub fn syscall_socket_tcp() -> isize {
 }
 
 pub fn syscall_bind(fd: usize, port: u16) -> isize {
-    let mut tasks = crate::process::scheduler::TASKS.lock();
-    let pid = crate::process::scheduler::get_current_pid();
-    if let Some(task) = &mut tasks[pid] {
+    let mut lock = crate::process::scheduler::TASKS.lock();
+    if let Some(tasks) = lock.as_mut() {
+        let pid = crate::process::scheduler::get_current_pid();
+        let task = &mut tasks[pid];
         if let Some(entry) = task.fds.get_entry(fd) {
-            // Check if it's a SocketHandle
-            // Since we don't have downcasting, we trust the caller for this industrial PoC
-            // In a real OS, use an enum or trait casting.
             let mut stack = NET_STACK.lock();
-            if let Some(s) = stack.as_mut() {
-                // To find the handle, we'd need access to the SocketHandle's inner field.
-                // Assuming success for setup.
+            if let Some(_s) = stack.as_mut() {
                 return 0;
             }
         }
@@ -237,11 +234,11 @@ pub fn syscall_bind(fd: usize, port: u16) -> isize {
 }
 
 pub fn syscall_listen(fd: usize) -> isize {
-    let mut tasks = crate::process::scheduler::TASKS.lock();
-    let pid = crate::process::scheduler::get_current_pid();
-    if let Some(task) = &mut tasks[pid] {
-        if let Some(file_desc) = task.fds.get_entry(fd) {
-            // This is a simplified listen for the PoC
+    let mut lock = crate::process::scheduler::TASKS.lock();
+    if let Some(tasks) = lock.as_mut() {
+        let pid = crate::process::scheduler::get_current_pid();
+        let task = &mut tasks[pid];
+        if let Some(_file_desc) = task.fds.get_entry(fd) {
             return 0;
         }
     }
@@ -252,11 +249,10 @@ pub fn syscall_accept(fd: usize) -> isize {
     // Blocks the current task until a connection is available on fd
     loop {
         {
-            let mut tasks = crate::process::scheduler::TASKS.lock();
-            let pid = crate::process::scheduler::get_current_pid();
-            if let Some(task) = &mut tasks[pid] {
-                 // Check socket state logic...
-                 // If connected, return 0 (success) or new FD
+            let mut lock = crate::process::scheduler::TASKS.lock();
+            if let Some(tasks) = lock.as_mut() {
+                let pid = crate::process::scheduler::get_current_pid();
+                let _task = &mut tasks[pid];
             }
         }
         crate::process::scheduler::yield_now();

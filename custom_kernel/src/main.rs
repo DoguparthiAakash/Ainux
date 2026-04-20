@@ -84,6 +84,10 @@ pub extern "C" fn _start() -> ! {
     mm::slab::init();
     let _ = write!(serial, "Slab Allocator Initialized.\n");
 
+    let _ = write!(serial, "Initializing User Heap (Isolated Space)...\n");
+    mm::user::USER_HEAP.lock().init(0x0000_1000_0000_0000, 64 * 1024 * 1024); // 64 MB Sandbox Base
+    let _ = write!(serial, "User Heap Initialized.\n");
+
     // ─── Phase 2: Core CPU Structures ───
     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
     let _ = write!(serial, "Initializing GDT...\n");
@@ -232,6 +236,9 @@ pub extern "C" fn _start() -> ! {
             let ext4 = alloc::sync::Arc::new(fs::ext4::Ext4FileSystem::new(sb));
             fs::vfs::init(ext4);
             let _ = write!(serial, "VFS: Initialized.\n");
+            
+            // --- Instant Results Background Discovery ---
+            process::scheduler::spawn(apps::hinfo::background_scan);
             
             // Initialize System Configuration
             if !LOAD_SAFE_DEFAULTS.load(core::sync::atomic::Ordering::SeqCst) {

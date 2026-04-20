@@ -45,6 +45,29 @@ pub fn are_interrupts_enabled() -> bool {
     (save_cpu_flags() & 0x200) != 0
 }
 
+/// Disables interrupts on the local CPU (CLI).
+pub fn cli() {
+    unsafe { asm!("cli", options(nomem, nostack)); }
+}
+
+/// Enables interrupts on the local CPU (STI).
+pub fn sti() {
+    unsafe { asm!("sti", options(nomem, nostack)); }
+}
+
+/// Executes a closure with interrupts disabled.
+/// Restores the original interrupt state afterwards.
+pub fn without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let enabled = are_interrupts_enabled();
+    if enabled { cli(); }
+    let result = f();
+    if enabled { sti(); }
+    result
+}
+
 /// Ensure CPU state is consistent (e.g., CR0, CR4 flags).
 pub fn check_cpu_state() {
     let cr0: u64;

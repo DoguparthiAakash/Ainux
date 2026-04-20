@@ -109,6 +109,19 @@ fn get_uptime_str() -> String {
 
 /// Main hfetch display
 pub fn cmd_hfetch(args: &[&str]) {
+    // Handle help flags
+    if args.len() > 1 && (args[1] == "-help" || args[1] == "--help" || args[1] == "-h") {
+        video::put_str("  hfetch                Display sovereign system overview (ASCII logo)\n");
+        video::put_str("  hfetch -all           Display complete hardware diagnostic suite\n");
+        video::put_str("  hfetch -cpu           Display CPU architecture and thermals\n");
+        video::put_str("  hfetch -gpu           Display Graphics/VGA adapter info\n");
+        video::put_str("  hfetch -mem -r        Display RAM utilization and slots\n");
+        video::put_str("  hfetch -mem -d        Display Disk usage and physical layout\n");
+        video::put_str("  hfetch -net           Display Network/MAC configuration\n");
+        video::put_str("  hfetch -peri          Display USB/Legacy peripheral inventory\n");
+        return;
+    }
+
     // If subcommands are provided (e.g. hfetch -mem -r), delegate to hinfo logic
     if args.len() > 1 {
         crate::apps::hinfo::main(args);
@@ -125,12 +138,8 @@ pub fn cmd_hfetch(args: &[&str]) {
         if features.has_sse    { feat.push_str("SSE "); }
         if features.has_sse2   { feat.push_str("SSE2 "); }
         if features.has_sse3   { feat.push_str("SSE3 "); }
-        if features.has_sse41  { feat.push_str("SSE4.1 "); }
-        if features.has_sse42  { feat.push_str("SSE4.2 "); }
-        if features.has_avx    { feat.push_str("AVX "); }
-        if features.has_aes    { feat.push_str("AES "); }
-        if features.has_nx     { feat.push_str("NX "); }
         if features.has_x2apic { feat.push_str("x2APIC "); }
+        if features.has_nx     { feat.push_str("NX "); }
 
         (brand, vendor, cores, feat)
     };
@@ -142,71 +151,86 @@ pub fn cmd_hfetch(args: &[&str]) {
     let uptime = get_uptime_str();
     let cpu_count = crate::cpu::percpu::get_cpu_count();
 
-    let logo: [&str; 16] = [
-        "                                ",
-        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▓▓▓▒░░░░▒▓▓▓▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓░░▒▓▓▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▓▒░▒▒==▒▒░▒▓▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▒▒▒▓▒+=▓▓▒▒▒▓▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▒▒▒▓▓=++≡▒▒▒≡≡▓▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▒▒▒▒▒=+▒▒:===≡▒▒▓▓▓▓▓▓▓ ",
-        " ▓▓▓▓▓▒░░░≡≡≡≡░≡===░▒▓▓▒▒▒▓▓▓▓▓ ",
-        " ▓▓▓▓▓▒▒▒▒░≡≡≡≡░▒▒▓▒▒▒▓▓▒▒▒▓▓▓▓ ",
-        " ▓▓▓▓▓▓▓▒░░▒▓▓▓▓▒▒▒▓▒▒▒▓▓▒▒▒▓▓▓ ",
-        " ▓▓▓▓▓▓▓▓▒▒▓▒▒▒▒▒▒▒▒▓▒▒▒▒▒▒░▒▓▓ ",
-        " ▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▒▓▓ ",
-        "                                ",
-        "                                ",
+    let logo: [&str; 14] = [
+        "  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",
+        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",
+        " ▓▓▓▓▓▓▓▒░░▓▓▓▓▓▓ ",
+        " ▓▓▓▓▓▓▒░░░░▒▓▓▓▓ ",
+        " ▓▓▓▓▓▒░░▓▓░░▒▓▓▓ ",
+        " ▓▓▓▓▒░▒▒==▒▒░▒▓▓ ",
+        " ▓▓▓▒▒▒▓▒+=▓▓▒▒▒▓ ",
+        " ▓▓▒▒▒▓▓=++≡▒▒▒≡≡ ",
+        " ▓▒▒▒▒▒=+▒▒:===≡▒ ",
+        " ▒░░░≡≡≡≡░≡===░▒▓ ",
+        " ▒▒▒▒░≡≡≡≡░▒▒▓▒▒▒ ",
+        " ▓▓▒░░▒▓▓▓▓▒▒▒▓▒▒ ",
+        " ▓▓▓▒▒▓▒▒▒▒▒▒▒▒▓▒ ",
+        "  ▓▓▓▓▒▒▒▒▒▒▒▒▒▓  ",
     ];
 
     let theme = video::THEME.lock();
     let r_col = theme.root;
-    let a_col = 0x0000AAAA; // Industrial Cyan
+    let a_col = theme.accent;
     let f_col = theme.fg;
-    let b_col = 0x00111122; // Midnight blue
+    let b_col = theme.bg;
+    let shadow_col = 0x000F0F0F; // Consistent shadow
+    let box_bg = 0x002D2D2D;    // Whiptail charcoal (WP_BOX)
     drop(theme);
 
-    // --- RENDER HEADER ---
-    video::put_str("\n");
-    video::put_str_colored(logo[0], a_col, b_col); 
-    video::put_str_colored(" root", r_col, b_col);
-    video::put_str_colored("@", f_col, b_col);
-    video::put_str_colored("ainux", f_col, b_col);
-    video::put_str_colored(" (Sovereign HFetch)\n", a_col, b_col);
-
-    // --- RENDER ROWS (SEQUENTIAL) ---
-    // Mapping of logo line index to (Label, Value)
     let info = [
-        ("───────────────────────────────", ""),                 // 1
-        ("OS:         ", "Ainux v0.2 x86_64"),                    // 2
-        ("Kernel:     ", "Ainux Sovereign Kernel"),               // 3
-        ("Uptime:     ", &uptime),                                // 4
-        ("Shell:      ", "ainux-sh (sovereign)"),                 // 5
-        ("CPU:        ", &cpu_brand),                             // 6
-        ("Cores:      ", &format!("{} ({} online)", cpu_cores, cpu_count)), // 7
-        ("GPU:        ", &gpu),                                   // 8
-        ("Memory:     ", &format!("{} / {} MiB", used_ram, total_ram)), // 9
-        ("Resolution: ", &resolution),                            // 10
-        ("Features:   ", feat_str.trim()),                        // 11
-        ("Arch:       ", &format!("AMD64 ({})", cpu_vendor)),      // 12
+        ("OS:         ", "Ainux v0.2 x86_64"),
+        ("Kernel:     ", "Sovereign Kernel"),
+        ("Uptime:     ", &uptime),
+        ("Shell:      ", "ainux-sh"),
+        ("CPU:        ", &cpu_brand),
+        ("Cores:      ", &format!("{} ({} online)", cpu_cores, cpu_count)),
+        ("GPU:        ", &gpu),
+        ("Memory:     ", &format!("{} / {} MiB", used_ram, total_ram)),
+        ("Resolution: ", &resolution),
+        ("Features:   ", feat_str.trim()),
+        ("Arch:       ", &format!("AMD64 ({})", cpu_vendor)),
     ];
 
-    for i in 1..=12 {
-        video::put_str_colored(logo[i], a_col, b_col);
-        if info[i-1].1.is_empty() {
-             video::put_str_colored(info[i-1].0, a_col, b_col);
-        } else {
-             video::put_str_colored(info[i-1].0, a_col, b_col);
-             video::put_str_colored(info[i-1].1, f_col, b_col);
-        }
-        video::put_str("\n");
+    // Determine position
+    let start_x = 2;
+    let start_y = video::prepare_y_for_height(18);
+    let box_w = 70;
+    let box_h = 16;
+
+    // --- DRAW CONTAINER ---
+    video::draw_rect_grid(start_x + 1, start_y + 1, box_w, box_h, shadow_col, shadow_col);
+    video::draw_rect_grid(start_x, start_y, box_w, box_h, a_col, box_bg);
+    
+    // Draw Box Border
+    for i in 1..(box_w - 1) { 
+        video::put_char_at(start_x + i, start_y, '═', a_col, box_bg); 
+        video::put_char_at(start_x + i, start_y + box_h - 1, '═', a_col, box_bg);
+    }
+    for i in 1..(box_h - 1) { 
+        video::put_char_at(start_x, start_y + i, '║', a_col, box_bg); 
+        video::put_char_at(start_x + box_w - 1, start_y + i, '║', a_col, box_bg);
+    }
+    video::put_char_at(start_x, start_y, '╔', a_col, box_bg);
+    video::put_char_at(start_x + box_w - 1, start_y, '╗', a_col, box_bg);
+    video::put_char_at(start_x, start_y + box_h - 1, '╚', a_col, box_bg);
+    video::put_char_at(start_x + box_w - 1, start_y + box_h - 1, '╝', a_col, box_bg);
+
+    // --- RENDER CONTENT ---
+    let header = format!(" root@ainux (Sovereign HFetch) ");
+    video::put_str_at(start_x + (box_w - header.len())/2, start_y, &header, 0xFFFFFFFF, a_col);
+
+    // Render Logo
+    for i in 0..14 {
+        video::put_str_at(start_x + 2, start_y + 1 + i, logo[i], a_col, box_bg);
     }
 
-    // --- RENDER FOOTER ---
-    video::put_str_colored(logo[13], a_col, b_col); video::put_str("\n");
-    video::put_str_colored(logo[14], a_col, b_col); video::put_str_colored("████████████████████████████\n", a_col, b_col);
-    video::put_str_colored(logo[15], a_col, b_col); video::put_str_colored("████████████████████████████\n", a_col, b_col);
-    video::put_str("\n");
+    // Render Info
+    for i in 0..11 {
+        video::put_str_at(start_x + 22, start_y + 2 + i, info[i].0, a_col, box_bg);
+        video::put_str_at(start_x + 22 + info[i].0.len(), start_y + 2 + i, info[i].1, f_col, box_bg);
+    }
+
+    // Move cursor below the box
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = start_y + box_h;
 }

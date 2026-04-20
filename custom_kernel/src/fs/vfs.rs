@@ -2,6 +2,34 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use spin::Mutex;
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct UsageStats {
+    pub total_size: u64,
+    pub image_size: u64,
+    pub system_size: u64,
+    pub alo_size: u64,
+}
+
+pub static USAGE_CACHE: Mutex<UsageStats> = Mutex::new(UsageStats {
+    total_size: 0,
+    image_size: 0,
+    system_size: 0,
+    alo_size: 0,
+});
+
+pub fn update_vfs_usage(delta: i64, name: &str) {
+    let mut cache = USAGE_CACHE.lock();
+    cache.total_size = (cache.total_size as i64 + delta) as u64;
+    
+    if name.ends_with(".bmp") || name.ends_with(".png") {
+        cache.image_size = (cache.image_size as i64 + delta) as u64;
+    } else if name.ends_with(".nux") || name.ends_with(".sys") {
+        cache.system_size = (cache.system_size as i64 + delta) as u64;
+    } else if name.ends_with(".alo") || name.ends_with(".rs") || name.ends_with(".c") || name.ends_with(".zig") {
+        cache.alo_size = (cache.alo_size as i64 + delta) as u64;
+    }
+}
 pub type ArcInode = Arc<dyn Inode>;
 pub type ArcHandle = Arc<dyn FileHandle>;
 
@@ -67,6 +95,9 @@ pub trait Inode: Send + Sync {
     fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
     fn chmod(&self, mode: u16) -> VfsResult<()>;
     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
+
+    // Visualization Support
+    fn get_occupancy(&self) -> Option<Vec<u8>> { None }
 }
 
 pub trait FileHandle: Send + Sync + core::fmt::Debug {

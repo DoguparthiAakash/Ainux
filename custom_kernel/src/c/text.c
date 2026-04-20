@@ -8,86 +8,90 @@
 void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color) {
     if (c == '\n' || c == '\r') return;
     
-    int font_index = 0;
-    const uint8_t *glyph = NULL;
-    uint8_t synthetic_glyph[8] = {0};
+    const uint8_t *glyph8x8 = NULL;
+    uint8_t synth[12] = {0};
+    int is_synth = 0;
 
+    // 1. Character Categorization & Glyph Selection
     if (c >= 32 && c <= 126) {
-        font_index = c - 32;
-        glyph = font_8x8[font_index];
-    } else if (c == 0x2588) { // Total Block █
-        for(int i=0;i<8;i++) synthetic_glyph[i] = 0xFF;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2593) { // Dark Shade ▓
-        for(int i=0;i<8;i++) synthetic_glyph[i] = (i % 2 == 0) ? 0xDD : 0x77;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2592) { // Medium Shade ▒
-        for(int i=0;i<8;i++) synthetic_glyph[i] = (i % 2 == 0) ? 0x55 : 0xAA;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2591) { // Light Shade ░
-        for(int i=0;i<8;i++) synthetic_glyph[i] = (i % 2 == 0) ? 0x11 : 0x44;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2261) { // Congruent To ≡
-        synthetic_glyph[1] = 0xFF;
-        synthetic_glyph[4] = 0xFF;
-        synthetic_glyph[7] = 0xFF;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2584) { // Lower half block ▄
-        for(int i=4;i<8;i++) synthetic_glyph[i] = 0xFF;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2580) { // Upper half block ▀
-        for(int i=0;i<4;i++) synthetic_glyph[i] = 0xFF;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2554) { // Double Top-Left ╔
-        synthetic_glyph[2] = 0xFC; synthetic_glyph[3] = 0x04;
-        synthetic_glyph[4] = 0xFC; synthetic_glyph[5] = 0x04;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2557) { // Double Top-Right ╗
-        synthetic_glyph[2] = 0x3F; synthetic_glyph[3] = 0x20;
-        synthetic_glyph[4] = 0x3F; synthetic_glyph[5] = 0x20;
-        glyph = synthetic_glyph;
-    } else if (c == 0x255A) { // Double Bottom-Left ╚
-        synthetic_glyph[5] = 0x04; synthetic_glyph[6] = 0xFC;
-        synthetic_glyph[2] = 0x04; synthetic_glyph[3] = 0xFC;
-        glyph = synthetic_glyph;
-    } else if (c == 0x255D) { // Double Bottom-Right ╝
-        synthetic_glyph[5] = 0x20; synthetic_glyph[6] = 0x3F;
-        synthetic_glyph[2] = 0x20; synthetic_glyph[3] = 0x3F;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2550) { // Double Horizontal ═
-        synthetic_glyph[2] = 0xFF; synthetic_glyph[4] = 0xFF;
-        glyph = synthetic_glyph;
-    } else if (c == 0x2551) { // Double Vertical ║
-        for(int i=0;i<8;i++) synthetic_glyph[i] = 0x24; // 00100100
-        glyph = synthetic_glyph;
-    } else if (c == '=') {
-        font_index = '=' - 32;
-        glyph = font_8x8[font_index];
-    } else if (c == '+') {
-        font_index = '+' - 32;
-        glyph = font_8x8[font_index];
+        glyph8x8 = font_8x8[c - 32];
     } else {
-        font_index = '?' - 32;
-        glyph = font_8x8[font_index];
-    }
-    
-    // Convert character coordinates to pixels
-    int px = x * 8;
-    int py = y * 12;  // 12 pixel line height
-    
-    // Draw Font Bits (Top 8 pixels)
-    for (int dy = 0; dy < 8; dy++) {
-        uint8_t row = glyph[dy];
-        for (int dx = 0; dx < 8; dx++) {
-            uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
-            gfx_put_pixel_safe(px + dx, py + dy, color);
+        is_synth = 1;
+        switch(c) {
+            case 0x2588: // Full Block █
+                for(int i=0; i<12; i++) { synth[i] = 0xFF; } break;
+            case 0x2593: // Dark Shade ▓
+                for(int i=0; i<12; i++) { synth[i] = (i % 2 == 0) ? 0xDD : 0x77; } break;
+            case 0x2592: // Medium Shade ▒
+                for(int i=0; i<12; i++) { synth[i] = (i % 2 == 0) ? 0x55 : 0xAA; } break;
+            case 0x2591: // Light Shade ░
+                for(int i=0; i<12; i++) { synth[i] = (i % 2 == 0) ? 0x11 : 0x22; } break;
+            case 0x2500: // Horizontal line ─
+                synth[5] = 0xFF; synth[6] = 0xFF; break;
+            case 0x2502: // Vertical line │
+                for(int i=0; i<12; i++) { synth[i] = 0x18; } break;
+            case 0x250C: // Top-Left ┌
+                synth[5] = 0xF0; synth[6] = 0xF0;
+                for(int i=7; i<12; i++) { synth[i] = 0x10; } break;
+            case 0x2510: // Top-Right ┐
+                synth[5] = 0x0F; synth[6] = 0x0F;
+                for(int i=7; i<12; i++) { synth[i] = 0x08; } break;
+            case 0x2514: // Bottom-Left └
+                for(int i=0; i<5; i++) { synth[i] = 0x10; }
+                synth[5] = 0xF0; synth[6] = 0xF0; break;
+            case 0x2518: // Bottom-Right ┘
+                for(int i=0; i<5; i++) { synth[i] = 0x08; }
+                synth[5] = 0x0F; synth[6] = 0x0F; break;
+            case 0x2550: // Double Horizontal ═
+                synth[4] = 0xFF; synth[7] = 0xFF; break;
+            case 0x2551: // Double Vertical ║
+                for(int i=0; i<12; i++) { synth[i] = 0x24; } break;
+            case 0x2554: // Double Top-Left ╔
+                synth[4] = 0xFC; synth[5] = 0x04; synth[6] = 0x04; synth[7] = 0xFC;
+                for(int i=8; i<12; i++) { synth[i] = 0x24; } break;
+            case 0x2557: // Double Top-Right ╗
+                synth[4] = 0x3F; synth[5] = 0x20; synth[6] = 0x20; synth[7] = 0x3F;
+                for(int i=8; i<12; i++) { synth[i] = 0x24; } break;
+            case 0x255A: // Double Bottom-Left ╚
+                for(int i=0; i<4; i++) { synth[i] = 0x24; }
+                synth[4] = 0xFC; synth[5] = 0x04; synth[6] = 0x04; synth[7] = 0xFC; break;
+            case 0x255D: // Double Bottom-Right ╝
+                for(int i=0; i<4; i++) { synth[i] = 0x24; }
+                synth[4] = 0x3F; synth[5] = 0x20; synth[6] = 0x20; synth[7] = 0x3F; break;
+            case 0x2580: // Upper block ▀
+                for(int i=0; i<6; i++) { synth[i] = 0xFF; } break;
+            case 0x203E: // Overline ‾
+                synth[0] = 0xFF; synth[1] = 0xFF; break;
+            case 0x2261: // Congruent ≡
+                synth[2] = 0xFF; synth[5] = 0xFF; synth[8] = 0xFF; break;
+            default:
+                is_synth = 0; glyph8x8 = font_8x8['?' - 32]; break;
         }
     }
-    
-    // Fill Gap (Bottom 4 pixels) with background color
-    for (int dy = 8; dy < 12; dy++) {
-        for (int dx = 0; dx < 8; dx++) {
-            gfx_put_pixel_safe(px + dx, py + dy, bg_color);
+
+    int px = x * 8;
+    int py = y * 12;
+
+    if (is_synth) {
+        for (int dy = 0; dy < 12; dy++) {
+            uint8_t row = synth[dy];
+            for (int dx = 0; dx < 8; dx++) {
+                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
+                gfx_put_pixel_safe(px + dx, py + dy, color);
+            }
+        }
+    } else {
+        for (int dy = 0; dy < 8; dy++) {
+            uint8_t row = glyph8x8[dy];
+            for (int dx = 0; dx < 8; dx++) {
+                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
+                gfx_put_pixel_safe(px + dx, py + dy, color);
+            }
+        }
+        for (int dy = 8; dy < 12; dy++) {
+            for (int dx = 0; dx < 8; dx++) {
+                gfx_put_pixel_safe(px + dx, py + dy, bg_color);
+            }
         }
     }
 }

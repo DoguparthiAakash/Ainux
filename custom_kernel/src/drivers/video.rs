@@ -11,10 +11,10 @@ pub struct Theme {
 }
 
 pub static THEME: Mutex<Theme> = Mutex::new(Theme {
-    bg: 0x00000000,
-    fg: 0xFFFFFFFF,
-    accent: 0x00AAAAFF, // Sky blue header
-    root: 0x00FF5555,   // Soft red root
+    bg: 0x00111122,     // Midnight Blue-Black (WP_BG)
+    fg: 0x00DDDDDD,     // Soft White (WP_TEXT)
+    accent: 0x0000AAAA, // Industrial Cyan (WP_SEL)
+    root: 0x000088AA,   // Teal (WP_TITLE)
     font_size: 1,
 });
 

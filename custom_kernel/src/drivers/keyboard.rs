@@ -103,17 +103,25 @@ unsafe fn inb(port: u16) -> u8 {
 
 pub fn init() {
     unsafe {
-        // Explicitly ENABLE scanning for the keyboard
-        // Wait for buffer to be empty
-        wait_write();
-        outb(0x60, 0xF4); // Enable Scanning
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b'K' as u8, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b'B' as u8, options(nomem, nostack, preserves_flags));
         
-        // Wait for acknowledgment (0xFA) to clear the buffer
-        // Note: bit 0 of 0x64 must be 1 for a successful read.
+        wait_write();
+        outb(0x60, 0xF4);
         wait_read();
         let _ack = inb(0x60); 
+
+        // Drain any existing data in the controller
+        for _ in 0..10 {
+            let status = inb(0x64);
+            if (status & 1) != 0 {
+                let _ = inb(0x60);
+            }
+        }
         
         crate::cpu::pic::unmask_irq(1);
+        
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b'!' as u8, options(nomem, nostack, preserves_flags));
     }
 }
 
@@ -173,6 +181,12 @@ extern "C" fn rust_keyboard_handler() {
         }
 
         let scancode = inb(0x60);
+        
+        // Debug character
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b'(' as u8, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") 0x3F8, in("al") scancode, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") 0x3F8, in("al") b')' as u8, options(nomem, nostack, preserves_flags));
+
         notify_eoi(1);
         
         if scancode == 0xE0 {

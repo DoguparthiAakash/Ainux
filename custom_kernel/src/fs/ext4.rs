@@ -148,6 +148,7 @@ impl FileSystem for Ext4FileSystem {
             fs: self.inner.clone(),
             inode_num: 2,
             disk_inode,
+            name: String::from("/"),
         })
     }
 }
@@ -393,12 +394,34 @@ impl Ext4FsInner {
             Err(VfsError::IOError)
         }
     }
+
+    // --- Block Map Visualization Support (Phase 30d) ---
+    pub fn get_occupancy_summary(&self) -> Vec<u8> {
+        // Read block bitmaps for first N groups (resolution for TUI map)
+        let mut summary = Vec::new();
+        let groups = (self.sb.blocks_count_lo / self.sb.blocks_per_group).min(42);
+        
+        for g in 0..groups {
+            let bgd = self.get_bgd(g);
+            if let Some(bitmap) = self.read_block_bitmap(&bgd) {
+                // Approximate group usage: used bits / total bits
+                let mut used = 0;
+                for byte in &bitmap {
+                    used += byte.count_ones();
+                }
+                let ratio = (used as f32 / (self.sb.blocks_per_group as f32)).min(1.0);
+                summary.push((ratio * 255.0) as u8);
+            }
+        }
+        summary
+    }
 }
 
 pub struct Ext4Inode {
     fs: Arc<Ext4FsInner>,
     inode_num: u32,
     disk_inode: DiskInode,
+    name: String,
 }
 
 impl Inode for Ext4Inode {
@@ -417,6 +440,10 @@ impl Inode for Ext4Inode {
             gid: self.disk_inode.gid,
             mtime: self.disk_inode.mtime,
         })
+    }
+
+    fn get_occupancy(&self) -> Option<Vec<u8>> {
+        Some(self.fs.get_occupancy_summary())
     }
     
     fn lookup(&self, name: &str) -> VfsResult<Arc<dyn Inode>> {
@@ -470,6 +497,7 @@ impl Inode for Ext4Inode {
                                     fs: self.fs.clone(),
                                     inode_num: entry.inode,
                                     disk_inode: child_inode,
+                                    name: String::from(s),
                                 }));
                             },
                             Err(_) => return Err(VfsError::IOError),
@@ -489,6 +517,7 @@ impl Inode for Ext4Inode {
             fs: self.fs.clone(),
             inode: self.disk_inode, // Copy
             inode_num: self.inode_num,
+            name: self.name.clone(),
         }))
     }
     
@@ -586,6 +615,12 @@ impl Inode for Ext4Inode {
                          ) };
                          if let Ok(s) = core::str::from_utf8(name_slice) {
                              if s == name {
+                                 // Tracking: Read size before deletion
+                                 if let Ok(child) = self.lookup(name) {
+                                     let stat = child.stat().unwrap();
+                                     vfs::update_vfs_usage(-(stat.size as i64), name);
+                                 }
+
                                  entry.inode = 0; // Mark deleted
                                  found = true;
                                  modified = true;
@@ -749,6 +784,11 @@ impl Ext4Inode {
         self.fs.write_inode(inode_num, new_inode)?;
         crate::drivers::video::put_str("Ext4: Inode Written\n");
         
+        // Tracking: New file created
+        if file_type == FileType::File {
+            vfs::update_vfs_usage(0, name); // Will use name for category later on writes
+        }
+
         // 3. Add Entry to Parent (self)
         // We need to write a DirEntry2 to 'self's blocks.
         if !self.add_dir_entry(self.inode_num, name, inode_num, file_type) {
@@ -761,6 +801,7 @@ impl Ext4Inode {
             fs: self.fs.clone(),
             inode_num,
             disk_inode: new_inode,
+            name: String::from(name),
         }))
     }
 
@@ -940,6 +981,7 @@ pub struct Ext4File {
     fs: Arc<Ext4FsInner>,
     inode: DiskInode,
     inode_num: u32,
+    name: String,
 }
 
 impl FileHandle for Ext4File {
@@ -1059,6 +1101,8 @@ impl FileHandle for Ext4File {
         
         // Final Size Update
         if current_offset > current_size {
+            let delta = current_offset - current_size;
+            vfs::update_vfs_usage(delta as i64, &self.name);
             inode.size_lo = current_offset as u32;
         }
         
