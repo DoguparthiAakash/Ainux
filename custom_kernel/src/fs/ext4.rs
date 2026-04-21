@@ -443,36 +443,29 @@ impl Inode for Ext4Inode {
                 let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
                 let entry = unsafe { *entry_ptr };
                 
-                if entry.rec_len == 0 { break; } // Avoid infinite loop
+                let entry_header_size = core::mem::size_of::<DirEntry2>();
+                if entry.rec_len == 0 { break; } 
                 
-                if entry.inode == 0 { // Unused
-                     offset += entry.rec_len as usize;
-                     continue;
-                }
+                if entry.inode != 0 {
+                    let name_len = entry.name_len as usize;
+                    let name_slice = unsafe { core::slice::from_raw_parts( 
+                        buf.as_ptr().add(offset + entry_header_size), 
+                        name_len 
+                    ) };
                 
-                let name_len = entry.name_len as usize;
-                let name_slice = unsafe { core::slice::from_raw_parts( 
-                    buf.as_ptr().add(offset + 8), 
-                    name_len 
-                ) };
-                
-                if let Ok(s) = core::str::from_utf8(name_slice) {
-                    // DEBUG: Print entry name
-                    // crate::drivers::video::put_str("Entry: ");
-                    // crate::drivers::video::put_str(s);
-                    // crate::drivers::video::put_str("\n");
-                    
-                    if s == name {
-                        // Found!
-                        match self.fs.read_inode(entry.inode) {
-                            Ok(child_inode) => {
-                                return Ok(Arc::new(Ext4Inode {
-                                    fs: self.fs.clone(),
-                                    inode_num: entry.inode,
-                                    disk_inode: child_inode,
-                                }));
-                            },
-                            Err(_) => return Err(VfsError::IOError),
+                    if let Ok(s) = core::str::from_utf8(name_slice) {
+                        if s == name {
+                            // Found!
+                            match self.fs.read_inode(entry.inode) {
+                                Ok(child_inode) => {
+                                    return Ok(Arc::new(Ext4Inode {
+                                        fs: self.fs.clone(),
+                                        inode_num: entry.inode,
+                                        disk_inode: child_inode,
+                                    }));
+                                },
+                                Err(_) => return Err(VfsError::IOError),
+                            }
                         }
                     }
                 }
@@ -515,23 +508,20 @@ impl Inode for Ext4Inode {
                 let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
                 let entry = unsafe { *entry_ptr };
                 
-                if entry.rec_len == 0 { break; } // Avoid infinite loop
+                if entry.rec_len == 0 { break; } 
                 
-                // DEBUG
-                // crate::drivers::video::put_str("LS: Entry Inode ");
-                // crate::shell::print_digit(entry.inode as u8); -- print_digit is not public in shell yet
-                // crate::drivers::video::put_str("...\n");
-
                 if entry.inode != 0 {
                     let name_len = entry.name_len as usize;
+                    let entry_header_size = core::mem::size_of::<DirEntry2>();
+                    
                     // Bounds Check
-                    if offset + 8 + name_len > buf.len() {
+                    if offset + entry_header_size + name_len > buf.len() {
                          crate::drivers::video::put_str("LS: OOB Name!\n");
                          break;
                     }
 
                     let name_slice = unsafe { core::slice::from_raw_parts( 
-                        buf.as_ptr().add(offset + 8), 
+                        buf.as_ptr().add(offset + entry_header_size), 
                         name_len 
                     ) };
                     
@@ -728,12 +718,13 @@ impl Ext4Inode {
                 let dotdot_ptr = buf.as_mut_ptr().add(12);
                 
                 // .
+                let entry_header_size = core::mem::size_of::<DirEntry2>();
                 let dot = dot_ptr as *mut DirEntry2;
                 (*dot).inode = inode_num;
                 (*dot).rec_len = 12;
                 (*dot).name_len = 1;
                 (*dot).file_type = 2; // Directory
-                core::ptr::copy_nonoverlapping(".".as_ptr(), dot_ptr.add(8), 1);
+                core::ptr::copy_nonoverlapping(".".as_ptr(), dot_ptr.add(entry_header_size), 1);
                 
                 // ..
                 let dotdot = dotdot_ptr as *mut DirEntry2;
@@ -741,7 +732,7 @@ impl Ext4Inode {
                 (*dotdot).rec_len = (self.fs.block_size - 12) as u16;
                 (*dotdot).name_len = 2;
                 (*dotdot).file_type = 2;
-                core::ptr::copy_nonoverlapping("..".as_ptr(), dotdot_ptr.add(8), 2);
+                core::ptr::copy_nonoverlapping("..".as_ptr(), dotdot_ptr.add(entry_header_size), 2);
             }
             if !self.fs.write_block(block, &buf) { return Err(VfsError::IOError); }
         }
@@ -789,9 +780,10 @@ impl Ext4Inode {
                  }
              }
              
-             let real_len = (8 + entry.name_len as u16 + 3) & !3;
+             let entry_header_size = core::mem::size_of::<DirEntry2>();
+             let real_len = (entry_header_size as u16 + entry.name_len as u16 + 3) & !3;
              let available = entry.rec_len - real_len;
-             let needed = (8 + name.len() as u16 + 3) & !3;
+             let needed = (entry_header_size as u16 + name.len() as u16 + 3) & !3;
                  
              if available >= needed {
                  crate::drivers::video::put_str("Ext4: Found Space! Splitting.\n");

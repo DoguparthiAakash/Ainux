@@ -246,16 +246,29 @@ fn show_mem_r(_separate: bool, _slot: Option<usize>) {
         let (used, total) = pmm.get_stats();
         let total_mb = (total * 4096) / 1024 / 1024;
         let used_mb = (used * 4096) / 1024 / 1024;
+        let used_pct = (used * 100) / total.max(1);
+
+        // Build bar
+        let mut bar = String::from("[");
+        let filled = (used_pct / 10) as usize;
+        for i in 0..10 {
+            if i < filled { bar.push_str("█"); }
+            else { bar.push_str("░"); }
+        }
+        bar.push_str(&format!("] {}%", used_pct));
 
         let info = [
-            ("Capacity:     ", format!("{} MiB", total_mb)),
-            ("Used:         ", format!("{} MiB ({}%)", used_mb, (used * 100) / total)),
-            ("Type:         ", String::from("DDR4 SDRAM")),
-            ("Slot Count:   ", String::from("2 (Detected)")),
-            ("SMBIOS:       ", String::from(if find_smbios().is_some() { "Present" } else { "Shadow (Default)" })),
+            ("Manufacturer: ", String::from("System Boot RAM")),
+            ("Total Size:   ", format!("{} MB", total_mb)),
+            ("Used Space:   ", format!("{} MB", used_mb)),
+            ("Free Space:   ", format!("{} MB", total_mb - used_mb)),
+            ("Usage Status: ", bar),
+            ("State:        ", String::from("Industrial Active")),
         ];
 
         draw_boxed_info("Memory Diagnostic", &ASC_RAM, &info);
+    } else {
+        video::put_str("RAM Error: PMM not available.\n");
     }
 }
 
@@ -292,26 +305,33 @@ fn show_mem_d(_separate: bool, _drive: Option<usize>) {
     if total_capacity == 0 { total_capacity = 64 * 1024 * 1024; } // Fallback 64MB
 
     let other_size = stats.total_size.saturating_sub(stats.image_size + stats.system_size + stats.alo_size);
-    let used_pct = (stats.total_size * 100) / total_capacity.max(1);
+    
+    // High-precision percentage (scaled by 10)
+    let used_pct_scaled = (stats.total_size * 1000) / total_capacity.max(1);
+    let used_pct_whole = used_pct_scaled / 10;
+    let used_pct_fract = used_pct_scaled % 10;
     
     // Create usage bar
     let mut bar = String::from("[");
-    let filled = (used_pct / 10) as usize;
+    let mut filled = (used_pct_whole / 10) as usize;
+    // Minimum 1 block if any space used
+    if stats.total_size > 0 && filled == 0 { filled = 1; }
+    
     for i in 0..10 {
         if i < filled { bar.push_str("█"); }
         else { bar.push_str("░"); }
     }
-    bar.push_str(&format!("] {}%", used_pct));
+    bar.push_str(&format!("] {}.{}%", used_pct_whole, used_pct_fract));
 
     let info = [
         ("Model:        ", model),
         ("Capacity:     ", format!("{} / {}", format_size(stats.total_size), format_size(total_capacity))),
         ("Usage:        ", bar),
-        ("────────────────────────", String::new()),
+        ("              ", String::from("")),
         ("Images:       ", format_size(stats.image_size)),
         ("System:       ", format_size(stats.system_size)),
-        ("Binaries:     ", format_size(stats.alo_size)),
-        ("Other:        ", format_size(other_size)),
+        ("Code/Binaries:", format_size(stats.alo_size)),
+        ("General Data: ", format_size(other_size)),
     ];
 
     draw_boxed_info("Disk Diagnostic", &ASC_DISK, &info);
@@ -366,12 +386,12 @@ fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>, stats: &mut UsageStats) 
         if let Ok(stat) = inode.stat() {
             if stat.file_type == FileType::File {
                 stats.total_size += stat.size;
-                // REAL extension check
-                if name.ends_with(".bmp") || name.ends_with(".png") {
+                // Universal categorization
+                if name.ends_with(".bmp") || name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".ico") {
                     stats.image_size += stat.size;
-                } else if name.ends_with(".nux") || name.ends_with(".sys") {
+                } else if name.ends_with(".nux") || name.ends_with(".sys") || name.ends_with(".bin") || name.ends_with(".o") {
                     stats.system_size += stat.size;
-                } else if name.ends_with(".alo") || name.ends_with(".rs") || name.ends_with(".c") || name.ends_with(".zig") {
+                } else if name.ends_with(".alo") || name.ends_with(".rs") || name.ends_with(".c") || name.ends_with(".zig") || name.ends_with(".asm") || name.ends_with(".h") {
                     stats.alo_size += stat.size;
                 }
             } else if stat.file_type == FileType::Directory {

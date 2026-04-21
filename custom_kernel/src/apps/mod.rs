@@ -10,3 +10,4 @@ pub mod dcustom;
 pub mod settings;
 pub mod metus;
 pub mod awm;
+pub mod taskman;
