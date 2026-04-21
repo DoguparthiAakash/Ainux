@@ -404,6 +404,7 @@ pub fn execute_command(input: &str) {
             "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
             "hfetch" => crate::apps::hfetch::cmd_hfetch(&args),
             "hinfo" => crate::apps::hinfo::main(&args),
+            "tm" => crate::apps::taskman::main(&args),
             "dcustom" => crate::apps::dcustom::main(),
             "settings" => crate::apps::settings::main(),
             "metus" => crate::apps::metus::main(),
@@ -479,7 +480,7 @@ fn cmd_help() {
 
     video::put_str("\n--- Text Processing & Utilities ---\n");
     video::put_str("  grep / head / tail  - High-speed stream filtering\n");
-    video::put_str("  wc <file>           - Word, line, and byte counters\n");
+    video::put_str("  wc <file> / tm      - Word counters / Modern Task Manager\n");
     video::put_str("  clock / cal         - Modern Clock / Calendar systems\n");
     video::put_str("  clear / help        - UI management & this menu\n");
 }
@@ -757,19 +758,29 @@ fn cmd_rm(args: &[&str]) {
 }
 
 fn cmd_free() {
-    let cpu_count = crate::cpu::percpu::get_cpu_count();
     let mut pmm_lock = crate::mm::pmm::PMM.lock();
     if let Some(pmm) = pmm_lock.as_ref() {
-        let (used, total) = pmm.get_stats();
-        let page_size = 4096; // 4KB
-        let used_mb = (used * page_size) / 1024 / 1024;
-        let total_mb = (total * page_size) / 1024 / 1024;
+        let (used, total) = pmm.get_stats_fast();
+        let used_mb = (used * 4096) / 1024 / 1024;
+        let total_mb = (total * 4096) / 1024 / 1024;
+        let pct = (used * 100) / total.max(1);
         
-        video::put_str("Memory: \n");
-        video::put_str("  Used: "); print_digit(used_mb as u8); video::put_str(" MiB\n");
-        video::put_str("  Total: "); print_digit(total_mb as u8); video::put_str(" MiB\n");
+        video::put_str_colored("AINUX MEMORY STATISTICS\n", 0x00AAAAFF, 0x00000000);
+        video::put_str(&format!("  Total Physical:  {} MB\n", total_mb));
+        video::put_str(&format!("  Used Physical:   {} MB ({}%)\n", used_mb, pct));
+        video::put_str(&format!("  Free Physical:   {} MB\n", total_mb - used_mb));
+        
+        // Visual Bar
+        video::put_str("  [");
+        let dots = 20;
+        let filled = (pct * dots) / 100;
+        for i in 0..dots {
+             if i < filled { video::put_str("█"); }
+             else { video::put_str("░"); }
+        }
+        video::put_str("]\n");
     } else {
-        video::put_str("PMM not initialized.\n");
+        video::put_str("Error: Physical Memory Manager (PMM) offline.\n");
     }
 }
 
