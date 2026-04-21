@@ -39,12 +39,24 @@ pub fn hlt() {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    // In panic, try to construct a fresh serial port to avoid deadlock if lock is held
+    // 1. Emergency Serial Output
     let mut serial = drivers::serial::SerialPort::new(0x3F8);
-    let _ = write!(serial, "PANIC: {:?}\n", _info);
+    let _ = write!(serial, "\n\n!!! KERNEL PANIC !!!\n");
+    let _ = write!(serial, "Info: {:?}\n", _info);
     
-    let _ = write!(serial, "Attempting to recover to Shell...\n");
-    crate::shell::run();
+    // 2. Emergency Video Output (Lockless)
+    // We bypass the Mutex-protected drivers::video paths to avoid deadlocks.
+    unsafe {
+        crate::drivers::video::panic_clear();
+        crate::drivers::video::emergency_put_str("               --- KERNEL PANIC ---\n\n");
+        
+        let mut msg = alloc::string::String::new();
+        let _ = write!(msg, "A sovereign system failure has occurred.\n\n");
+        let _ = write!(msg, "Information:\n{:?}\n\n", _info);
+        let _ = write!(msg, "System Halted. Please check VirtualBox logs or Serial output.\n");
+        
+        crate::drivers::video::emergency_put_str(&msg);
+    }
     
     loop {
         hlt();
@@ -231,7 +243,12 @@ pub extern "C" fn _start() -> ! {
             let _ = write!(serial, "Ext4: Superblock found. Init VFS...\n");
             let ext4 = alloc::sync::Arc::new(fs::ext4::Ext4FileSystem::new(sb));
             fs::vfs::init(ext4);
-            let _ = write!(serial, "VFS: Initialized.\n");
+            let _ = write!(serial, "VFS: Ext4 Root Initialized.\n");
+            
+            // Mount Procfs (Industrial Standard)
+            let procfs = alloc::sync::Arc::new(fs::procfs::ProcFileSystem);
+            fs::vfs::mount("/proc", procfs);
+            let _ = write!(serial, "VFS: Procfs mounted at /proc.\n");
             
             // Initialize System Configuration
             if !LOAD_SAFE_DEFAULTS.load(core::sync::atomic::Ordering::SeqCst) {

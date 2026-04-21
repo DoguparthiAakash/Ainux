@@ -4,13 +4,46 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::format;
 use crate::drivers::{keyboard, video, rtc};
+use crate::fs::vfs::{ArcHandle, ArcInode, FileType};
+use crate::fs::console::ConsoleHandle;
 use crate::fs::vfs;
 use core::fmt::Write;
 use spin::Mutex;
 use alloc::sync::Arc;
 use crate::alloc::string::ToString;
 
+pub static CURRENT_OUT: Mutex<Option<ArcHandle>> = Mutex::new(None);
+
+pub fn sh_put_str(s: &str) {
+    let mut out = CURRENT_OUT.lock();
+    if let Some(handle) = out.as_ref() {
+        let _ = handle.write(s.as_bytes(), 0);
+    } else {
+        video::put_str(s);
+    }
+}
+
 static CWD: Mutex<String> = Mutex::new(String::new());
+static CURRENT_UID: Mutex<u32> = Mutex::new(1000); // 0 = Root, 1000 = Standard User
+
+fn get_uid() -> u32 {
+    *CURRENT_UID.lock()
+}
+
+fn is_root() -> bool {
+    get_uid() == 0
+}
+
+fn requires_root(cmd: &str) -> bool {
+    match cmd {
+        "reboot" | "shutdown" | "format" | "mount" | "umount" | "sync" => true,
+        "rm" | "mkdir" | "chmod" | "chown" | "mv" | "cp" | "touch" | "rmdir" => true,
+        "ip" | "wifi" | "sshd" | "hostname" => true,
+        "kill" | "killall" | "renice" | "nice" => true,
+        "su" | "useradd" | "passwd" => true,
+        _ => false,
+    }
+}
 
 fn get_cwd() -> String {
     let cwd = CWD.lock();
@@ -331,14 +364,60 @@ pub fn run() {
 }
 
 pub fn execute_command(input: &str) {
-    let args: Vec<&str> = input.split_whitespace().collect();
+    let parts: Vec<&str> = input.split('>').collect();
+    let cmd_str = parts[0].trim();
+    let redirect = if parts.len() > 1 { Some(parts[1].trim()) } else { None };
+
+    if redirect.is_some() {
+        let filename = redirect.unwrap();
+        // Open file for writing
+        if let Ok(root) = crate::fs::vfs::resolve_path("/") {
+             // For now, assume we create in root or resolve path
+             let target = if let Ok(node) = crate::fs::vfs::resolve_path(filename) {
+                 node
+             } else {
+                 match root.create(filename, FileType::File) {
+                     Ok(n) => n,
+                     Err(_) => { video::put_str("Redirection Error: Cannot create file.\n"); return; }
+                 }
+             };
+
+             if let Ok(handle) = target.open(0) {
+                 *CURRENT_OUT.lock() = Some(handle);
+             } else {
+                 video::put_str("Redirection Error: Cannot open file.\n");
+                 return;
+             }
+        }
+    }
+
+    let args: Vec<&str> = cmd_str.split_whitespace().collect();
     if let Some(cmd) = args.get(0) {
-        match *cmd {
+        if *cmd == "sudo" {
+            cmd_sudo(&args);
+        } else {
+            if requires_root(cmd) && !is_root() {
+                video::put_str_colored("Access Denied: ", 0x00FF0000, 0);
+                video::put_str("This command requires Sovereign privileges.\n");
+                video::put_str("Try 'sudo <command>'.\n");
+            } else {
+                execute_command_inner(cmd, &args);
+            }
+        }
+    }
+
+    // Reset Redirection
+    *CURRENT_OUT.lock() = None;
+}
+
+fn execute_command_inner(cmd: &str, args: &[&str]) {
+    match cmd {
             "help" => cmd_help(),
             "clear" => video::clear(),
-            "whoami" => video::put_str("root (kernel)\n"),
+            "whoami" => cmd_whoami(),
             "time" => cmd_time(),
             "shutdown" => cmd_shutdown(),
+            "passwd" => cmd_passwd(&args),
             "ls" => cmd_ls(&args),
             "cat" => cmd_cat(&args),
             "nvix" => crate::apps::nvi::cmd_nvix(&args),
@@ -390,6 +469,10 @@ pub fn execute_command(input: &str) {
             "wifi" => cmd_wifi(&args),
             "lsblk" => cmd_lsblk(),
             "uname" => cmd_uname(),
+            "echo" => cmd_echo(&args),
+            "less" => cmd_less(&args),
+            "df" => cmd_df(),
+            "man" => cmd_man(&args),
             "grep" => cmd_grep(&args),
             "head" => cmd_head(&args),
             "tail" => cmd_tail(&args),
@@ -397,8 +480,6 @@ pub fn execute_command(input: &str) {
             "ip" => cmd_ip(&args),
             "netstat" => cmd_netstat(),
             "sshd" => crate::apps::sshd::main(),
-            "youtube" => cmd_youtube(&args),
-            "google" => cmd_google(&args),
             "format" => cmd_format(&args),
             "cd" => cmd_cd(&args),
             "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
@@ -411,6 +492,7 @@ pub fn execute_command(input: &str) {
             "save" => cmd_save(),
             "hostname" => cmd_hostname(&args),
             "examples" => cmd_examples(),
+            "tm" => crate::apps::taskman::main(&args),
             _ => {
                 if args.len() >= 2 && args[1] == "-prop" {
                     cmd_prop(&args);
@@ -420,7 +502,7 @@ pub fn execute_command(input: &str) {
             },
         }
     }
-}
+
 
 // ... existing help ...
 
@@ -458,30 +540,26 @@ fn cmd_help() {
     video::put_str("  cd <dir>  / pwd     - Navigate / Print current directory\n");
     video::put_str("  cat / touch / stat  - Read / Create / Info on files\n");
     video::put_str("  mkdir / rmdir       - Directory management\n");
-    video::put_str("  cp / mv / rm        - Copy / Move / Delete files\n");
+    video::put_str("  cp / mv / rm        - Copy / Move / Delete files (rm -r support)\n");
     video::put_str("  find <name>         - Search for files in the system\n");
     video::put_str("  mount / umount      - Disk & partition management\n");
     video::put_str("  sync                - Flush filesystem buffers to disk\n");
 
     video::put_str("\n--- System & Advanced Drivers ---\n");
-    video::put_str("  ps / top / jobs     - Task & performance monitoring\n");
-    video::put_str("  free / lsblk        - Memory / Block device statistics\n");
-    video::put_str("  hfetch / hinfo      - System & hardware diagnostic info\n");
+    video::put_str("  ps / top / hfetch   - Task & performance monitoring\n");
+    video::put_str("  free / df / lsblk   - Memory / Disk / Block statistics\n");
     video::put_str("  uname / uptime      - System & Kernel identity\n");
     video::put_str("  dmesg               - View kernel message buffer\n");
     video::put_str("  reboot / shutdown   - Power & Restart control\n");
 
     video::put_str("\n--- Networking & Remote Access ---\n");
-    video::put_str("  ip addr             - View IP (DHCP/Static) & Status\n");
-    video::put_str("  ping <host>         - ICMP Network Connectivity Test\n");
-    video::put_str("  sshd                - Start Remote SSH Gateway (Port 22)\n");
-    video::put_str("  netstat             - Monitor Open Sockets & Connections\n");
-    video::put_str("  google <query>      - Sovereign CLI Search Engine\n");
+    video::put_str("  ip addr / ping      - View IP Status / Network Test\n");
+    video::put_str("  sshd / netstat      - Start SSH Gateway / Monitor Connections\n");
 
     video::put_str("\n--- Text Processing & Utilities ---\n");
     video::put_str("  grep / head / tail  - High-speed stream filtering\n");
-    video::put_str("  wc <file> / tm      - Word counters / Modern Task Manager\n");
-    video::put_str("  clock / cal         - Modern Clock / Calendar systems\n");
+    video::put_str("  echo / wc / less    - Text tools / Word count / Pager\n");
+    video::put_str("  clock / cal / man   - Time / Calendar / System Manual\n");
     video::put_str("  clear / help        - UI management & this menu\n");
 }
 
@@ -744,16 +822,44 @@ fn cmd_chown(args: &[&str]) {
 }
 
 fn cmd_rm(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: rm <file>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: rm [-r] <file>\n"); return; }
     
-    match find_parent_and_name(args[1]) {
-        Ok((parent, name)) => {
-            match parent.unlink(&name) {
-                Ok(_) => video::put_str("Deleted.\n"),
-                Err(_) => video::put_str("Delete failed.\n"),
-            }
-        },
-        Err(_) => video::put_str("Path not found.\n"),
+    let (recursive, path_idx) = if args[1] == "-r" {
+        if args.len() < 3 { sh_put_str("Usage: rm -r <dir>\n"); return; }
+        (true, 2)
+    } else {
+        (false, 1)
+    };
+
+    let target = args[path_idx];
+
+    if recursive {
+        sh_put_str(&format!("Recursively removing {}...\n", target));
+        // Simple recursive implementation using find_inode and VFS
+        match find_inode(target) {
+            Ok(inode) => {
+                if let Ok(files) = inode.read_dir() {
+                    for name in files {
+                        if name == "." || name == ".." { continue; }
+                        let _ = inode.unlink(&name); // Basic recursive attempt
+                    }
+                }
+                // Finally remove self if it's a dir
+                let _ = vfs::root().remove_dir(target);
+                sh_put_str("Done.\n");
+            },
+            Err(_) => sh_put_str("rm: Path not found.\n"),
+        }
+    } else {
+        match find_parent_and_name(target) {
+            Ok((parent, name)) => {
+                match parent.unlink(&name) {
+                    Ok(_) => sh_put_str("Deleted.\n"),
+                    Err(_) => sh_put_str("Delete failed.\n"),
+                }
+            },
+            Err(_) => sh_put_str("rm: Path not found.\n"),
+        }
     }
 }
 
@@ -765,18 +871,18 @@ fn cmd_free() {
         let total_mb = (total * 4096) / 1024 / 1024;
         let pct = (used * 100) / total.max(1);
         
-        video::put_str_colored("AINUX MEMORY STATISTICS\n", 0x00AAAAFF, 0x00000000);
+        video::put_str_colored("  SOVEREIGN RAM UTILIZATION\n", 0x00AAAAFF, 0x00000000);
         video::put_str(&format!("  Total Physical:  {} MB\n", total_mb));
-        video::put_str(&format!("  Used Physical:   {} MB ({}%)\n", used_mb, pct));
+        video::put_str(&format!("  Allocated (OS):  {} MB ({}%)\n", used_mb, pct));
         video::put_str(&format!("  Free Physical:   {} MB\n", total_mb - used_mb));
         
         // Visual Bar
         video::put_str("  [");
-        let dots = 20;
+        let dots = 24; // Expanded for impact
         let filled = (pct * dots) / 100;
         for i in 0..dots {
-             if i < filled { video::put_str("█"); }
-             else { video::put_str("░"); }
+             if i < filled { video::put_str_colored("█", 0x0000FF00, 0); }
+             else { video::put_str_colored("░", 0x555555, 0); }
         }
         video::put_str("]\n");
     } else {
@@ -843,29 +949,37 @@ fn cmd_ls(args: &[&str]) {
             match inode.read_dir() {
                 Ok(files) => {
                     for name in files {
-                        video::put_str(&name);
-                        video::put_char('\n');
+                        sh_put_str(&name);
+                        sh_put_str("\n");
                     }
                 },
-                Err(_) => video::put_str("ls: Error reading directory.\n"),
+                Err(_) => sh_put_str("ls: Error reading directory.\n"),
             }
         },
-        Err(_) => video::put_str("ls: Directory not found.\n"),
+        Err(_) => sh_put_str("ls: Directory not found.\n"),
     }
 }
 
 fn cmd_cat(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: cat <filename>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: cat <filename>\n"); return; }
     
     match find_inode(args[1]) {
         Ok(inode) => {
              if let Ok(handle) = inode.open(0) {
                   let mut buf = vec![0u8; 4096]; 
-                  if let Ok(n) = handle.read(&mut buf, 0) {
-                      if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
-                           video::put_str(s); video::put_char('\n');
+                  let mut offset = 0u64;
+                  loop {
+                      if let Ok(n) = handle.read(&mut buf, offset) {
+                          if n == 0 { break; }
+                          if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+                               sh_put_str(s);
+                          } else {
+                               sh_put_str("<Binary Content>\n");
+                               break;
+                          }
+                          offset += n as u64;
                       } else {
-                           video::put_str("<Binary Content>\n");
+                          break;
                       }
                   }
              }
@@ -1158,7 +1272,7 @@ fn cmd_dmesg() {
 }
 
 fn cmd_cp(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: cp <src> <dst>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: cp <src> <dst>\n"); return; }
     let src_path = args[1];
     let dst_path = args[2];
     
@@ -1174,7 +1288,7 @@ fn cmd_cp(args: &[&str]) {
                  }
             }
         },
-        Err(_) => { video::put_str("Src not found.\n"); return; }
+        Err(_) => { sh_put_str("Src not found.\n"); return; }
     }
     
     // Write Dst
@@ -1190,13 +1304,13 @@ fn cmd_cp(args: &[&str]) {
                     if let Ok(handle) = inv.open(0) {
                         let _ = handle.truncate();
                         let _ = handle.write(&data, 0);
-                        video::put_str("Copied.\n");
+                        sh_put_str("Copied.\n");
                     }
                 },
-                Err(_) => video::put_str("Copy failed: Could not create destination.\n"),
+                Err(_) => sh_put_str("Copy failed: Could not create destination.\n"),
             }
         },
-        Err(_) => video::put_str("Copy failed: Destination path invalid.\n"),
+        Err(_) => sh_put_str("Copy failed: Destination path invalid.\n"),
     }
 }
 
@@ -1322,39 +1436,39 @@ fn cmd_hostname(args: &[&str]) {
 
 
 fn cmd_rmdir(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: rmdir <dir>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: rmdir <dir>\n"); return; }
     let root = vfs::ROOT.lock();
     if let Some(inode) = root.as_ref() {
         match inode.remove_dir(args[1]) {
-            Ok(_) => video::put_str("Removed.\n"),
-            Err(_) => video::put_str("Failed.\n"),
+            Ok(_) => sh_put_str("Removed.\n"),
+            Err(_) => sh_put_str("Failed.\n"),
         }
     }
 }
 
 fn cmd_mkdir(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: mkdir <dir>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: mkdir <dir>\n"); return; }
     match find_parent_and_name(args[1]) {
         Ok((parent, name)) => {
             match parent.mkdir(&name) {
-                Ok(_) => video::put_str("Created directory.\n"),
-                Err(_) => video::put_str("Failed to create directory.\n"),
+                Ok(_) => sh_put_str("Created directory.\n"),
+                Err(_) => sh_put_str("Failed to create directory.\n"),
             }
         },
-        Err(_) => video::put_str("Path not found.\n"),
+        Err(_) => sh_put_str("Path not found.\n"),
     }
 }
 
 fn cmd_touch(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: touch <file>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: touch <file>\n"); return; }
     match find_parent_and_name(args[1]) {
         Ok((parent, name)) => {
             match parent.create(&name, vfs::FileType::File) {
-                Ok(_) => video::put_str("Touched.\n"),
-                Err(_) => video::put_str("Failed.\n"),
+                Ok(_) => sh_put_str("Touched.\n"),
+                Err(_) => sh_put_str("Failed.\n"),
             }
         },
-        Err(_) => video::put_str("Path not found.\n"),
+        Err(_) => sh_put_str("Path not found.\n"),
     }
 }
 
@@ -2231,123 +2345,7 @@ fn cmd_youtube(args: &[&str]) {
     video::put_str("YouTube: Video finished.\n");
 }
 
-fn cmd_real_youtube(args: &[&str]) {
-    // Check WiFi Status
-    let driver_lock = crate::drivers::net::atheros::GLOBAL_ATHEROS.lock();
-    let connected = if let Some(driver) = driver_lock.as_ref() {
-        driver.get_status().contains("CONNECTED")
-    } else {
-        false
-    };
-
-    if !connected {
-        video::put_str("YouTube (HD): Connectivity Error. Please connect WiFi first.\n");
-        return;
-    }
-
-    video::put_str("Initializing High-Performance Video Engine...\n");
-    video::put_str("Buffering HD Stream...\n");
-    
-    // Simulate Loading
-    for i in 0..20 {
-        video::put_str(".");
-        // Check for quick user abort 
-        if let Some(c) = crate::drivers::keyboard::pop_char() {
-             if c == 'q' { return; }
-        }
-        for _ in 0..1_000_000 { core::hint::spin_loop(); }
-    }
-    
-    video::put_str("\nLaunching Player. Press 'q' or 'ESC' to exit.\n");
-    for _ in 0..10_000_000 { core::hint::spin_loop(); }
-
-    // Launch App
-    let url = if args.len() > 1 { args[1] } else { "" };
-    let mut player = crate::apps::media_player::YouTubePlayer::new(url);
-    player.run();
-    
-    video::put_str("YouTube Player: Session Ended.\n");
-}
-
-fn cmd_google(args: &[&str]) {
-    // Check WiFi Status
-    let driver_lock = crate::drivers::net::atheros::GLOBAL_ATHEROS.lock();
-    let connected = if let Some(driver) = driver_lock.as_ref() {
-        driver.get_status().contains("CONNECTED")
-    } else {
-        false
-    };
-
-    if !connected {
-        video::put_str("google: Network unreachable. Please connect WiFi first.\n");
-        return;
-    }
-
-    if args.len() < 2 {
-        video::put_str("Usage: google <query>\n");
-        return;
-    }
-
-    let query = args[1..].join(" ");
-    
-    video::put_str(&format!("Searching Google for '{}'...\n", query));
-    
-    // Simulate Networking Steps
-    video::put_str("DNS Lookup: google.com -> 142.250.183.14\n");
-    for _ in 0..5_000_000 { core::hint::spin_loop(); }
-    
-    video::put_str("Connecting to 142.250.183.14:443... Connected.\n");
-    for _ in 0..5_000_000 { core::hint::spin_loop(); }
-    
-    video::put_str("TLS Handshake... OK.\n");
-    video::put_str("Sending HTTP GET... Waiting for response...\n");
-    
-    // Simulate latency
-    for i in 0..10 {
-        if i % 2 == 0 { video::put_str("."); }
-        for _ in 0..2_000_000 { core::hint::spin_loop(); }
-    }
-    video::put_str("\n\n");
-    
-    // Display Fake Results
-    video::put_str("--- Google Search Results ---\n");
-    
-    if query.to_lowercase().contains("ainux") {
-        video::put_str("1. Ainux OS - The Rust-based Kernel [OFFICIAL]\n");
-        video::put_str("   https://github.com/ainux-os/core\n");
-        video::put_str("   Ainux is a next-gen operating system written in pure Rust...\n\n");
-        
-        video::put_str("2. Ainux Documentation\n");
-        video::put_str("   https://ainux.org/docs\n");
-        video::put_str("   Getting started with Ainux kernel development...\n\n");
-        
-        video::put_str("3. Reddit: Is Ainux the future?\n");
-        video::put_str("   r/osdev - 45 comments\n");
-        video::put_str("   User123: The high-performance video engine is insane!\n\n");
-    } else if query.to_lowercase().contains("vikram") {
-        video::put_str("1. Vikram (2022) - IMDb\n");
-        video::put_str("   Rating: 8.4/10\n");
-        video::put_str("   Action thriller film starring Kamal Haasan, Vijay Sethupathi...\n\n");
-
-        video::put_str("2. Vikram - Title Track Lyrical | Anirudh Ravichander\n");
-        video::put_str("   YouTube - 50M views\n");
-        video::put_str("   Watch the official lyric video...\n\n");
-    } else {
-        // Generic Results
-        video::put_str(&format!("1. Definition of '{}' - Dictionary.com\n", query));
-        video::put_str("   The meaning of the word you searched for...\n\n");
-        
-        video::put_str(&format!("2. Wikipedia: {}\n", query));
-        video::put_str("   Read the free encyclopedia article...\n\n");
-        
-        video::put_str("3. Rust Programming Language\n");
-        video::put_str("   https://rust-lang.org\n");
-        video::put_str("   Empowering everyone to build reliable and efficient software.\n\n");
-    }
-    
-    video::put_str("Search finished (0.42 seconds)\n");
-}
-
+// (cmd_real_youtube removed as per bloatware policy)
 fn cmd_format(args: &[&str]) {
     if args.len() < 3 {
         video::put_str("Usage: format <disk> <fs_type>\n");
@@ -2400,5 +2398,178 @@ fn cmd_format(args: &[&str]) {
         video::put_str("Please REBOOT to mount the new filesystem.\n");
     } else {
         video::put_str("Format Failed! Disk I/O Error.\n");
+    }
+}
+
+// --- SOVEREIGN PRIVILEGE COMMANDS ---
+
+fn read_line_blocking(hidden: bool) -> String {
+    let mut buffer = String::new();
+    loop {
+        // Poll keyboard
+        if let Some(c) = keyboard::pop_char() {
+            if c == '\n' {
+                video::put_char('\n');
+                break;
+            } else if c == '\x08' || c == '\x7F' { // Backspace
+                if !buffer.is_empty() {
+                    buffer.pop();
+                    video::put_str("\x08 \x08"); // Clear visual char
+                }
+            } else if c >= ' ' && c != '\x7F' {
+                if buffer.len() < 64 {
+                    buffer.push(c);
+                    if hidden {
+                        video::put_char('*');
+                    } else {
+                        video::put_char(c);
+                    }
+                }
+            }
+        }
+        // Wait for interrupt
+        unsafe {
+            core::arch::asm!("sti; hlt");
+        }
+    }
+    buffer
+}
+
+fn cmd_whoami() {
+    let uid = get_uid();
+    if uid == 0 {
+        sh_put_str("root (Sovereign Authority)\n");
+    } else {
+        sh_put_str(&format!("user ({})\n", uid));
+    }
+}
+
+fn cmd_passwd(args: &[&str]) {
+    video::put_str("Changing password for user root.\n");
+    video::put_str("Enter current password: ");
+    let old_pass = read_line_blocking(true);
+
+    let mut um = crate::security::user::USER_MANAGER.lock();
+    if um.authenticate("root", &old_pass) {
+        video::put_str("Enter new password: ");
+        let new_pass = read_line_blocking(true);
+        video::put_str("Retype new password: ");
+        let conf_pass = read_line_blocking(true);
+
+        if new_pass == conf_pass {
+            if um.update_password("root", &new_pass) {
+                video::put_str("Password updated successfully.\n");
+            } else {
+                video::put_str("Error updating password.\n");
+            }
+        } else {
+            video::put_str("Passwords do not match.\n");
+        }
+    } else {
+        video::put_str("Authentication failed.\n");
+    }
+}
+
+fn cmd_sudo(args: &[&str]) {
+    if args.len() < 2 {
+        video::put_str("Usage: sudo <command> [args...]\n");
+        return;
+    }
+
+    video::put_str_colored("[sudo] password for user: ", 0x00AAAAAA, 0);
+    let pass = read_line_blocking(true);
+
+    let mut um_lock = crate::security::user::USER_MANAGER.lock();
+    if um_lock.authenticate("root", &pass) {
+        drop(um_lock);
+        // Temporarily elevate
+        let old_uid = get_uid();
+        *CURRENT_UID.lock() = 0;
+        
+        // Execute sub-command
+        let sub_args = &args[1..];
+        execute_command_inner(sub_args[0], sub_args);
+
+        // Drop privileges
+        *CURRENT_UID.lock() = old_uid;
+    } else {
+        video::put_str_colored("Sorry, try again.\n", 0x00FF0000, 0);
+    }
+}
+
+fn cmd_echo(args: &[&str]) {
+    if args.len() > 1 {
+        let text = args[1..].join(" ");
+        sh_put_str(&text);
+    }
+    sh_put_str("\n");
+}
+
+fn cmd_df() {
+    sh_put_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
+    sh_put_str("ext4_root       31M   2M    29M    7%    /\n");
+    sh_put_str("procfs          0K    0K    0K     0%    /proc\n");
+}
+
+fn cmd_man(args: &[&str]) {
+    if args.len() < 2 {
+        sh_put_str("What manual page do you want?\nExample: man ls\n");
+        return;
+    }
+
+    match args[1] {
+        "ls" => {
+            sh_put_str("LS(1)              Sovereign User Commands             LS(1)\n\n");
+            sh_put_str("NAME\n       ls - list directory contents\n\n");
+            sh_put_str("SYNOPSIS\n       ls [FILE]...\n\n");
+            sh_put_str("DESCRIPTION\n       List information about the FILEs (the current directory by default).\n");
+        },
+        "sudo" => {
+            sh_put_str("SUDO(8)            Sovereign Admin Commands           SUDO(8)\n\n");
+            sh_put_str("NAME\n       sudo - execute a command as root\n\n");
+            sh_put_str("DESCRIPTION\n       sudo allows a standard user to execute commands with Sovereign privileges.\n");
+        },
+        _ => sh_put_str(&format!("No manual entry for {}\n", args[1])),
+    }
+}
+
+fn cmd_less(args: &[&str]) {
+    if args.len() < 2 { sh_put_str("Usage: less <filename>\n"); return; }
+    match find_inode(args[1]) {
+        Ok(inode) => {
+            if let Ok(handle) = inode.open(0) {
+                 let mut buf = vec![0u8; 4096];
+                 let mut offset = 0u64;
+                 let mut lines_count = 0;
+                 loop {
+                     if let Ok(n) = handle.read(&mut buf, offset) {
+                         if n == 0 { break; }
+                         if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+                             for line in s.lines() {
+                                 sh_put_str(line);
+                                 sh_put_str("\n");
+                                 lines_count += 1;
+                                 if lines_count >= 20 {
+                                     sh_put_str("-- Press any key to continue (q to quit) --");
+                                     let mut quit = false;
+                                     loop {
+                                         if let Some(c) = keyboard::pop_char() {
+                                             if c == 'q' { quit = true; }
+                                             break;
+                                         }
+                                         unsafe { core::arch::asm!("hlt"); }
+                                     }
+                                     sh_put_str("\n");
+                                     if quit { return; }
+                                     lines_count = 0;
+                                 }
+                             }
+                         }
+                         offset += n as u64;
+                     } else { break; }
+                 }
+            }
+        },
+        _ => sh_put_str("File not found.\n"),
     }
 }

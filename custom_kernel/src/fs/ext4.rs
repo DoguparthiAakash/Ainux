@@ -569,20 +569,21 @@ impl Inode for Ext4Inode {
                 
                 if entry.inode != 0 {
                     let name_len = entry.name_len as usize;
-                     if offset + 8 + name_len <= buf.len() {
-                         let name_slice = unsafe { core::slice::from_raw_parts( 
-                            buf.as_ptr().add(offset + 8), 
-                            name_len 
-                         ) };
-                         if let Ok(s) = core::str::from_utf8(name_slice) {
-                             if s == name {
-                                 entry.inode = 0; // Mark deleted
-                                 found = true;
-                                 modified = true;
-                                 break;
-                             }
-                         }
-                     }
+                    let entry_header_size = core::mem::size_of::<DirEntry2>();
+                    if offset + entry_header_size + name_len <= buf.len() {
+                        let name_slice = unsafe { core::slice::from_raw_parts( 
+                           buf.as_ptr().add(offset + entry_header_size), 
+                           name_len 
+                        ) };
+                        if let Ok(s) = core::str::from_utf8(name_slice) {
+                            if s == name {
+                                entry.inode = 0; // Mark deleted
+                                found = true;
+                                modified = true;
+                                break;
+                            }
+                        }
+                    }
                 }
                 offset += entry.rec_len as usize;
             }

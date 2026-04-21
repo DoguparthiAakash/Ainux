@@ -243,27 +243,32 @@ fn get_smbios_string(struct_addr: u64, offset: u8) -> String {
 fn show_mem_r(_separate: bool, _slot: Option<usize>) {
     let pmm_lock = crate::mm::pmm::PMM.lock();
     if let Some(pmm) = pmm_lock.as_ref() {
-        let (used, total) = pmm.get_stats();
+        let (used, total) = pmm.get_stats_fast();
         let total_mb = (total * 4096) / 1024 / 1024;
         let used_mb = (used * 4096) / 1024 / 1024;
-        let used_pct = (used * 100) / total.max(1);
+        
+        // High-precision scale
+        let raw_pct_x10 = if total > 0 { (used * 1000) / total } else { 0 };
+        let pct_major = raw_pct_x10 / 10;
+        let pct_minor = raw_pct_x10 % 10;
 
-        // Build bar
+        // Visual Bar (expanded 20 slots)
         let mut bar = String::from("[");
-        let filled = (used_pct / 10) as usize;
-        for i in 0..10 {
+        let dots = 20;
+        let filled = (pct_major * dots) / 100;
+        for i in 0..dots {
             if i < filled { bar.push_str("█"); }
             else { bar.push_str("░"); }
         }
-        bar.push_str(&format!("] {}%", used_pct));
+        bar.push_str(&format!("] {}.{}%", pct_major, pct_minor));
 
         let info = [
             ("Manufacturer: ", String::from("System Boot RAM")),
-            ("Total Size:   ", format!("{} MB", total_mb)),
-            ("Used Space:   ", format!("{} MB", used_mb)),
-            ("Free Space:   ", format!("{} MB", total_mb - used_mb)),
-            ("Usage Status: ", bar),
-            ("State:        ", String::from("Industrial Active")),
+            ("Total RAM:    ", format!("{} MiB", total_mb)),
+            ("Allocated:    ", format!("{} MiB", used_mb)),
+            ("Free RAM:     ", format!("{} MiB", total_mb - used_mb)),
+            ("Usage Load:   ", bar),
+            ("Accounting:   ", String::from("Sovereign Phase 9")),
         ];
 
         draw_boxed_info("Memory Diagnostic", &ASC_RAM, &info);

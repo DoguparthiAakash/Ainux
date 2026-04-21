@@ -56,6 +56,17 @@ else
     echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
 fi
 
+# Export for external VMs
+if command -v qemu-img >/dev/null 2>&1; then
+    echo "Exporting VM-compatible disks..."
+    rm -f ainux_disk.vdi ainux_disk.vmdk
+    qemu-img convert -f raw -O vdi disk2.img ainux_disk.vdi
+    qemu-img convert -f raw -O vmdk disk2.img ainux_disk.vmdk
+    echo "Exports ready: ainux_disk.vdi (VirtualBox), ainux_disk.vmdk (VMware)"
+else
+    echo "Warning: qemu-img not found. Skipping VM disk export."
+fi
+
 # Detect KVM
 if [ -e /dev/kvm ]; then
     ACCEL="-enable-kvm"

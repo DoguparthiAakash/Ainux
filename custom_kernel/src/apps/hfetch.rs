@@ -68,7 +68,7 @@ fn detect_gpu() -> String {
 fn detect_ram_mb() -> usize {
     let pmm_lock = crate::mm::pmm::PMM.lock();
     if let Some(pmm) = pmm_lock.as_ref() {
-        let (_, total) = pmm.get_stats();
+        let (_, total) = pmm.get_stats_fast();
         return (total * 4096) / 1024 / 1024;
     }
     0
@@ -77,7 +77,7 @@ fn detect_ram_mb() -> usize {
 fn detect_used_ram_mb() -> usize {
     let pmm_lock = crate::mm::pmm::PMM.lock();
     if let Some(pmm) = pmm_lock.as_ref() {
-        let (used, _) = pmm.get_stats();
+        let (used, _) = pmm.get_stats_fast();
         return (used * 4096) / 1024 / 1024;
     }
     0

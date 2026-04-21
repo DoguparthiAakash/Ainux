@@ -46,34 +46,36 @@ pub static FRAMEBUFFER_TYPE: spin::Mutex<u8> = spin::Mutex::new(0);
 pub const VGA_HHDM_ADDR: u64 = 0xFFFFFFFF800B8000;
 
 fn fast_clear(color: u32) {
-    let fb_addr = *FRAMEBUFFER_ADDR.lock();
-    if fb_addr == 0 {
-        // VGA Text mode clear
-        let vga_buffer = VGA_HHDM_ADDR as *mut u16;
-        let vga_char = 0x0F00 | b' ' as u16; // Black background, white space
+    crate::cpu::without_interrupts(|| {
+        let fb_addr = *FRAMEBUFFER_ADDR.lock();
+        if fb_addr == 0 {
+            // VGA Text mode clear
+            let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+            let vga_char = 0x0F00 | b' ' as u16; // Black background, white space
+            unsafe {
+                for i in 0..(80 * 25) {
+                    core::ptr::write_volatile(vga_buffer.offset(i as isize), vga_char);
+                }
+            }
+            return;
+        }
+        
+        let fb_pitch = *FRAMEBUFFER_PITCH.lock(); // bytes
+        let fb_height = *FRAMEBUFFER_HEIGHT.lock();
+        
+        // Fallback to theme BG if color is 0 (assuming default clear)
+        let final_color = if color == 0 { THEME.lock().bg } else { color };
+
+        // Total u32 words
+        let total = (fb_pitch / 4) * fb_height;
+        let ptr = fb_addr as *mut u32;
+        
         unsafe {
-            for i in 0..(80 * 25) {
-                core::ptr::write_volatile(vga_buffer.offset(i as isize), vga_char);
+            for i in 0..total {
+                *ptr.add(i) = final_color;
             }
         }
-        return;
-    }
-    
-    let fb_pitch = *FRAMEBUFFER_PITCH.lock(); // bytes
-    let fb_height = *FRAMEBUFFER_HEIGHT.lock();
-    
-    // Fallback to theme BG if color is 0 (assuming default clear)
-    let final_color = if color == 0 { THEME.lock().bg } else { color };
-
-    // Total u32 words
-    let total = (fb_pitch / 4) * fb_height;
-    let ptr = fb_addr as *mut u32;
-    
-    unsafe {
-        for i in 0..total {
-            *ptr.add(i) = final_color;
-        }
-    }
+    });
 }
 
 pub fn init() {
@@ -136,11 +138,16 @@ fn scroll_screen() {
     let row_bytes = pitch * char_height;
     let total_bytes = pitch * height;
 
-    if total_bytes <= row_bytes { return; }
-
     unsafe {
         core::ptr::copy(addr.add(row_bytes), addr, total_bytes - row_bytes);
-        core::ptr::write_bytes(addr.add(total_bytes - row_bytes), 0, row_bytes);
+        
+        // Clear bottom row with Theme Background Color
+        let bg_color = crate::drivers::video::THEME.lock().bg;
+        let bottom_ptr = addr.add(total_bytes - row_bytes) as *mut u32;
+        let words_to_clear = row_bytes / 4;
+        for i in 0..words_to_clear {
+            *bottom_ptr.add(i) = bg_color;
+        }
     }
 }
 
@@ -169,10 +176,11 @@ pub fn put_char(c: char) {
 }
 
 pub fn put_char_colored(c: char, fg: u32, bg: u32) {
-    let mut x = CONSOLE_X.lock();
-    let mut y = CONSOLE_Y.lock();
-    let width = *CONSOLE_WIDTH.lock();
-    let height = *CONSOLE_HEIGHT.lock();
+    crate::cpu::without_interrupts(|| {
+        let mut x = CONSOLE_X.lock();
+        let mut y = CONSOLE_Y.lock();
+        let width = *CONSOLE_WIDTH.lock();
+        let height = *CONSOLE_HEIGHT.lock();
 
     if c == '\n' {
         *x = 0;
@@ -206,7 +214,8 @@ pub fn put_char_colored(c: char, fg: u32, bg: u32) {
                 scroll_screen();
             }
         }
-    }
+    } // End of else block
+    });
 }
 
 pub fn put_str_colored(s: &str, fg: u32, bg: u32) {
@@ -439,5 +448,36 @@ pub fn draw_tui_title_box(x: usize, y: usize, w: usize, h: usize, title: &str, f
         for (i, c) in title.chars().enumerate() {
             draw_char_at(start_x + i, y, c as u32, fg);
         }
+    }
+}
+
+/// EMERGENCY LOCKLESS VIDEO ACCESS
+/// Used ONLY during panics to avoid deadlocks.
+pub unsafe fn emergency_put_str(s: &str) {
+    let mut x_off = 0;
+    let mut y_off = 2; // Row 2
+
+    for c in s.chars() {
+        if c == '\n' {
+            x_off = 0;
+            y_off += 1;
+        } else {
+             let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+             let offset = (y_off * 80) + x_off;
+             if offset < 80 * 25 {
+                let vga_char = (c as u16) | (0x4F << 8); // Red background for panic
+                core::ptr::write_volatile(vga_buffer.offset(offset as isize), vga_char);
+             }
+             x_off += 1;
+             if x_off >= 80 { x_off = 0; y_off += 1; }
+        }
+    }
+}
+
+pub unsafe fn panic_clear() {
+    let vga_buffer = VGA_HHDM_ADDR as *mut u16;
+    let vga_char = 0x4F00 | b' ' as u16; // Red background
+    for i in 0..(80 * 25) {
+        core::ptr::write_volatile(vga_buffer.offset(i as isize), vga_char);
     }
 }

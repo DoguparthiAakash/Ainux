@@ -26,11 +26,11 @@ impl UserManager {
             users: Vec::new(),
             current_uid: 0, // Default to root/admin
         };
-        // Default Admin User
+        // Default Sovereign User
         um.users.push(User {
             uid: 0,
-            username: "admin".to_string(),
-            password_hash: "admin".to_string(),
+            username: "root".to_string(),
+            password_hash: "ainux".to_string(),
             permissions: 0xFFFFFFFF,
         });
         um
@@ -69,5 +69,15 @@ impl UserManager {
             permissions: 1, // Basic
         });
         true
+    }
+
+    pub fn update_password(&mut self, user: &str, new_pass: &str) -> bool {
+        for u in &mut self.users {
+            if u.username == user {
+                u.password_hash = new_pass.to_string();
+                return true;
+            }
+        }
+        false
     }
 }

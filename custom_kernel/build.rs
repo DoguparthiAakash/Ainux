@@ -56,9 +56,14 @@ fn main() {
         .flag("-fno-pic")
         .flag("-mno-red-zone")
         .flag("-mno-sse")
-        .flag("-mno-sse2")
-        .flag("-mcmodel=kernel")
-        .flag("-Wno-unused-variable")
+        .flag("-mno-sse2");
+    
+    // Only apply -mcmodel=kernel if using GCC or Clang (not MSVC)
+    if build.get_compiler().is_like_gnu() || build.get_compiler().is_like_clang() {
+        build.flag("-mcmodel=kernel");
+    }
+
+    build.flag("-Wno-unused-variable")
         .flag("-Wno-unused-but-set-variable")
         .flag("-Wno-unused-function")
         .flag("-Wno-unused-parameter")

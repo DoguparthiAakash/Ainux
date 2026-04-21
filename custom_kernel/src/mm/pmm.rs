@@ -84,8 +84,9 @@ pub static PMM: Mutex<Option<BitmapPmm>> = Mutex::new(None);
 
 pub struct BitmapPmm {
     bitmap: &'static mut [u64],
-    total_frames: usize,
-    used_frames: AtomicUsize,
+    total_frames: usize,    // Total Physical Limit (Address Space)
+    usable_frames: usize,   // Total Physical RAM (Sum of available regions)
+    allocated_frames: AtomicUsize, // Frames handed out via alloc_frame
     last_idx: usize,
     hhdm_offset: u64,
 }
@@ -271,7 +272,8 @@ impl BitmapPmm {
         let mut pmm = BitmapPmm {
             bitmap,
             total_frames,
-            used_frames: AtomicUsize::new(total_frames),
+            usable_frames: (total_available / 4096) as usize,
+            allocated_frames: AtomicUsize::new(0),
             last_idx: 0,
             hhdm_offset,
         };
@@ -305,8 +307,9 @@ impl BitmapPmm {
         pmm.mark_region_used(0x100000, 0x300000);
 
         // Recalculate accurately for the counter
+        // Recalculate accurately for the counter
         let (used, total) = pmm.get_stats();
-        pmm.used_frames.store(used, Ordering::Relaxed);
+        pmm.allocated_frames.store(used, Ordering::Relaxed);
 
         let _ = write!(serial, "PMM: Initialized. Used: {}/{} frames ({} MB free)\n",
             used, total, (total - used) * PAGE_SIZE / (1024 * 1024));
@@ -339,7 +342,8 @@ impl BitmapPmm {
         let mut pmm = BitmapPmm {
             bitmap,
             total_frames,
-            used_frames: AtomicUsize::new(total_frames),
+            usable_frames: total_frames,
+            allocated_frames: AtomicUsize::new(0),
             last_idx: 0,
             hhdm_offset: 0,
         };
@@ -492,7 +496,7 @@ impl BitmapPmm {
                     if frame < self.total_frames {
                         self.bitmap[idx] |= 1u64 << bit;
                         self.last_idx = idx;
-                        self.used_frames.fetch_add(1, Ordering::Relaxed);
+                        self.allocated_frames.fetch_add(1, Ordering::Relaxed);
                         return Some(frame as u64 * PAGE_SIZE as u64);
                     }
                 }
@@ -520,7 +524,7 @@ impl BitmapPmm {
                         run_start as u64 * PAGE_SIZE as u64,
                         count * PAGE_SIZE,
                     );
-                    self.used_frames.fetch_add(count, Ordering::Relaxed);
+                    self.allocated_frames.fetch_add(count, Ordering::Relaxed);
                     return Some(run_start as u64 * PAGE_SIZE as u64);
                 }
             } else {
@@ -539,7 +543,7 @@ impl BitmapPmm {
                 core::ptr::write_bytes(virt as *mut u8, 0, PAGE_SIZE);
             }
             self.clear_bit(frame);
-            self.used_frames.fetch_sub(1, Ordering::Relaxed);
+            self.allocated_frames.fetch_sub(1, Ordering::Relaxed);
             if frame / 64 < self.last_idx {
                 self.last_idx = frame / 64;
             }
@@ -552,23 +556,30 @@ impl BitmapPmm {
 
     /// Hardware-accelerated stats using popcount (compiled to POPCNT on x86_64)
     pub fn get_stats(&self) -> (usize, usize) {
-        let mut used = 0usize;
+        let mut set_bits = 0usize;
         for i in 0..self.bitmap.len() {
-            used += self.bitmap[i].count_ones() as usize;
+            set_bits += self.bitmap[i].count_ones() as usize;
         }
         // Adjust for any bits beyond total_frames in the last word
         let tail_bits = self.total_frames % 64;
         if tail_bits != 0 {
             let last_idx = self.bitmap.len() - 1;
             let extra = self.bitmap[last_idx] >> tail_bits;
-            used -= extra.count_ones() as usize;
+            set_bits -= extra.count_ones() as usize;
         }
-        (used, self.total_frames)
+
+        // Bits that are set but not part of usable RAM are the Reserved bits
+        let reserved_frames = self.total_frames - self.usable_frames;
+        let os_allocated = if set_bits >= reserved_frames {
+            set_bits - reserved_frames
+        } else { 0 };
+
+        (os_allocated, self.usable_frames)
     }
 
     /// Fast stats using atomic counter instead of scanning bitmap
     pub fn get_stats_fast(&self) -> (usize, usize) {
-        (self.used_frames.load(Ordering::Relaxed), self.total_frames)
+        (self.allocated_frames.load(Ordering::Relaxed), self.usable_frames)
     }
 
     pub fn total_frames(&self) -> usize {
