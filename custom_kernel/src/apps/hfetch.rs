@@ -109,19 +109,6 @@ fn get_uptime_str() -> String {
 
 /// Main hfetch display
 pub fn cmd_hfetch(args: &[&str]) {
-    // Handle help flags
-    if args.len() > 1 && (args[1] == "-help" || args[1] == "--help" || args[1] == "-h") {
-        video::put_str("  hfetch                Display sovereign system overview (ASCII logo)\n");
-        video::put_str("  hfetch -all           Display complete hardware diagnostic suite\n");
-        video::put_str("  hfetch -cpu           Display CPU architecture and thermals\n");
-        video::put_str("  hfetch -gpu           Display Graphics/VGA adapter info\n");
-        video::put_str("  hfetch -mem -r        Display RAM utilization and slots\n");
-        video::put_str("  hfetch -mem -d        Display Disk usage and physical layout\n");
-        video::put_str("  hfetch -net           Display Network/MAC configuration\n");
-        video::put_str("  hfetch -peri          Display USB/Legacy peripheral inventory\n");
-        return;
-    }
-
     // If subcommands are provided (e.g. hfetch -mem -r), delegate to hinfo logic
     if args.len() > 1 {
         crate::apps::hinfo::main(args);

@@ -43,60 +43,6 @@ pub struct PCIDevice {
     irq_line: u8,
 }
 
-pub fn get_vendor_name(vendor_id: u16) -> &'static str {
-    match vendor_id {
-        0x8086 => "Intel Corporation",
-        0x10DE => "NVIDIA Corporation",
-        0x1002 => "AMD/ATI",
-        0x10EC => "Realtek Semiconductor",
-        0x1AF4 => "VirtIO / Red Hat",
-        0x15AD => "VMware",
-        0x80EE => "VirtualBox",
-        0x1011 => "Digital Equipment Corp",
-        0x1043 => "ASUSTeK Computer Inc.",
-        0x1462 => "MSI (Micro-Star International)",
-        0x103C => "HP / Compaq",
-        0x1028 => "Dell Inc.",
-        0x17AA => "Lenovo",
-        _ => "Unknown Vendor",
-    }
-}
-
-pub fn get_class_name(class_id: u8) -> &'static str {
-    match class_id {
-        0x01 => "Mass Storage Controller",
-        0x02 => "Network Controller",
-        0x03 => "Display Controller",
-        0x04 => "Multimedia Controller",
-        0x05 => "Memory Controller",
-        0x06 => "Bridge Device",
-        0x07 => "Simple Communication Controller",
-        0x08 => "Base System Peripheral",
-        0x09 => "Input Device Controller",
-        0x0A => "Docking Station",
-        0x0B => "Processor",
-        0x0C => "Serial Bus Controller",
-        0x0D => "Wireless Controller",
-        _ => "Generic Device",
-    }
-}
-
-pub fn get_subclass_name(class_id: u8, subclass_id: u8) -> &'static str {
-    match (class_id, subclass_id) {
-        (0x01, 0x01) => "IDE Interface",
-        (0x01, 0x06) => "SATA Controller (AHCI)",
-        (0x02, 0x00) => "Ethernet Controller",
-        (0x03, 0x00) => "VGA Compatible Controller",
-        (0x04, 0x01) => "Audio Controller",
-        (0x04, 0x03) => "High Definition Audio Controller",
-        (0x06, 0x00) => "Host Bridge",
-        (0x06, 0x01) => "ISA Bridge",
-        (0x06, 0x04) => "PCI-to-PCI Bridge",
-        (0x0C, 0x03) => "USB Controller",
-        _ => "Unknown Subclass",
-    }
-}
-
 impl IOService for PCIDevice {
     fn get_name(&self) -> &str { &self.name }
     

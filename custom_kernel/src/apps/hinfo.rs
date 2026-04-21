@@ -9,9 +9,9 @@ use alloc::format;
 use crate::drivers::video;
 use crate::cpu::control::{rdmsr};
 use crate::fs::vfs::{root, Inode, FileType};
-use crate::drivers::iokit::types::IOValue;
-use core::fmt::Write;
+use core::sync::atomic::Ordering;
 use alloc::sync::Arc;
+use crate::process::{scheduler, task};
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -63,7 +63,7 @@ const ASC_DISK: [&str; 7] = [
     "     .───────.     ",
     "    / ▓▓▓▓▓▓▓ \\    ",
     "   | ▓▓▒▒▒▒▒▓▓ |   ",
-    "   | ▓▓▒ DISK▒▓▓ |   ",
+    "   | ▓▓▒ DISK ▒▓▓ |  ",
     "   | ▓▓▒▒▒▒▒▓▓ |   ",
     "    \\ ▓▓▓▓▓▓▓ /    ",
     "     '───────'     ",
@@ -78,41 +78,6 @@ const ASC_GPU: [&str; 6] = [
     " ╚═‾‾▒▒▒▒▒▒▒▒▒▒▒▒▒‾‾═╝ ",
 ];
 
-const ASC_FIRM: [&str; 6] = [
-    "  .───────────.  ",
-    " / BIOS / UEFI  \\ ",
-    "|   [=] [=] [=]  |",
-    "|   FIRMWARE    |",
-    " \\_           _/ ",
-    "   '─────────'   ",
-];
-
-const ASC_AUDIO: [&str; 6] = [
-    "   .───────────.   ",
-    "  /  _       _  \\  ",
-    " |  ( )     ( )  | ",
-    " |   ║  AUDIO  ║   | ",
-    " |  (_/     \\_)  | ",
-    "  \\_           _/  ",
-];
-
-const ASC_NET: [&str; 6] = [
-    "   .───────────.   ",
-    "  /  _  NET  _  \\  ",
-    " |  / \\─────/ \\  | ",
-    " | |   |   |   | | ",
-    " |  \\_/─────\\_/  | ",
-    "  \\_           _/  ",
-];
-
-const ASC_PERI: [&str; 5] = [
-    " ╔═══════════════╗ ",
-    " ║ [USB] [COM]   ║ ",
-    " ║ [LPT] [PS2]   ║ ",
-    " ║ PERIPHERALS   ║ ",
-    " ╚═══════════════╝ ",
-];
-
 /// Main entry point for hinfo command
 pub fn main(args: &[&str]) {
     if args.len() < 2 {
@@ -123,8 +88,6 @@ pub fn main(args: &[&str]) {
     let flags = &args[1..];
 
     if flags[0] == "-all" {
-        show_system_firmware();
-        video::put_str("\n");
         show_cpu();
         video::put_str("\n");
         show_mem_r(false, None);
@@ -132,20 +95,12 @@ pub fn main(args: &[&str]) {
         show_mem_d(false, None);
         video::put_str("\n");
         show_gpu();
-        video::put_str("\n");
-        show_audio();
-        video::put_str("\n");
-        show_net();
         return;
     }
 
     match flags[0] {
         "-cpu" => show_cpu(),
         "-gpu" => show_gpu(),
-        "-firmware" => show_system_firmware(),
-        "-audio" => show_audio(),
-        "-net" => show_net(),
-        "-peri" => show_peripherals(),
         "-mem" => {
             if flags.len() < 2 {
                 video::put_str("hinfo -mem: Use -r (RAM) or -d (Disk)\n");
@@ -176,13 +131,11 @@ pub fn main(args: &[&str]) {
                 _ => video::put_str("hinfo -mem: Invalid flag. Use -r or -d\n"),
             }
         }
-        "-h" | "--help" | "-help" => {
-            video::put_str("  -cpu           Display CPU details, cache, and voltage\n");
+        "-h" | "--help" => {
+            video::put_str("Ainux hinfo suite\n");
+            video::put_str("Usage: hinfo [flags]\n");
+            video::put_str("  -cpu           Display CPU details, temp, and clock\n");
             video::put_str("  -gpu           Display GPU/Display adapter info\n");
-            video::put_str("  -firmware      Display BIOS and System Product info\n");
-            video::put_str("  -audio         Display Audio/Multimedia info\n");
-            video::put_str("  -net           Display Network/Connectivity info\n");
-            video::put_str("  -peri          Display Peripheral/Bridge info\n");
             video::put_str("  -mem -r [-s]   Display RAM info [-s for slots]\n");
             video::put_str("  -mem -d [-s]   Display Disk space and categories\n");
             video::put_str("  -all           Display all hardware info\n");
@@ -208,199 +161,67 @@ fn show_cpu() {
         }
     } else { String::from("N/A (AMD/Other)") };
 
-    let smbios_man = query_smbios_string(4, 0x07);
-    let smbios_ver = query_smbios_string(4, 0x10);
-    let socket = query_smbios_string(4, 0x05);
-    let l1_addr = find_smbios_kind(7);
-    let l2_addr = find_smbios_kind(255); // Dummy for search
-    
-    let l1_size = if let Some(a) = l1_addr { format!("{} KB", query_smbios_u16(7, 0x09)) } else { String::from("32 KB") };
-
+    let (smbios_ver, smbios_man) = detect_smbios_cpu();
     let cpu_count = crate::cpu::percpu::get_cpu_count();
 
     let info = [
         ("Manufacturer: ", if smbios_man.is_empty() { vendor } else { smbios_man }),
         ("Model:        ", if smbios_ver.is_empty() { brand } else { smbios_ver }),
-        ("Socket:       ", if socket.is_empty() { String::from("LGA1151 (V)") } else { socket }),
         ("Threads:      ", format!("{}", logical)),
         ("Cores Online: ", format!("{}", cpu_count)),
-        ("L1 Cache:     ", l1_size),
         ("Temperature:  ", temp_str),
+        ("Status:       ", String::from("Optimal")),
     ];
 
     draw_boxed_info("Processor Diagnostic", &ASC_CPU, &info);
 }
 
-fn show_system_firmware() {
-    let bios_vendor = query_smbios_string(0, 0x04);
-    let bios_ver = query_smbios_string(0, 0x05);
-    let bios_date = query_smbios_string(0, 0x08);
-    let sys_man = query_smbios_string(1, 0x04);
-    let sys_product = query_smbios_string(1, 0x05);
+fn detect_smbios_cpu() -> (String, String) {
+    let mut version = String::new();
+    let mut manufacturer = String::new();
 
-    let info = [
-        ("BIOS Vendor:  ", if bios_vendor.is_empty() { String::from("SeaBIOS") } else { bios_vendor }),
-        ("BIOS Version: ", if bios_ver.is_empty() { String::from("1.16.0") } else { bios_ver }),
-        ("Release Date: ", if bios_date.is_empty() { String::from("04/01/2014") } else { bios_date }),
-        ("Manufacturer: ", if sys_man.is_empty() { String::from("QEMU") } else { sys_man }),
-        ("Product Name: ", if sys_product.is_empty() { String::from("Standard PC (i440FX)") } else { sys_product }),
-    ];
-
-    draw_boxed_info("System & Firmware", &ASC_FIRM, &info);
-}
-
-fn show_audio() {
-    let mut found = false;
-    let mut model = String::from("PC SPEAKER (PIT)");
-    let mut vendor = String::from("Legacy/Internal (0x61)");
-
-    // Search IORegistry for Multimedia Class (0x04)
-    if let Some(registry) = crate::drivers::iokit::registry::REGISTRY.lock().root.clone() {
-        // Simple search for now
-        let mut model_found = String::new();
-        let mut vendor_found = String::new();
-        
-        let devices = registry.children.lock();
-        for dev in devices.iter() {
-            if let Some(IOValue::Integer(class)) = dev.service.get_property("class-id") {
-                if class == 0x04 {
-                    if let Some(IOValue::Integer(v)) = dev.service.get_property("vendor-id") {
-                        vendor_found = String::from(crate::drivers::pci::get_vendor_name(v as u16));
-                    }
-                    model_found = String::from("INTEL HIGH DEFINITION AUDIO");
-                    found = true;
-                }
-            }
-        }
-        if found {
-            model = model_found;
-            vendor = vendor_found;
-        }
-    }
-
-    let info = [
-        ("Adapter:      ", model),
-        ("Manufacturer: ", vendor),
-        ("Speaker:      ", String::from("Operational")),
-        ("Jack Sense:   ", String::from("Connected (L/R)")),
-        ("Status:       ", String::from("Online")),
-    ];
-
-    draw_boxed_info("Audio Diagnostic", &ASC_AUDIO, &info);
-}
-
-fn show_net() {
-    let mut adapter = String::from("Realtek RTL8139 (Bus 0)");
-    let mut status = String::from("Connected (100Mbps)");
-    let mut mac = String::from("DE:AD:BE:EF:00:01");
-
-    // Probing registry for Network Class (0x02)
-    if let Some(registry) = crate::drivers::iokit::registry::REGISTRY.lock().root.clone() {
-        let devices = registry.children.lock();
-        for dev in devices.iter() {
-             if let Some(IOValue::Integer(class)) = dev.service.get_property("class-id") {
-                if class == 0x02 {
-                    if let Some(IOValue::Integer(v)) = dev.service.get_property("vendor-id") {
-                        adapter = format!("{} Ethernet", crate::drivers::pci::get_vendor_name(v as u16));
-                    }
-                }
-             }
-        }
-    }
-
-    let info = [
-        ("Adapter:      ", adapter),
-        ("Status:       ", status),
-        ("MAC Address:  ", mac),
-        ("Link Speed:   ", String::from("100 Mbps (Full)")),
-        ("Interrupts:   ", String::from("Active (IRQ 11)")),
-    ];
-
-    draw_boxed_info("Network Diagnostic", &ASC_NET, &info);
-}
-
-fn show_peripherals() {
-    let mut usb = String::from("Intel USB 3.0 (xHCI)");
-    let mut com = String::from("Serial UART (16550A)");
-    let mut bridge = String::from("PCI-to-ISA Bridge");
-
-    let info = [
-        ("USB Hosts:    ", usb),
-        ("Legacy Ports: ", com),
-        ("Bus Bridge:   ", bridge),
-        ("PS/2 Input:   ", String::from("Operational")),
-        ("LPT Support:  ", String::from("Disabled")),
-    ];
-
-    draw_boxed_info("Peripheral Dashboard", &ASC_PERI, &info);
-}
-
-fn query_smbios_string(kind: u8, offset: u8) -> String {
-    if let Some(addr) = find_smbios_kind(kind) {
-        return get_smbios_string(addr, offset);
-    }
-    String::new()
-}
-
-fn query_smbios_u16(kind: u8, offset: u8) -> u16 {
-    if let Some(addr) = find_smbios_kind(kind) {
-        let addr_virt = crate::mm::vmm::phys_to_virt(addr);
-        let header = unsafe { &*(addr_virt as *const SmbiosHeader) };
-        if offset + 2 <= header.length {
-            return unsafe { *((addr_virt + offset as u64) as *const u16) };
-        }
-    }
-    0
-}
-
-fn find_smbios_kind(kind: u8) -> Option<u64> {
     if let Some(addr) = find_smbios() {
-        let addr_virt = crate::mm::vmm::phys_to_virt(addr);
-        let ep = unsafe { &*(addr_virt as *const SmbiosEntryPoint) };
-        let mut curr_addr_phys = ep.table_address as u64;
-        let mut curr_addr_virt = crate::mm::vmm::phys_to_virt(curr_addr_phys);
-        let table_len = ep.table_length as u64;
-        let end_addr_virt = curr_addr_virt + table_len;
+        let ep = unsafe { &*(addr as *const SmbiosEntryPoint) };
+        let mut curr_addr = ep.table_address as u64;
+        let end_addr = curr_addr + ep.table_length as u64;
 
         for _ in 0..ep.number_of_structures {
-            if curr_addr_virt + 4 > end_addr_virt { break; }
-            let header = unsafe { &*(curr_addr_virt as *const SmbiosHeader) };
+            if curr_addr + 4 > end_addr { break; }
+            let header = unsafe { &*(curr_addr as *const SmbiosHeader) };
             
-            if header.kind == kind {
-                return Some(curr_addr_phys);
+            if header.kind == 4 { // Processor Info
+                manufacturer = get_smbios_string(curr_addr, 0x07);
+                version = get_smbios_string(curr_addr, 0x10);
+                break;
             }
 
             // Skip to strings
-            let struct_len = header.length as u64;
-            curr_addr_virt += struct_len;
-            curr_addr_phys += struct_len;
-            
-            // Skip strings (terminated by double null)
+            curr_addr += header.length as u64;
+            // Skip strings
             loop {
-                if curr_addr_virt + 2 > end_addr_virt { break; }
-                let bytes = unsafe { core::slice::from_raw_parts(curr_addr_virt as *const u8, 2) };
+                let bytes = unsafe { core::slice::from_raw_parts(curr_addr as *const u8, 2) };
                 if bytes == [0, 0] {
-                    curr_addr_virt += 2;
-                    curr_addr_phys += 2;
+                    curr_addr += 2;
                     break;
                 }
-                curr_addr_virt += 1;
-                curr_addr_phys += 1;
+                curr_addr += 1;
+                if curr_addr >= end_addr { break; }
             }
+            if curr_addr >= end_addr { break; }
         }
     }
-    None
+
+    (version, manufacturer)
 }
 
 fn get_smbios_string(struct_addr: u64, offset: u8) -> String {
-    let header_virt = crate::mm::vmm::phys_to_virt(struct_addr);
-    let header = unsafe { &*(header_virt as *const SmbiosHeader) };
+    let header = unsafe { &*(struct_addr as *const SmbiosHeader) };
     if offset >= header.length { return String::new(); }
 
-    let str_idx = unsafe { *((header_virt + offset as u64) as *const u8) };
+    let str_idx = unsafe { *((struct_addr + offset as u64) as *const u8) };
     if str_idx == 0 { return String::new(); }
 
-    let mut curr_ptr = header_virt + header.length as u64;
+    let mut curr_ptr = struct_addr + header.length as u64;
     for i in 1..=str_idx {
         let mut len = 0;
         while unsafe { *((curr_ptr + len) as *const u8) } != 0 {
@@ -440,11 +261,20 @@ fn show_mem_r(_separate: bool, _slot: Option<usize>) {
 
 // ---- Disk Diagnostics ----
 fn show_mem_d(_separate: bool, _drive: Option<usize>) {
-    // If cache is empty, suggest a scan if not done? 
-    // Usually Background Scan handles this.
+    video::put_str("\n  Auditing filesystem objects... (Press Ctrl+C to abort)\n");
+    
+    let mut stats = UsageStats::default();
+    let success = scan_disk_usage_iterative(root(), &mut stats);
+
+    if !success {
+        video::put_str_colored("  [!] Diagnostic interrupted by user.\n", 0x00FF0000, 0x00111122);
+        return;
+    }
 
     let mut ata_buf = [0u16; 256];
     let mut model = String::from("QEMU VIRTUAL DRIVE");
+    let mut total_capacity: u64 = 0;
+
     if crate::drivers::ata::identify_buffer(&mut ata_buf) {
         model.clear();
         for i in 27..47 {
@@ -454,90 +284,96 @@ fn show_mem_d(_separate: bool, _drive: Option<usize>) {
             if b1 != '\0' && b1 != ' ' { model.push(b1); }
             if b2 != '\0' && b2 != ' ' { model.push(b2); }
         }
+        // Words 60-61 contain total 28-bit LBA sectors
+        let sectors = (ata_buf[60] as u32) | ((ata_buf[61] as u32) << 16);
+        total_capacity = sectors as u64 * 512;
     }
 
-    let stats = *vfs::USAGE_CACHE.lock();
+    if total_capacity == 0 { total_capacity = 64 * 1024 * 1024; } // Fallback 64MB
+
+    let other_size = stats.total_size.saturating_sub(stats.image_size + stats.system_size + stats.alo_size);
+    let used_pct = (stats.total_size * 100) / total_capacity.max(1);
+    
+    // Create usage bar
+    let mut bar = String::from("[");
+    let filled = (used_pct / 10) as usize;
+    for i in 0..10 {
+        if i < filled { bar.push_str("█"); }
+        else { bar.push_str("░"); }
+    }
+    bar.push_str(&format!("] {}%", used_pct));
 
     let info = [
         ("Model:        ", model),
-        ("Persistence:  ", String::from("Enabled")),
-        ("Total Used:   ", format!("{} B", stats.total_size)),
-        ("Images:       ", format!("{} B", stats.image_size)),
-        ("System:       ", format!("{} B", stats.system_size)),
-        ("Binaries:     ", format!("{} B", stats.alo_size)),
+        ("Capacity:     ", format!("{} / {}", format_size(stats.total_size), format_size(total_capacity))),
+        ("Usage:        ", bar),
+        ("────────────────────────", String::new()),
+        ("Images:       ", format_size(stats.image_size)),
+        ("System:       ", format_size(stats.system_size)),
+        ("Binaries:     ", format_size(stats.alo_size)),
+        ("Other:        ", format_size(other_size)),
     ];
 
     draw_boxed_info("Disk Diagnostic", &ASC_DISK, &info);
-
-    // --- Visual Disk Map (Phase 30d) ---
-    show_disk_visuals();
 }
 
-fn show_disk_visuals() {
-    let root_node = root();
-    if let Some(summary) = root_node.get_occupancy() {
-        let theme = video::THEME.lock();
-        let a_col = theme.accent;
-        let f_col = theme.fg;
-        let box_bg = 0x002D2D2D;
-        drop(theme);
-
-        let start_x = 4;
-        let start_y = video::prepare_y_for_height(5) + 2; 
-
-        video::put_str_at(start_x, start_y - 1, "Physical Disk Map (EXT4 Clusters):", a_col, 0);
-        
-        let mut x_off = 0;
-        let mut y_off = 0;
-        for &occ in summary.iter() {
-            let char = if occ > 200 { '█' }
-                       else if occ > 130 { '▓' }
-                       else if occ > 70 { '▒' }
-                       else if occ > 20 { '░' }
-                       else { '.' };
-            
-            let color = if occ > 0 { a_col } else { 0x00555555 };
-            video::put_char_at(start_x + x_off, start_y + y_off, char, color, 0);
-            
-            x_off += 1;
-            if x_off >= 21 {
-                x_off = 0;
-                y_off += 1;
-            }
-        }
-        
-        video::put_str_at(start_x, start_y + 3, "Legend: . Empty  ░ Low  ▒ Mid  ▓ High  █ Full", 0x00AAAAAA, 0);
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        let gb_int = bytes / (1024 * 1024 * 1024);
+        let gb_frac = (bytes * 10 / (1024 * 1024 * 1024)) % 10;
+        format!("{}.{} GiB", gb_int, gb_frac)
+    } else if bytes >= 1024 * 1024 {
+        let mb_int = bytes / (1024 * 1024);
+        let mb_frac = (bytes * 10 / (1024 * 1024)) % 10;
+        format!("{}.{} MiB", mb_int, mb_frac)
+    } else if bytes >= 1024 {
+        format!("{} KiB", bytes / 1024)
+    } else {
+        format!("{} B", bytes)
     }
 }
 
 #[derive(Default)]
-struct DummyUsage; // Placeholder to avoid breaking other calls if any
-
-pub extern "C" fn background_scan() {
-    scan_disk_usage_iterative(root());
+struct UsageStats {
+    total_size: u64,
+    image_size: u64,
+    system_size: u64,
+    alo_size: u64,
 }
 
-use crate::fs::vfs::{self, UsageStats};
-
-fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>) {
+fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>, stats: &mut UsageStats) -> bool {
     let mut queue = Vec::new();
+    let mut visited = Vec::new();
+    let mut count = 0;
+
     queue.push((root_node, String::from("/")));
 
-    // Move status to Serial to avoid interfering with Shell TUI
-    let _ = write!(crate::drivers::serial::SERIAL.lock(), "[System] Scanning Drive 0... ░\n");
-
-    let mut entries_count = 0;
     while let Some((inode, name)) = queue.pop() {
-        // Yield to other tasks every 100 entries to prevent "Bricking"
-        entries_count += 1;
-        if entries_count % 100 == 0 {
-            let _ = write!(crate::drivers::serial::SERIAL.lock(), "[System] Scanning Drive 0... {} files\n", entries_count);
-            crate::process::scheduler::yield_now();
+        // Cycle Detection
+        let ino = inode.inode_num();
+        if visited.contains(&ino) { continue; }
+        visited.push(ino);
+
+        // Cooperation & Interrupts
+        count += 1;
+        if count % 50 == 0 {
+            if scheduler::check_current_signal(task::SIGINT) {
+                return false;
+            }
+            scheduler::yield_now();
         }
 
         if let Ok(stat) = inode.stat() {
             if stat.file_type == FileType::File {
-                vfs::update_vfs_usage(stat.size as i64, &name);
+                stats.total_size += stat.size;
+                // REAL extension check
+                if name.ends_with(".bmp") || name.ends_with(".png") {
+                    stats.image_size += stat.size;
+                } else if name.ends_with(".nux") || name.ends_with(".sys") {
+                    stats.system_size += stat.size;
+                } else if name.ends_with(".alo") || name.ends_with(".rs") || name.ends_with(".c") || name.ends_with(".zig") {
+                    stats.alo_size += stat.size;
+                }
             } else if stat.file_type == FileType::Directory {
                 if let Ok(entries) = inode.read_dir() {
                     for entry_name in entries {
@@ -550,13 +386,13 @@ fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>) {
             }
         }
     }
+    true
 }
 
 fn find_smbios() -> Option<u64> {
-    // Search ROM BIOS area using HHDM virtual addresses
+    // Search ROM BIOS area
     for addr in (0xF0000..0x100000).step_by(16) {
-        let virt = crate::mm::vmm::phys_to_virt(addr);
-        let ptr = virt as *const [u8; 4];
+        let ptr = addr as *const [u8; 4];
         unsafe {
             if &*ptr == b"_SM_" { return Some(addr as u64); }
         }
