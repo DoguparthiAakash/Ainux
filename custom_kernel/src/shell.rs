@@ -45,7 +45,7 @@ fn requires_root(cmd: &str) -> bool {
     }
 }
 
-fn get_cwd() -> String {
+pub fn get_cwd() -> String {
     let cwd = CWD.lock();
     if cwd.is_empty() { String::from("/") } else { cwd.clone() }
 }
@@ -55,7 +55,7 @@ fn set_cwd(path: &str) {
     *cwd = String::from(path);
 }
 
-fn resolve_path(path: &str) -> String {
+pub fn resolve_path(path: &str) -> String {
     let mut components: Vec<String> = Vec::new();
     
     // Start with existing CWD if relative, or empty if absolute

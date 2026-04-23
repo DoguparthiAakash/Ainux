@@ -1,6 +1,9 @@
 #!/bin/bash
 set -ex
 
+# Ensure common paths are included (especially for snap and rustup in WSL)
+export PATH="$PATH:/snap/bin:$HOME/.cargo/bin"
+
 # Build C and ASM
 nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
 nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
@@ -70,7 +73,7 @@ fi
 # Detect KVM
 if [ -e /dev/kvm ]; then
     ACCEL="-enable-kvm"
-    echo "KVM Acceleration Enabled 🚀"
+    echo "KVM Acceleration Enabled ðŸš€"
 else
     ACCEL=""
     echo "KVM Not Found (Using Software Emulation - Slower)"
