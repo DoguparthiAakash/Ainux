@@ -156,7 +156,8 @@ fn appearance_menu() {
         title: " Appearance Settings ",
         options: alloc::vec![
             String::from("Font Scale (Current +1)"),
-            String::from("Toggle High Contrast")
+            String::from("Toggle High Contrast"),
+            String::from("Set Display Resolution")
         ],
         selected: 0,
         active_btn: 0,
@@ -177,7 +178,50 @@ fn appearance_menu() {
                     if dialog.selected == 0 {
                         let mut t = THEME.lock();
                         t.font_size = (t.font_size % 3) + 1;
+                    } else if dialog.selected == 2 {
+                        resolution_menu();
                     }
+                }
+                _ => {}
+            }
+        }
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+fn resolution_menu() {
+    let mut dialog = Dialog {
+        title: " Display Resolution ",
+        options: alloc::vec![
+            String::from("800 x 600   (Standard)"),
+            String::from("1024 x 768  (Legacy)"),
+            String::from("1280 x 720  (HD 720p)"),
+            String::from("1280 x 1024 (Standard Plus)")
+        ],
+        selected: 0,
+        active_btn: 0,
+    };
+
+    loop {
+        draw_background();
+        draw_dialog(&dialog);
+        if let Some(ch) = keyboard::pop_char() {
+            match ch {
+                '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
+                '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
+                '\u{2190}' => if dialog.active_btn == 2 { dialog.active_btn = 1; },
+                '\u{2192}' => if dialog.active_btn == 1 { dialog.active_btn = 2; },
+                '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
+                '\n' => {
+                    if dialog.active_btn == 2 { return; } // Back
+                    match dialog.selected {
+                        0 => video::set_resolution(800, 600, 32),
+                        1 => video::set_resolution(1024, 768, 32),
+                        2 => video::set_resolution(1280, 720, 32),
+                        3 => video::set_resolution(1280, 1024, 32),
+                        _ => {}
+                    }
+                    return;
                 }
                 _ => {}
             }

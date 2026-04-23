@@ -113,6 +113,37 @@ pub fn clear() {
     *CONSOLE_Y.lock() = 0;
 }
 
+pub fn set_resolution(w: u16, h: u16, bpp: u16) {
+    unsafe {
+        // DISPI_INDEX_ENABLE -> 0x0004, DISPI_DISABLED -> 0x0000
+        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0004 as u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") 0x0000 as u16);
+        
+        // DISPI_INDEX_XRES -> 0x0001
+        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0001 as u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") w);
+        
+        // DISPI_INDEX_YRES -> 0x0002
+        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0002 as u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") h);
+        
+        // DISPI_INDEX_BPP -> 0x0003
+        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0003 as u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") bpp);
+        
+        // DISPI_INDEX_ENABLE -> 0x0004, DISPI_ENABLED | DISPI_LFB_ENABLED -> 0x41
+        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0004 as u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") 0x0041 as u16);
+    }
+    
+    *FRAMEBUFFER_WIDTH.lock() = w as usize;
+    *FRAMEBUFFER_HEIGHT.lock() = h as usize;
+    *FRAMEBUFFER_PITCH.lock() = (w as usize) * (bpp as usize / 8);
+    *FRAMEBUFFER_BPP.lock() = bpp as u8;
+    
+    init(); // Re-initialize with new dimensions
+}
+
 fn scroll_screen() {
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr == 0 {

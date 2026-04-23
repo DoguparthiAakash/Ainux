@@ -5,7 +5,7 @@
 # Detect KVM Acceleration
 if [ -e /dev/kvm ]; then
     ACCEL="-enable-kvm"
-    echo "KVM Acceleration Enabled 🚀"
+    echo "KVM Acceleration Enabled ðŸš€"
 else
     ACCEL=""
     echo "KVM Not Found (Using Software Emulation - Slower)"
