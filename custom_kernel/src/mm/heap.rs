@@ -8,12 +8,28 @@ pub struct HybridAllocator {
 
 unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Performance Note: Slab/Zone delegation is temporarily disabled to prevent recursive deadlocks
-        // during multi-core initialization. All allocations fallback to the robust LockedHeap.
+        let size = layout.size();
+        
+        // Preferred: High-performance Slab delegation for small objects
+        if let Some(ptr) = crate::mm::slab::alloc_custom(size) {
+            return ptr;
+        }
+
+        // Fallback: Robust Linked List Heap
         self.heap.alloc(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let addr = ptr as usize;
+        
+        // If the address is below our managed kernel heap, it must be a slab pointer
+        // (Slab pages are allocated from PMM and reside in the direct-mapped physical region)
+        if addr < HEAP_START {
+            let size = layout.size();
+            crate::mm::slab::free_custom(ptr, size);
+            return;
+        }
+
         self.heap.dealloc(ptr, layout)
     }
 }
@@ -39,23 +55,25 @@ static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 pub const HEAP_START: usize = 0x_4444_4444_0000;
 
 pub fn init() {
+    init_custom(32 * 1024 * 1024);
+}
+
+pub fn init_custom(heap_size: usize) {
     let total_mem = crate::mm::pmm::TOTAL_MEMORY.load(core::sync::atomic::Ordering::Relaxed) as usize;
-    // Aim for 32MB, but if memory is low, cap at (total_mem / 4) to leave room for userspace/page tables
-    // E.g., for 10MB RAM, heap will be 2.5MB. For 2GB RAM, heap will be 32MB.
-    let target_size = if total_mem < 128 * 1024 * 1024 {
+    // Aim for the requested size, but if memory is extremely low, cap at (total_mem / 4)
+    let actual_size = if total_mem > 0 && total_mem < heap_size * 2 {
         total_mem / 4
     } else {
-        32 * 1024 * 1024
+        heap_size
     };
     
-    let heap_size = target_size.max(1024 * 1024); // at least 1MB
+    let heap_size = actual_size.max(1024 * 1024); // at least 1MB
     let pages = (heap_size + 4095) / 4096;
     let mut current_addr = HEAP_START;
     
     // Debug helper (manual serial output)
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     use core::fmt::Write;
-    let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
     let _ = write!(serial, "Heap: Reserving {} pages ({:?} bytes) at {:#x}\n", pages, heap_size, current_addr);
 
     for i in 0..pages {
@@ -69,21 +87,27 @@ pub fn init() {
         };
         
         if let Some(frame) = frame {
+            if frame == 0 {
+                let _ = write!(serial, "\nHeap: CRITICAL ERROR - PMM returned Frame 0 for index {}\n", i);
+                loop { crate::hlt(); }
+            }
             unsafe {
-                // Only log every 1024th page (4MB) to avoid spam
-                if i % 1024 == 0 {
+                // Only log every 2048th page (8MB) to reduce spam
+                if i % 2048 == 0 {
                     let _ = write!(serial, "Heap: Mapping page {}/{} (Frame {:#x})\n", i, pages, frame);
                 }
                 match vmm::map_page(current_addr as u64, frame, 0x03) {
                     Ok(_) => {},
                     Err(e) => {
-                        let _ = write!(serial, "Heap: Failed to map page {}: {}\n", i, e);
+                        let _ = write!(serial, "\nHeap: FAILED to map page {} at {:#x} (Err: {:?})\n", i, current_addr, e);
+                        loop { crate::hlt(); }
                     }
                 }
             }
             current_addr += 4096;
         } else {
-            panic!("Heap OOM during init");
+            let _ = write!(serial, "\nHeap: PHYSICAL OOM during init at page {}/{}\n", i, pages);
+            loop { crate::hlt(); }
         }
     }
     

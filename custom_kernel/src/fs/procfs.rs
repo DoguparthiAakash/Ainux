@@ -14,8 +14,22 @@ impl FileSystem for ProcFileSystem {
     }
 }
 
+#[derive(Debug)]
 pub struct ProcDirInode {
     entries: Vec<(String, Arc<dyn Inode>)>,
+}
+
+impl crate::object::KernelObject for ProcDirInode {
+    fn name(&self) -> alloc::string::String { alloc::string::String::from("procdir") }
+    fn id(&self) -> usize { 0x1000 }
+    fn object_type(&self) -> &'static str { "Directory" }
+
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &'static str> {
+        Ok(crate::object::ObjectSnapshot { data: alloc::vec::Vec::new(), related_handles: alloc::vec::Vec::new() })
+    }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &'static str> {
+        Ok(())
+    }
 }
 
 impl ProcDirInode {
@@ -37,8 +51,22 @@ pub enum ProcFileType {
     CpuInfo,
 }
 
+#[derive(Debug)]
 pub struct ProcFileInode {
     file_type: ProcFileType,
+}
+
+impl crate::object::KernelObject for ProcFileInode {
+    fn name(&self) -> alloc::string::String { alloc::format!("procfile-{:?}", self.file_type) }
+    fn id(&self) -> usize { 0x2000 }
+    fn object_type(&self) -> &'static str { "File" }
+
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &'static str> {
+        Ok(crate::object::ObjectSnapshot { data: alloc::vec::Vec::new(), related_handles: alloc::vec::Vec::new() })
+    }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &'static str> {
+        Ok(())
+    }
 }
 
 impl ProcFileInode {

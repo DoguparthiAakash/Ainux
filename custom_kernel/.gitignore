@@ -1,0 +1,51 @@
+# --- Ainux Kernel Git Ignore ---
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# ISO building
+iso_root/
+ainux.iso
+
+# Disk Images
+disk2.img
+ainux_disk.vdi
+ainux_disk.vmdk
+*.img
+*.vdi
+*.vmdk
+
+# Object files and binaries
+*.o
+*.obj
+*.elf
+*.bin
+src/asm/*.o
+src/c/*.o
+src/asm/*.bin
+
+# Generated Userspace/Tests
+hello.elf
+hello.txt
+test.elf
+tools/*.ll
+
+# Local Logs and Error reports
+*.log
+compile_errors.txt
+compile_errors_2.txt
+compile_errors_3.txt
+hs_err_pid*.log
+replay_pid*.log
+
+# Editor & System files
+.vscode/
+.idea/
+.DS_Store
+*~
+*.swp
+
+# OS-specific
+Thumbs.db
+desktop.ini

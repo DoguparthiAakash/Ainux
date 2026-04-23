@@ -22,24 +22,45 @@ pub struct Network {
 #[derive(Debug)]
 pub struct AtherosHAL {
     name: String,
-    io_base: Mutex<u16>,
+    mmio_base: Mutex<u64>,
     connected_ssid: Mutex<Option<String>>,
     pub available_networks: Mutex<Vec<Network>>,
+    pub mac_addr: Mutex<[u8; 6]>,
 }
+
+use super::atheros_regs::*;
 
 pub static GLOBAL_ATHEROS: Mutex<Option<Arc<AtherosHAL>>> = Mutex::new(None);
 
 impl AtherosHAL {
     pub fn new() -> Arc<Self> {
         let driver = Arc::new(Self { 
-            name: String::from("Atheros AR9271 Wireless"),
-            io_base: Mutex::new(0),
+            name: String::from("Atheros AR9271/AR9285 Wireless"),
+            mmio_base: Mutex::new(0),
             connected_ssid: Mutex::new(None),
             available_networks: Mutex::new(Vec::new()),
+            mac_addr: Mutex::new([0; 6]),
         });
         
         *GLOBAL_ATHEROS.lock() = Some(driver.clone());
         driver
+    }
+
+    // MMIO Helpers
+    fn reg_write(&self, offset: u32, val: u32) {
+        let base = *self.mmio_base.lock();
+        if base == 0 { return; }
+        let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+        let ptr = (base + hhdm + offset as u64) as *mut u32;
+        unsafe { core::ptr::write_volatile(ptr, val); }
+    }
+
+    fn reg_read(&self, offset: u32) -> u32 {
+        let base = *self.mmio_base.lock();
+        if base == 0 { return 0; }
+        let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+        let ptr = (base + hhdm + offset as u64) as *const u32;
+        unsafe { core::ptr::read_volatile(ptr) }
     }
     
     /// Real Hardware Scan: Pulls SSIDs and Security from the 802.11 management frames.
@@ -105,12 +126,42 @@ impl IOService for AtherosHAL {
     
     fn start(&self, provider: &Arc<dyn IOService>) -> IOResult<()> {
         let bar0 = match provider.get_property("bar0") {
-            Some(IOValue::Integer(b)) => b as u16,
+            Some(IOValue::Integer(b)) => b as u64,
             _ => 0,
         };
-        *self.io_base.lock() = bar0;
+        // Clean BAR (bits 0-3 are flags)
+        let mmio_addr = bar0 & !0xF;
+        *self.mmio_base.lock() = mmio_addr;
         
-        video::put_str(&format!("Atheros: Driver Loaded (BAR0: {:#x}). WPA3 Support Enabled.\n", bar0));
+        video::put_str(&format!("Atheros: Initializing Hardware (MMIO: {:#x})...\n", mmio_addr));
+        
+        // 1. Hardware Reset
+        self.reg_write(AR_CR, AR_CR_SW_RST);
+        for _ in 0..1000 { core::hint::spin_loop(); }
+        self.reg_write(AR_CR, 0); // Clear reset
+        
+        // 2. Read Hardware MAC Address
+        let id0 = self.reg_read(AR_STA_ID0);
+        let id1 = self.reg_read(AR_STA_ID1);
+        
+        let mut mac = [0u8; 6];
+        mac[0] = (id0 & 0xFF) as u8;
+        mac[1] = ((id0 >> 8) & 0xFF) as u8;
+        mac[2] = ((id0 >> 16) & 0xFF) as u8;
+        mac[3] = ((id0 >> 24) & 0xFF) as u8;
+        mac[4] = (id1 & 0xFF) as u8;
+        mac[5] = ((id1 >> 8) & 0xFF) as u8;
+        
+        *self.mac_addr.lock() = mac;
+        video::put_str(&format!("Atheros: MAC Address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n", 
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]));
+
+        // 3. Enable Radio (RX/TX)
+        self.reg_write(AR_RXDP_V2, 0); // Reset pointers
+        self.reg_write(AR_IER, AR_IER_ENABLE);
+        self.reg_write(AR_RCR, AR_RCR_RXE | AR_RCR_PROM);
+        
+        video::put_str("Atheros: Radio Ready. WPA3 Stack Active.\n");
         self.refresh_networks();
         Ok(())
     }

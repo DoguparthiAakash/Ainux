@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  L99 Kernel — sshd_config
+#  Drop into /etc/ssh/sshd_config (or point sshd with -f)
+#  Compatible with OpenSSH 8.x+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Listen ────────────────────────────────────────────────────────────────────
+Port 22
+# Also listen on a high port for direct kernel-net access
+Port 2222
+AddressFamily inet
+ListenAddress 0.0.0.0
+ListenAddress 127.0.0.1
+
+# ── Host Keys ─────────────────────────────────────────────────────────────────
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# ── Authentication ────────────────────────────────────────────────────────────
+LoginGraceTime 30s
+MaxAuthTries 4
+MaxSessions 20
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Disable password auth in production — use keys only
+PasswordAuthentication yes        # set to 'no' after key setup
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# ── Security Hardening ────────────────────────────────────────────────────────
+Protocol 2
+PermitRootLogin prohibit-password   # root only via key
+StrictModes yes
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+
+# Cipher & MAC hardening (strong algos only)
+Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512
+
+# ── Timeouts / Keepalive ──────────────────────────────────────────────────────
+ClientAliveInterval 60
+ClientAliveCountMax 3
+TCPKeepAlive yes
+UseDNS no
+
+# ── X11 / Forwarding ─────────────────────────────────────────────────────────
+X11Forwarding no
+AllowTcpForwarding yes          # needed for tunnels over l99net0
+GatewayPorts no                 # do not bind forwarded ports on 0.0.0.0
+AllowStreamLocalForwarding yes  # Unix domain socket forwarding
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+SyslogFacility AUTH
+LogLevel VERBOSE                # logs fingerprints; useful for debugging
+
+# ── Banner ────────────────────────────────────────────────────────────────────
+Banner /etc/ssh/l99_banner.txt
+
+# ── Subsystems ────────────────────────────────────────────────────────────────
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# ── Rate limiting (basic brute-force mitigation) ──────────────────────────────
+# MaxStartups 10:30:100  → start:rate:full
+MaxStartups 10:30:60

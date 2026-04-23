@@ -14,6 +14,9 @@ mod mm;
 pub mod drivers;
 pub mod apps;
 pub mod fs;
+pub mod object;
+pub mod semantic;
+pub mod manager;
 pub mod net;
 
 pub mod api;
@@ -37,25 +40,37 @@ pub fn hlt() {
     }
 }
 
+static PANIC_RECURSION: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
+    let depth = PANIC_RECURSION.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    
     // 1. Emergency Serial Output
     let mut serial = drivers::serial::SerialPort::new(0x3F8);
-    let _ = write!(serial, "\n\n!!! KERNEL PANIC !!!\n");
-    let _ = write!(serial, "Info: {:?}\n", _info);
+    if depth == 0 {
+        let _ = write!(serial, "\n\n!!! KERNEL PANIC !!!\n");
+        let _ = write!(serial, "Info: {:?}\n", _info);
+    } else if depth < 3 {
+        let _ = write!(serial, "\n[RECURSIVE PANIC {}] Info: {:?}\n", depth, _info);
+    } else {
+        loop { hlt(); }
+    }
     
-    // 2. Emergency Video Output (Lockless)
-    // We bypass the Mutex-protected drivers::video paths to avoid deadlocks.
+    // 2. Emergency Video Output (Lockless & Allocation-Free)
     unsafe {
         crate::drivers::video::panic_clear();
         crate::drivers::video::emergency_put_str("               --- KERNEL PANIC ---\n\n");
         
-        let mut msg = alloc::string::String::new();
-        let _ = write!(msg, "A sovereign system failure has occurred.\n\n");
-        let _ = write!(msg, "Information:\n{:?}\n\n", _info);
-        let _ = write!(msg, "System Halted. Please check VirtualBox logs or Serial output.\n");
-        
-        crate::drivers::video::emergency_put_str(&msg);
+        if depth == 0 {
+            crate::drivers::video::emergency_put_str("A sovereign system failure has occurred.\n\n");
+            // We can't easily format! without allocation, so we just put some static text 
+            // and hope the serial log has the details.
+            crate::drivers::video::emergency_put_str("Check serial output (0x3F8) for full PanicInfo.\n");
+            crate::drivers::video::emergency_put_str("System Halted.\n");
+        } else {
+            crate::drivers::video::emergency_put_str("RECURSIVE PANIC DETECTED. HALTING.\n");
+        }
     }
     
     loop {
@@ -75,9 +90,30 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "\n");
 
     // ─── Phase 0: CPU Detection ───
-    let _ = write!(serial, "── Phase 0: CPU Detection ──\n");
+    let _ = write!(serial, "── Phase 0: CPU/BSS Init ──\n");
     cpu::cpuid::init();
 
+    unsafe {
+        extern "C" {
+            static mut __bss_start: u8;
+            static mut __bss_end: u8;
+        }
+        let start_ptr = &mut __bss_start as *mut u8;
+        let end_ptr = &mut __bss_end as *mut u8;
+        let size = end_ptr as usize - start_ptr as usize;
+
+        // Verify BSS bounds (Basic sanity check to avoid massive overflows)
+        if size < 0x10000000 { // 256MB sanity limit
+             core::ptr::write_bytes(start_ptr, 0, size);
+        }
+
+        // Initialize GS_BASE for the BSP
+        let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
+        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
+        cpu::percpu::write_gs_base(bsp_prcb_addr);
+    }
+    let _ = write!(serial, "BSS zeroed and GS_BASE set to PRCB[0].\n");
+    
     // ─── Phase 1: Memory Subsystem (Multiboot) ───
     let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
     let _ = write!(serial, "Initializing PMM (Multiboot)...\n");
@@ -89,12 +125,16 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "VMM Initialized.\n");
 
     let _ = write!(serial, "Initializing Heap (32 MB)...\n");
-    mm::heap::init();
+    mm::heap::init_custom(32 * 1024 * 1024);
     let _ = write!(serial, "Heap Initialized.\n");
 
     let _ = write!(serial, "Initializing Slab Allocator...\n");
     mm::slab::init();
     let _ = write!(serial, "Slab Allocator Initialized.\n");
+
+    // Initialize Sovereign Managers (NOW THAT HEAP IS READY)
+    crate::manager::log::init();
+    crate::manager::neural::init();
 
     // ─── Phase 2: Core CPU Structures ───
     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
@@ -105,14 +145,6 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Initializing IDT...\n");
     cpu::idt::init();
     let _ = write!(serial, "IDT Initialized.\n");
-
-    // Initialize BSP's PRCB for per-cpu storage
-    unsafe {
-        let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
-        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
-        cpu::percpu::write_gs_base(bsp_prcb_addr);
-    }
-    let _ = write!(serial, "BSP PRCB Initialized (GS_BASE set).\n");
 
     let _ = write!(serial, "Initializing PIC (legacy)...\n");
     unsafe { cpu::pic::init(); }
@@ -221,23 +253,24 @@ pub extern "C" fn _start() -> ! {
     }
     let _ = write!(serial, "ATA TEST END\n");
     
-    // Initialize Scheduler
+    // Initialize Rooms & Scheduler
+    process::room::init();
     process::scheduler::init();
     crate::sem::init(); // Initialize Semantic Core
-    let _ = write!(serial, "Scheduler Initialized.\n");
+    let _ = write!(serial, "Scheduler & Rooms Initialized.\n");
+
+    // ─── Phase 5: Autonomous Manager (Sentinel) ───
+    let _ = write!(serial, "DEBUG: Spawning Sentinel...\n");
+    crate::process::scheduler::spawn_kernel_task(crate::manager::sentinel::start as u64);
+    let _ = write!(serial, "DEBUG: Sentinel Spawned.\n");
 
     // Initialize Syscalls (MUST be before STI to avoid timer interrupts during MSR setup)
+    let _ = write!(serial, "DEBUG: Initializing Syscalls...\n");
     unsafe { cpu::syscall::init(); }
-    let _ = write!(serial, "Syscalls Enabled.\n");
-
-    // Enable Interrupts
-    unsafe { asm!("sti"); }
-    let _ = write!(serial, "Interrupts Enabled.\n");
-
-    // Userspace bootstrap will now be handled securely by loader.rs via VFS.
-    // Proceed directly to VFS mounting and Shell...
+    let _ = write!(serial, "DEBUG: Syscalls Enabled.\n");
 
     // Initialize VFS
+    let _ = write!(serial, "DEBUG: Initializing VFS...\n");
     match fs::ext4::parse_superblock() {
         Ok(sb) => {
             let _ = write!(serial, "Ext4: Superblock found. Init VFS...\n");
@@ -258,6 +291,11 @@ pub extern "C" fn _start() -> ! {
                 config::reset_to_defaults();
                 let _ = write!(serial, "Config: Safety Mode (Defaults Loaded).\n");
             }
+
+            // Enable Interrupts (ONLY AT THE VERY END)
+            let _ = write!(serial, "DEBUG: Enabling Interrupts (STI)...\n");
+            unsafe { asm!("sti"); }
+            let _ = write!(serial, "DEBUG: Interrupts Enabled.\n");
 
             // Apply Config (Example: Network)
             {

@@ -50,7 +50,7 @@ pub trait FileSystem: Send + Sync {
     fn root_inode(&self) -> Arc<dyn Inode>;
 }
 
-pub trait Inode: Send + Sync {
+pub trait Inode: Send + Sync + crate::object::KernelObject {
     fn inode_num(&self) -> u32;
     fn stat(&self) -> VfsResult<FileStat>;
     fn lookup(&self, name: &str) -> VfsResult<Arc<dyn Inode>>;
@@ -94,7 +94,14 @@ pub fn mount(path: &str, fs: Arc<dyn FileSystem>) {
     });
 }
 
-pub fn resolve_path(path: &str) -> VfsResult<Arc<dyn Inode>> {
+pub fn resolve_path(path: &str) -> VfsResult<ArcInode> {
+    // SECURITY: Use the current task's Room Root if available
+    let task_root = if let Some(room) = crate::process::scheduler::get_current_room() {
+        room.get_root_inode()
+    } else {
+        root()
+    };
+
     // Check mounts first (longest prefix match)
     let mounts = MOUNTS.lock();
     let mut best_match: Option<&Mount> = None;
@@ -116,8 +123,8 @@ pub fn resolve_path(path: &str) -> VfsResult<Arc<dyn Inode>> {
         return recursive_lookup(m.fs.root_inode(), rel_path);
     }
     
-    // Default to root
-    recursive_lookup(root(), path)
+    // Default to the task-local root
+    recursive_lookup(task_root, path)
 }
 
 fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {
@@ -130,4 +137,24 @@ fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {
         current = current.lookup(bit)?;
     }
     Ok(current)
+}
+pub fn semantic_search(key: &str, value: &str) -> Vec<ArcInode> {
+    let registry = crate::semantic::core::REGISTRY.lock();
+    let mut results = Vec::new();
+    
+    for entry in registry.entries.iter() {
+        let has_sense = entry.senses.iter().any(|s| s.key == key && s.value == value);
+        if has_sense {
+            // Try to downcast to Inode
+            // Rust doesn't support easy dynamic downcasting from Arc<dyn Trait> to Arc<dyn Trait2>
+            // So we'll have to check names or use a custom mechanism.
+            if entry.object.object_type() == "File" || entry.object.object_type() == "Directory" {
+                 // We know it's an Inode if it's one of these types
+                 // In a real implementation, we'd use a more robust downcast.
+                 // For now, we'll use a hack or assume if it's in the registry with these types, it's an Inode.
+                 // This is just a demonstration of the concept.
+            }
+        }
+    }
+    results
 }

@@ -4,3 +4,5 @@ pub mod elf;
 pub mod vfs;
 pub mod procfs;
 pub mod console;
+pub mod union;
+pub mod pipe;

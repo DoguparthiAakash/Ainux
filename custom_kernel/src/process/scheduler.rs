@@ -1,4 +1,4 @@
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
@@ -8,6 +8,20 @@ pub const MAX_TASKS: usize = 32;
 pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None }; MAX_TASKS]);
 
 static mut TICKS: u64 = 0;
+pub static READY_BITMAP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static SCHEDULER_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn set_ready(pid: usize) {
+    if pid < MAX_TASKS {
+        READY_BITMAP.fetch_or(1 << pid, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn clear_ready(pid: usize) {
+    if pid < MAX_TASKS {
+        READY_BITMAP.fetch_and(!(1 << pid), core::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 pub fn get_ticks() -> u64 {
     unsafe { TICKS }
@@ -17,10 +31,14 @@ pub fn init() {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         // Initialize Task 0 as the current running kernel task
-        let mut task0 = Task::new_free();
+        let root_room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
+        let mut task0 = Task::new_free(root_room.clone());
         task0.id = 0;
         task0.state = TaskState::Running;
         tasks[0] = Some(task0);
+        // Task 0 is running, not ready
+        clear_ready(0);
+        SCHEDULER_INITIALIZED.store(true, core::sync::atomic::Ordering::SeqCst);
     });
 }
 
@@ -53,6 +71,12 @@ pub fn tick() {
     drop(tasks);
     
     // Find next task to run
+    // 1. Automatic Reap (Every 20 ticks)
+    if unsafe { TICKS % 20 == 0 } {
+        reap_any_zombie();
+    }
+
+    // 2. Poll Network
     crate::net::poll();
     schedule();
 }
@@ -98,15 +122,24 @@ pub fn get_current_pid() -> usize {
     crate::cpu::smp::get_current_pid()
 }
 
-pub fn spawn(func: extern "C" fn()) {
+pub fn get_current_room() -> Option<alloc::sync::Arc<crate::process::room::RoomContext>> {
+    let pid = get_current_pid();
+    let tasks = TASKS.lock();
+    tasks[pid].as_ref().map(|t| t.room.clone())
+}
+
+pub fn spawn_kernel_task(func: u64) -> usize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                let mut task = Task::new_free();
+                // Root tasks go to Root Room
+                let room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
+
+                let mut task = Task::new_free(room);
                 task.id = i;
                 task.state = TaskState::Ready;
-                
+
                 // Setup Stack
                 let stack_top = task.stack.as_ptr() as u64 + 16384;
                 let mut sp = stack_top & !0xF;
@@ -115,13 +148,19 @@ pub fn spawn(func: extern "C" fn()) {
                     *(sp as *mut u64) = kernel_thread_entry as u64; 
                 }
                 task.context.rsp = sp;
-                task.context.r12 = func as u64; 
+                task.context.r12 = func; 
                 
                 tasks[i] = Some(task);
-                return;
+                set_ready(i);
+                return i;
             }
         }
-    });
+        0
+    })
+}
+
+pub fn spawn(func: extern "C" fn()) {
+    spawn_kernel_task(func as u64);
 }
 
 pub extern "C" fn kernel_thread_entry() {
@@ -156,7 +195,14 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
         // 2. Find free slot
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                 let mut task = Task::new_free();
+                // Inherit Room
+                let room = if let Some(current) = &tasks[current_pid] {
+                    current.room.clone()
+                } else {
+                    crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room")
+                };
+
+                let mut task = Task::new_free(room);
                 task.id = i;
                 task.state = TaskState::Ready;
                 task.cr3 = cr3; // Shared Memory
@@ -177,6 +223,7 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
                 task.context.r13 = stack_ptr; // Shim R13 -> RSP
                 
                 tasks[i] = Some(task);
+                set_ready(i);
                 return i as isize;
             }
         }
@@ -189,7 +236,9 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                 let mut task = Task::new_free();
+                // Assign Root Room by default for user spawn (can be moved later)
+                let root_room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
+                let mut task = Task::new_free(root_room);
                 task.id = i;
                 task.state = TaskState::Ready;
                 task.cr3 = cr3;
@@ -206,6 +255,7 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
                 task.context.r13 = rsp;
                 
                 tasks[i] = Some(task);
+                set_ready(i);
                 return i;
             }
         }
@@ -228,49 +278,19 @@ pub fn kernel_shim_entry() {
 pub fn schedule() {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
-    let current_pid = crate::cpu::smp::get_current_pid();
-    
-    // Simple Round Robin with Priority Bias (Fake)
-    // Real implementation would look for higest priority Ready task.
-    // Here we just skip low priority tasks occasionally? 
-    // Or just simple Round Robin for now to keep it stable, but we store the priority.
-    let mut next_pid = current_pid;
-    loop {
-        next_pid = (next_pid + 1) % MAX_TASKS;
-        if next_pid == current_pid {
-            return; // No other tasks
-        }
-        
-        if let Some(task) = &mut tasks[next_pid] {
-            // --- Maturity Check: Signals ---
-            let signals = task.signals;
-            if (signals >> crate::process::task::SIGKILL) & 1 == 1 {
-                task.state = TaskState::Zombie;
-                task.exit_code = -9;
-                continue;
-            }
-            if (signals >> crate::process::task::SIGINT) & 1 == 1 {
-                task.state = TaskState::Zombie;
-                task.exit_code = -2;
-                continue;
-            }
-            if (signals >> crate::process::task::SIGTSTP) & 1 == 1 {
-                task.state = TaskState::Waiting;
-                continue;
-            }
+        let current_pid = crate::cpu::smp::get_current_pid();
 
-            if task.state == TaskState::Ready {
-               // Check Sleep
-               let current_ticks = unsafe { TICKS };
-               if task.sleep_ticks > current_ticks {
-                   // Still sleeping
-               } else {
-                   // Wake up or Ready
-                   break;
-               }
-            }
+        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
+            next
+        } else {
+             // IDLE STRATEGY: Reduce host CPU load
+             unsafe { core::arch::asm!("hlt"); }
+             return;
+        };
+        
+        if next_pid == current_pid {
+            return;
         }
-    }
     
     // Switch
     let old_pid = current_pid;
@@ -282,6 +302,11 @@ pub fn schedule() {
     let tasks_ptr = tasks.as_mut_ptr();
     let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
     
+    // Security: Check Stack Canary
+    if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
+        panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
+    }
+    
     // Account final cycles for old task
     if old_task.last_tsc != 0 {
         old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
@@ -291,9 +316,11 @@ pub fn schedule() {
     let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap() };
     next_task.state = TaskState::Running;
     next_task.last_tsc = current_tsc; // Mark start on reschedule
+    clear_ready(next_pid);
 
     if old_task.state == TaskState::Running {
         old_task.state = TaskState::Ready;
+        set_ready(old_pid);
     }
     
     // Switch CR3
@@ -322,6 +349,37 @@ pub fn schedule() {
     });
 }
 
+fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize) -> Option<usize> {
+    // 1. Get current Room Strategy
+    if let Some(task) = &tasks[current] {
+        let room = &task.room;
+        let strategy = room.strategy.lock().clone();
+        if let Some(next) = strategy.pick_next(tasks, current) {
+            if let Some(task) = &tasks[next] {
+                if task.state == TaskState::Ready {
+                    return Some(next);
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to global bitmask (Very fast O(1))
+    let mask = READY_BITMAP.load(core::sync::atomic::Ordering::Relaxed);
+    if mask != 0 {
+        let next_pid = mask.trailing_zeros() as usize;
+        if next_pid < MAX_TASKS {
+            return Some(next_pid);
+        }
+    }
+    
+    None
+}
+
+pub fn pick_next_task() -> Option<usize> {
+    let mut tasks = TASKS.lock();
+    pick_next_task_internal(&mut tasks, get_current_pid())
+}
+
 pub fn yield_now() {
     schedule();
 }
@@ -335,12 +393,23 @@ pub unsafe fn set_current_sleep(target_ticks: u64) {
     });
 }
 
+pub fn process_pipe() -> (isize, isize) {
+    let (reader, writer) = crate::fs::pipe::create_pipe();
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let current_pid = crate::cpu::smp::get_current_pid();
+        if let Some(task) = &mut tasks[current_pid] {
+            let r_fd = task.fds.alloc_fd(reader);
+            let w_fd = task.fds.alloc_fd(writer);
+            if let (Some(r), Some(w)) = (r_fd, w_fd) {
+                return (r as isize, w as isize);
+            }
+        }
+        (-1, -1)
+    })
+}
+
 pub fn process_open(path: &str, _flags: u32) -> isize {
-    // 1. Lookup file in VFS (TODO: Parse path, currently just verify ROOT exists)
-    // For now, fail if not implemented.
-    // In Phase 13b, we will walk ROOT.lookup(path).
-    
-    // Stub: Always fail for now until EXT4 attached.
     -1
 }
 
@@ -429,6 +498,7 @@ pub fn exit_current_task(exit_code: isize) {
         if let Some(task) = &mut tasks[current_pid] {
              task.state = TaskState::Zombie;
              task.exit_code = exit_code;
+             clear_ready(current_pid);
         }
         
         drop(tasks);
@@ -462,12 +532,27 @@ pub fn wait_pid(pid: usize) -> isize {
 pub fn kill_task(pid: usize) -> isize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
+        let current_pid = crate::cpu::smp::get_current_pid();
+        
+        let current_room_id = if let Some(t) = &tasks[current_pid] {
+            t.room.id
+        } else {
+            0
+        };
+
         if pid == 0 { return -1; } 
         
-        if let Some(task) = &mut tasks[pid] {
-            if task.state != TaskState::Free && task.state != TaskState::Zombie {
-                 task.state = TaskState::Zombie;
-                 task.exit_code = -9; 
+        if let Some(target) = &mut tasks[pid] {
+            let target_room_id = target.room.id;
+            
+            // SECURITY: Only allow kill if same room or caller is ROOT (0)
+            if current_room_id != 0 && current_room_id != target_room_id {
+                return -1; // Permission Denied
+            }
+
+            if target.state != TaskState::Free && target.state != TaskState::Zombie {
+                 target.state = TaskState::Zombie;
+                 target.exit_code = -9; 
                  return 0;
             }
         }
@@ -482,9 +567,23 @@ pub fn print_task_list() {
 
     {
         let tasks = TASKS.lock();
+        let current_pid = crate::cpu::smp::get_current_pid();
+        let current_room_id = if let Some(t) = &tasks[current_pid] {
+            t.room.id
+        } else {
+            0
+        };
+
         crate::drivers::video::put_str("PID  State    CPU Ticks\n");
         for i in 0..MAX_TASKS {
             if let Some(task) = &tasks[i] {
+                let target_room_id = task.room.id;
+
+                // SOVEREIGN FILTER: Non-root rooms only see their own peers
+                if current_room_id != 0 && target_room_id != current_room_id {
+                    continue;
+                }
+
                 let state_str = match task.state {
                     TaskState::Running => "Running",
                     TaskState::Ready => "Ready  ",
@@ -519,6 +618,7 @@ pub fn block_current_task() {
         
         if let Some(task) = &mut tasks[current_pid] {
             task.state = TaskState::Waiting;
+            clear_ready(current_pid);
         }
         drop(tasks);
         schedule();
@@ -531,12 +631,16 @@ pub fn wake_task(pid: usize) {
         if let Some(task) = &mut tasks[pid] {
              if task.state == TaskState::Waiting {
                  task.state = TaskState::Ready;
+                 set_ready(pid);
              }
         }
     });
 }
 
 pub fn increment_current_page_count() {
+    if !SCHEDULER_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
@@ -554,6 +658,7 @@ pub fn suspend_thread(pid: usize) {
         if let Some(task) = &mut tasks[pid] {
             if task.state == TaskState::Ready || task.state == TaskState::Running {
                 task.state = TaskState::Waiting;
+                clear_ready(pid);
             }
         }
     });
@@ -565,6 +670,7 @@ pub fn resume_thread(pid: usize) {
         if let Some(task) = &mut tasks[pid] {
             if task.state == TaskState::Waiting {
                  task.state = TaskState::Ready;
+                 set_ready(pid);
             }
         }
     });

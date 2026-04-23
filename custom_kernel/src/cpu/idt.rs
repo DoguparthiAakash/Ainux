@@ -327,6 +327,7 @@ extern "C" fn rtl8139_handler() {
 #[no_mangle]
 extern "C" fn rust_rtl8139_handler() {
     crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
+    crate::net::dispatch_packets();
     unsafe { crate::cpu::pic::notify_eoi(11); } // IRQ11
 }
 

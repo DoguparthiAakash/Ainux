@@ -395,10 +395,24 @@ impl Ext4FsInner {
     }
 }
 
+#[derive(Debug)]
 pub struct Ext4Inode {
     fs: Arc<Ext4FsInner>,
     inode_num: u32,
     disk_inode: DiskInode,
+}
+
+impl crate::object::KernelObject for Ext4Inode {
+    fn name(&self) -> alloc::string::String { alloc::format!("ext4-{}", self.inode_num) }
+    fn id(&self) -> usize { self.inode_num as usize }
+    fn object_type(&self) -> &'static str { "File" }
+
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &'static str> {
+        Ok(crate::object::ObjectSnapshot { data: alloc::vec::Vec::new(), related_handles: alloc::vec::Vec::new() })
+    }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &'static str> {
+        Ok(())
+    }
 }
 
 impl Inode for Ext4Inode {

@@ -112,6 +112,16 @@ pub fn init() {
                     if ath_driver.probe(&entry.service) > 0 {
                          let _ = ath_driver.start(&entry.service);
                     }
+
+                    let ralink_driver = crate::drivers::net::ralink::RalinkHAL::new();
+                    if ralink_driver.probe(&entry.service) > 0 {
+                         let _ = ralink_driver.start(&entry.service);
+                    }
+
+                    let ehci_driver = crate::drivers::usb::ehci::EHCIController::new();
+                    if ehci_driver.probe(&entry.service) > 0 {
+                         let _ = ehci_driver.start(&entry.service);
+                    }
                 }
             }
         }

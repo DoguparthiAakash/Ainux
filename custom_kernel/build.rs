@@ -51,25 +51,29 @@ fn main() {
     // Crypto
     build.file("src/c/crypto/aes.c");
 
-    build.flag("-ffreestanding")
-        .flag("-fno-stack-protector")
-        .flag("-fno-pic")
-        .flag("-mno-red-zone")
-        .flag("-mno-sse")
-        .flag("-mno-sse2");
-    
-    // Only apply -mcmodel=kernel if using GCC or Clang (not MSVC)
-    if build.get_compiler().is_like_gnu() || build.get_compiler().is_like_clang() {
-        build.flag("-mcmodel=kernel");
+    let compiler = build.get_compiler();
+    if compiler.is_like_gnu() || compiler.is_like_clang() {
+        build.flag("-ffreestanding")
+            .flag("-fno-stack-protector")
+            .flag("-fno-pic")
+            .flag("-mno-red-zone")
+            .flag("-mno-sse")
+            .flag("-mno-sse2")
+            .flag("-mcmodel=kernel")
+            .flag("-Wno-unused-variable")
+            .flag("-Wno-unused-but-set-variable")
+            .flag("-Wno-unused-function")
+            .flag("-Wno-unused-parameter")
+            .flag("-Wno-address-of-packed-member")
+            .flag("-nostdlib");
+    } else if compiler.is_like_msvc() {
+        // MSVC equivalent or just skip for now to let compile finish
+        build.flag("/GS-") // No stack protector
+             .flag("/Gy")  // Function-level linking
+             .flag("/Zl"); // No default lib
     }
-
-    build.flag("-Wno-unused-variable")
-        .flag("-Wno-unused-but-set-variable")
-        .flag("-Wno-unused-function")
-        .flag("-Wno-unused-parameter")
-        .flag("-Wno-address-of-packed-member")
-        .flag("-nostdlib")
-        .flag("-O2") // Optimization
+    
+    build.flag("-O2") // Optimization
         .include("src/c")
         .include("src/c/libc")
         .include("src/c/include")

@@ -15,6 +15,14 @@ pub enum UserError {
 /// and doesn't wrap around.
 #[inline]
 pub fn validate_user_ptr(ptr: u64, len: usize) -> bool {
+    // If the kernel is calling its own syscalls (Internal Build), 
+    // we bypass validation for higher-half pointers.
+    let cs: u16;
+    unsafe { core::arch::asm!("mov {:x}, cs", out(reg) cs); }
+    if cs == 0x08 && ptr >= 0xFFFF_8000_0000_0000 {
+        return true;
+    }
+
     let end = match ptr.checked_add(len as u64) {
         Some(e) => e,
         None => return false, // Overflow

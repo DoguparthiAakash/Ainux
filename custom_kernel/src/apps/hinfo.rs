@@ -12,6 +12,7 @@ use crate::fs::vfs::{root, Inode, FileType};
 use core::sync::atomic::Ordering;
 use alloc::sync::Arc;
 use crate::process::{scheduler, task};
+use alloc::collections::BTreeSet;
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -368,7 +369,7 @@ struct UsageStats {
 
 fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>, stats: &mut UsageStats) -> bool {
     let mut queue = Vec::new();
-    let mut visited = Vec::new();
+    let mut visited = BTreeSet::new();
     let mut count = 0;
 
     queue.push((root_node, String::from("/")));
@@ -377,7 +378,7 @@ fn scan_disk_usage_iterative(root_node: Arc<dyn Inode>, stats: &mut UsageStats) 
         // Cycle Detection
         let ino = inode.inode_num();
         if visited.contains(&ino) { continue; }
-        visited.push(ino);
+        visited.insert(ino);
 
         // Cooperation & Interrupts
         count += 1;

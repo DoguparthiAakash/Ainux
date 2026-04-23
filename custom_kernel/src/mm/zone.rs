@@ -136,15 +136,12 @@ impl PerCpuCache {
 }
 
 impl ZoneAllocator {
-    pub fn new(num_cpus: usize) -> Self {
-        let mut per_cpu_caches = Vec::new();
-        for _ in 0..num_cpus {
-            per_cpu_caches.push(Mutex::new(PerCpuCache::new(64)));
-        }
-        
+    pub fn new(_num_cpus: usize) -> Self {
+        // Maturation: Don't allocate per-CPU caches during early boot 
+        // to avoid recursive global allocator deadlocks.
         ZoneAllocator {
             zones: BTreeMap::new(),
-            per_cpu_caches,
+            per_cpu_caches: Vec::new(),
         }
     }
     

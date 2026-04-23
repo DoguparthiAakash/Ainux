@@ -286,4 +286,64 @@ pub fn create_address_space() -> u64 {
     }
     0
 }
+/// Destroys an address space by recursively freeing all userspace frames.
+pub unsafe fn destroy_address_space(pml4_phys: u64) {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let pml4 = &mut *((pml4_phys + hhdm_offset) as *mut PageTable);
 
+    // Only free the userspace quadrant (0-255)
+    for i in 0..256 {
+        let entry = pml4.entries[i];
+        if entry & PRESENT != 0 && entry & HUGE_PAGE == 0 {
+            let p3_phys = entry & 0x000FFFFFFFFFF000;
+            let p3 = &mut *((p3_phys + hhdm_offset) as *mut PageTable);
+            
+            for j in 0..512 {
+                let entry3 = p3.entries[j];
+                if entry3 & PRESENT != 0 && entry3 & HUGE_PAGE == 0 {
+                    let p2_phys = entry3 & 0x000FFFFFFFFFF000;
+                    let p2 = &mut *((p2_phys + hhdm_offset) as *mut PageTable);
+                    
+                    for k in 0..512 {
+                        let entry2 = p2.entries[k];
+                        if entry2 & PRESENT != 0 && entry2 & HUGE_PAGE == 0 {
+                            let p1_phys = entry2 & 0x000FFFFFFFFFF000;
+                            let p1 = &mut *((p1_phys + hhdm_offset) as *mut PageTable);
+                            
+                            // Free all data frames (level 1 entries)
+                            for l in 0..512 {
+                                let entry1 = p1.entries[l];
+                                if entry1 & PRESENT != 0 {
+                                    let data_phys = entry1 & 0x000FFFFFFFFFF000;
+                                    let mut pmm = PMM.lock();
+                                    if let Some(ref mut pmm) = *pmm {
+                                        pmm.free_frame(data_phys);
+                                    }
+                                }
+                            }
+
+                            let mut pmm = PMM.lock();
+                            if let Some(ref mut pmm) = *pmm {
+                                pmm.free_frame(p1_phys);
+                            }
+                        }
+                    }
+                    let mut pmm = PMM.lock();
+                    if let Some(ref mut pmm) = *pmm {
+                        pmm.free_frame(p2_phys);
+                    }
+                }
+            }
+            let mut pmm = PMM.lock();
+            if let Some(ref mut pmm) = *pmm {
+                pmm.free_frame(p3_phys);
+            }
+        }
+    }
+
+    // Finally free the PML4 itself
+    let mut pmm = PMM.lock();
+    if let Some(ref mut pmm) = *pmm {
+        pmm.free_frame(pml4_phys);
+    }
+}

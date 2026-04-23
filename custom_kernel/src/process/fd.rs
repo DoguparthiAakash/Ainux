@@ -45,6 +45,10 @@ impl FileDescriptorTable {
         self.files[fd].clone()
     }
 
+    pub fn get_handle(&self, fd: usize) -> Result<Arc<dyn FileHandle>, ()> {
+        self.get_entry(fd).map(|e| e.handle).ok_or(())
+    }
+
     pub fn update_offset(&mut self, fd: usize, new_offset: u64) {
          if fd < self.files.len() {
              if let Some(desc) = &mut self.files[fd] {

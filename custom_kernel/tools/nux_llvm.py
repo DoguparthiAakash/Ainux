@@ -1,106 +1,360 @@
-#!/usr/bin/env python3
 import sys
 import re
 
-# NUX Assembly to Native LLVM IR Cross-Compiler
+class Token:
+    def __init__(self, type, value, line):
+        self.type = type
+        self.value = value
+        self.line = line
+    def __repr__(self):
+        return f"Token({self.type}, {repr(self.value)}, {self.line})"
 
-def emit_header(f):
-    f.write("; NUX Native LLVM IR Compiler\n")
-    f.write("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n")
-    f.write("target triple = \"x86_64-unknown-none-elf\"\n\n")
-    
-    # Global Stack
-    f.write("@vm_stack = global [1024 x i64] zeroinitializer\n")
-    f.write("@vm_stack_ptr = global i64 0\n\n")
+TOKEN_TYPES = [
+    ('FUNC', r'func\b'),
+    ('VAR', r'var\b'),
+    ('IF', r'if\b'),
+    ('ELSE', r'else\b'),
+    ('WHILE', r'while\b'),
+    ('RETURN', r'return\b'),
+    ('PRINTLN', r'println\b'),
+    ('NUMBER', r'\d+'),
+    ('STRING', r'"[^"]*"'),
+    ('ID', r'[a-zA-Z_][a-zA-Z0-9_]*'),
+    ('PLUS', r'\+'),
+    ('MINUS', r'-'),
+    ('STAR', r'\*'),
+    ('SLASH', r'/'),
+    ('EQEQ', r'=='),
+    ('GT', r'>'),
+    ('LT', r'<'),
+    ('EQ', r'='),
+    ('LPAREN', r'\('),
+    ('RPAREN', r'\)'),
+    ('LBRACE', r'\{'),
+    ('RBRACE', r'\}'),
+    ('SEMICOLON', r';'),
+    ('COMMA', r','),
+    ('WHITESPACE', r'\s+'),
+    ('COMMENT', r'#.*'),
+]
 
-def emit_push(f, val, inst_idx):
-    f.write(f"  %sp_val_{inst_idx} = load i64, ptr @vm_stack_ptr\n")
-    f.write(f"  %sp_ptr_{inst_idx} = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_{inst_idx}\n")
-    f.write(f"  store i64 {val}, ptr %sp_ptr_{inst_idx}\n")
-    f.write(f"  %sp_next_{inst_idx} = add i64 %sp_val_{inst_idx}, 1\n")
-    f.write(f"  store i64 %sp_next_{inst_idx}, ptr @vm_stack_ptr\n")
+def lex(code):
+    tokens = []
+    line = 1
+    pos = 0
+    while pos < len(code):
+        match = None
+        for type, pattern in TOKEN_TYPES:
+            regex = re.compile(pattern)
+            match = regex.match(code, pos)
+            if match:
+                value = match.group(0)
+                if type == 'WHITESPACE':
+                    line += value.count('\n')
+                elif type != 'COMMENT':
+                    tokens.append(Token(type, value, line))
+                pos += len(value)
+                break
+        if not match:
+            raise Exception(f"Illegal character at line {line}: {code[pos]}")
+    return tokens
 
-def emit_pop(f, reg_name):
-    f.write(f"  %sp_curr_{reg_name} = load i64, ptr @vm_stack_ptr\n")
-    f.write(f"  %sp_prev_{reg_name} = sub i64 %sp_curr_{reg_name}, 1\n")
-    f.write(f"  store i64 %sp_prev_{reg_name}, ptr @vm_stack_ptr\n")
-    f.write(f"  %sp_ptr_{reg_name} = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_{reg_name}\n")
-    f.write(f"  %{reg_name} = load i64, ptr %sp_ptr_{reg_name}\n")
+class LLVMGenerator:
+    def __init__(self):
+        self.code = []
+        self.tmp_count = 0
+        self.labels = 0
+        self.strings = []
 
-def emit_add(f, inst_idx):
-    emit_pop(f, f"b_{inst_idx}")
-    emit_pop(f, f"a_{inst_idx}")
-    f.write(f"  %res_{inst_idx} = add i64 %a_{inst_idx}, %b_{inst_idx}\n")
-    # Push back
-    f.write(f"  %sp_val_{inst_idx} = load i64, ptr @vm_stack_ptr\n")
-    f.write(f"  %sp_ptr_{inst_idx} = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_{inst_idx}\n")
-    f.write(f"  store i64 %res_{inst_idx}, ptr %sp_ptr_{inst_idx}\n")
-    f.write(f"  %sp_next_{inst_idx} = add i64 %sp_val_{inst_idx}, 1\n")
-    f.write(f"  store i64 %sp_next_{inst_idx}, ptr @vm_stack_ptr\n")
+    def next_tmp(self):
+        self.tmp_count += 1
+        return f"%{self.tmp_count}"
 
-def emit_sys_write(f, inst_idx):
-    # Syscall 1 (fd=1)
-    # Print the character popped from stack
-    emit_pop(f, f"char_{inst_idx}")
-    # Write to a transient local array so we can pass address to syscall
-    f.write(f"  %buf_{inst_idx} = alloca i8, align 1\n")
-    f.write(f"  %tr_{inst_idx} = trunc i64 %char_{inst_idx} to i8\n")
-    f.write(f"  store i8 %tr_{inst_idx}, ptr %buf_{inst_idx}\n")
-    # Syscall: id=1, a1=1(stdout), a2=buf, a3=1(len)
-    f.write(f"  %buf_i64_{inst_idx} = ptrtoint ptr %buf_{inst_idx} to i64\n")
-    f.write(f"  call void asm sideeffect \"syscall\", \"{{rax}},{{rdi}},{{rsi}},{{rdx}},~{{rcx}},~{{r11}},~{{memory}}\"(i64 1, i64 1, i64 %buf_i64_{inst_idx}, i64 1)\n")
+    def next_label(self, name="label"):
+        self.labels += 1
+        return f"{name}_{self.labels}"
 
-def parse_and_compile(input_file, output_file):
-    with open(input_file, 'r') as fin:
-        lines = fin.readlines()
+    def emit(self, line):
+        self.code.append(line)
 
-    with open(output_file, 'w') as fout:
-        emit_header(fout)
-        fout.write("define i64 @_start() {\n")
-        fout.write("entry:\n")
+    def add_string(self, s):
+        name = f"@.str.{len(self.strings)}"
+        # Clean string
+        s = s.strip('"')
+        content = s.encode('utf-8').decode('unicode_escape')
+        hex_content = "".join([f"\\{ord(c):02x}" if ord(c) < 32 or ord(c) > 126 else c for c in content])
+        # LLVM strings usually null terminated
+        self.strings.append((name, hex_content + "\\00", len(content) + 1))
+        return name
 
-        inst_idx = 0
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('//'):
-                continue
-            
-            # Simple label parsing
-            if line.endswith(':'):
-                fout.write(f"  br label %{line[:-1]}\n")
-                fout.write(f"{line[:-1]}:\n")
-                continue
-
-            parts = line.split()
-            op = parts[0].upper()
-
-            if op == 'PUSH':
-                emit_push(fout, parts[1], inst_idx)
-            elif op == 'POP':
-                emit_pop(fout, f"ignore_{inst_idx}")
-            elif op == 'ADD':
-                emit_add(fout, inst_idx)
-            elif op == 'PRINT_CHAR':
-                emit_sys_write(fout, inst_idx)
-            elif op == 'EXIT':
-                emit_pop(fout, f"exit_code_{inst_idx}")
-                fout.write(f"  call void asm sideeffect \"syscall\", \"{{rax}},{{rdi}},~{{rcx}},~{{r11}},~{{memory}}\"(i64 60, i64 %exit_code_{inst_idx})\n")
-                # LLVM requires block terminator
-                fout.write(f"  unreachable\n")
-            elif op == 'JMP':
-                fout.write(f"  br label %{parts[1]}\n")
+    def generate(self, tokens):
+        self.tokens = tokens
+        self.pos = 0
+        
+        self.emit("; Auto-generated by Nux-LLVM Transpiler (Bare-Metal)")
+        
+        # Add _start entry point that calls main and then exits
+        self.emit("define void @_start() {")
+        self.emit("  %ret = call i32 @main()")
+        # Syscall 60 (Exit): rax=60, rdi=0
+        self.emit("  call i64 asm sideeffect \"syscall\", \"={rax},{rax},{rdi},~{rcx},~{r11},~{memory}\"(i64 60, i64 0)")
+        self.emit("  unreachable")
+        self.emit("}")
+        
+        # Add helper functions
+        self.emit_helpers()
+        
+        while self.pos < len(self.tokens):
+            if self.peek().type == 'FUNC':
+                self.parse_func()
             else:
-                print(f"Warning: Unsupported instruction {op}")
+                self.pos += 1 # Skip global garbage
 
-            inst_idx += 1
+        # Prepend strings
+        header = []
+        for name, content, length in self.strings:
+            header.append(f"{name} = private unnamed_addr constant [{length} x i8] c\"{content}\"")
+        
+        return "\n".join(header + self.code)
 
-        # Default end
-        fout.write("  ret i64 0\n")
-        fout.write("}\n")
+    def emit_helpers(self):
+        self.emit("""
+define void @print_i64(i64 %n) {
+entry:
+  %buf = alloca [24 x i8], align 1
+  %end = getelementptr [24 x i8], [24 x i8]* %buf, i32 0, i32 23
+  store i8 10, i8* %end
+  
+  %is_neg = icmp slt i64 %n, 0
+  %neg_val = sub i64 0, %n
+  %val_abs = select i1 %is_neg, i64 %neg_val, i64 %n
+  
+  br label %loop
 
-if __name__ == "__main__":
+loop:
+  %curr_val = phi i64 [ %val_abs, %entry ], [ %next_val, %loop_cont ]
+  %curr_ptr = phi i8* [ %end, %entry ], [ %next_ptr, %loop_cont ]
+  
+  %rem = urem i64 %curr_val, 10
+  %digit = trunc i64 %rem to i8
+  %ascii = add i8 %digit, 48
+  
+  %next_ptr = getelementptr i8, i8* %curr_ptr, i64 -1
+  store i8 %ascii, i8* %next_ptr
+  
+  %next_val = udiv i64 %curr_val, 10
+  %done = icmp eq i64 %next_val, 0
+  br i1 %done, label %exit, label %loop_cont
+
+loop_cont:
+  br label %loop
+
+exit:
+  %final_ptr = phi i8* [ %next_ptr, %loop ]
+  
+  br i1 %is_neg, label %sign, label %print
+
+sign:
+  %sign_ptr = getelementptr i8, i8* %final_ptr, i64 -1
+  store i8 45, i8* %sign_ptr
+  br label %print
+
+print:
+  %p = phi i8* [ %final_ptr, %exit ], [ %sign_ptr, %sign ]
+  %p_int = ptrtoint i8* %p to i64
+  %end_int = ptrtoint i8* %end to i64
+  %len_plus_one = sub i64 %end_int, %p_int
+  %len = add i64 %len_plus_one, 1
+  
+  %res = call i64 asm sideeffect "syscall", "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i8* %p, i64 %len)
+  ret void
+}
+""")
+
+    def peek(self, n=0):
+        if self.pos + n >= len(self.tokens): return Token('EOF', '', 0)
+        return self.tokens[self.pos + n]
+
+    def consume(self, type=None):
+        tok = self.peek()
+        if type and tok.type != type:
+            raise Exception(f"Expected {type} but got {tok.type} at line {tok.line}")
+        self.pos += 1
+        return tok
+
+    def parse_func(self):
+        self.consume('FUNC')
+        name = self.consume('ID').value
+        self.consume('LPAREN')
+        # Params?
+        self.consume('RPAREN')
+        self.consume('LBRACE')
+        
+        self.emit(f"define i32 @{name}() {{")
+        self.locals = {}
+        
+        while self.peek().type != 'RBRACE' and self.peek().type != 'EOF':
+            self.parse_statement()
+
+        self.emit("  ret i32 0")
+        self.emit("}")
+
+    def parse_statement(self):
+        tok = self.peek()
+        if tok.type == 'VAR':
+            self.parse_var()
+        elif tok.type == 'PRINTLN':
+            self.parse_println()
+        elif tok.type == 'IF':
+            self.parse_if()
+        elif tok.type == 'ID':
+            # Assignment?
+            name = self.consume('ID').value
+            self.consume('EQ')
+            val = self.parse_expr()
+            if self.peek().type == 'SEMICOLON': self.consume('SEMICOLON')
+            
+            ptr = self.locals[name]
+            self.emit(f"  store i64 {val}, i64* {ptr}")
+        else:
+            self.pos += 1
+
+    def parse_var(self):
+        self.consume('VAR')
+        name = self.consume('ID').value
+        self.consume('EQ')
+        val = self.parse_expr()
+        if self.peek().type == 'SEMICOLON': self.consume('SEMICOLON')
+        
+        ptr = f"%{name}.ptr"
+        self.emit(f"  {ptr} = alloca i64")
+        self.emit(f"  store i64 {val}, i64* {ptr}")
+        self.locals[name] = ptr
+
+    def parse_println(self):
+        self.consume('PRINTLN')
+        self.consume('LPAREN')
+        arg = self.peek()
+        if arg.type == 'STRING':
+            s = self.consume('STRING').value
+            # We add a newline to the string here
+            s_val = s.strip('"') + "\n"
+            str_ptr = self.add_string(s_val)
+            tmp = self.next_tmp()
+            length = len(s_val) + 1 # +1 for null from add_string
+            self.emit(f"  {tmp} = getelementptr inbounds [{length} x i8], [{length} x i8]* {str_ptr}, i32 0, i32 0")
+            
+            # Syscall 1: Write(fd=1, buf=tmp, len=length-1)
+            # length-1 because we don't want to print the null terminator
+            r = self.next_tmp()
+            self.emit(f"  {r} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},{{rsi}},{{rdx}},~{{rcx}},~{{r11}},~{{memory}}\"(i64 1, i64 1, i8* {tmp}, i64 {length-1})")
+        else:
+            val = self.parse_expr()
+            self.emit(f"  call void @print_i64(i64 {val})")
+        
+        self.consume('RPAREN')
+        if self.peek().type == 'SEMICOLON': self.consume('SEMICOLON')
+
+    def parse_if(self):
+        self.consume('IF')
+        self.consume('LPAREN')
+        cond = self.parse_expr()
+        self.consume('RPAREN')
+        
+        true_label = self.next_label("then")
+        else_label = self.next_label("else")
+        end_label = self.next_label("merge")
+        
+        tmp = self.next_tmp()
+        self.emit(f"  {tmp} = icmp ne i64 {cond}, 0")
+        self.emit(f"  br i1 {tmp}, label %{true_label}, label %{else_label}")
+        
+        self.emit(f"{true_label}:")
+        self.parse_block()
+        self.emit(f"  br label %{end_label}")
+        
+        self.emit(f"{else_label}:")
+        if self.peek().type == 'ELSE':
+            self.consume('ELSE')
+            self.parse_block()
+        self.emit(f"  br label %{end_label}")
+        
+        self.emit(f"{end_label}:")
+
+    def parse_block(self):
+        self.consume('LBRACE')
+        while self.peek().type != 'RBRACE' and self.peek().type != 'EOF':
+            self.parse_statement()
+        self.consume('RBRACE')
+
+    def parse_expr(self):
+        left = self.parse_primary()
+        while self.peek().type in ('PLUS', 'MINUS', 'STAR', 'SLASH', 'GT', 'LT', 'EQEQ'):
+            op = self.consume()
+            right = self.parse_primary()
+            if op.type == 'PLUS':
+                tmp = self.next_tmp()
+                self.emit(f"  {tmp} = add i64 {left}, {right}")
+            elif op.type == 'MINUS':
+                tmp = self.next_tmp()
+                self.emit(f"  {tmp} = sub i64 {left}, {right}")
+            elif op.type == 'STAR':
+                tmp = self.next_tmp()
+                self.emit(f"  {tmp} = mul i64 {left}, {right}")
+            elif op.type == 'SLASH':
+                tmp = self.next_tmp()
+                self.emit(f"  {tmp} = sdiv i64 {left}, {right}")
+            elif op.type == 'GT': 
+                c = self.next_tmp()
+                tmp = self.next_tmp()
+                self.emit(f"  {c} = icmp sgt i64 {left}, {right}")
+                self.emit(f"  {tmp} = zext i1 {c} to i64")
+            elif op.type == 'LT':
+                c = self.next_tmp()
+                tmp = self.next_tmp()
+                self.emit(f"  {c} = icmp slt i64 {left}, {right}")
+                self.emit(f"  {tmp} = zext i1 {c} to i64")
+            elif op.type == 'EQEQ':
+                c = self.next_tmp()
+                tmp = self.next_tmp()
+                self.emit(f"  {c} = icmp eq i64 {left}, {right}")
+                self.emit(f"  {tmp} = zext i1 {c} to i64")
+            else:
+                tmp = left # Should not happen
+            left = tmp
+        return left
+
+    def parse_primary(self):
+        tok = self.consume()
+        if tok.type == 'NUMBER':
+            return tok.value
+        elif tok.type == 'ID':
+            ptr = self.locals[tok.value]
+            tmp = self.next_tmp()
+            self.emit(f"  {tmp} = load i64, i64* {ptr}")
+            return tmp
+        elif tok.type == 'LPAREN':
+            val = self.parse_expr()
+            self.consume('RPAREN')
+            return val
+        else:
+            raise Exception(f"Unexpected token in expr: {tok}")
+
+def main():
     if len(sys.argv) < 3:
         print("Usage: nux_llvm.py <input.nux> <output.ll>")
-        sys.exit(1)
-    parse_and_compile(sys.argv[1], sys.argv[2])
-    print(f"Hybrid compilation to {sys.argv[2]} successful.")
+        return
+    
+    with open(sys.argv[1], 'r') as f:
+        code = f.read()
+    
+    tokens = lex(code)
+    gen = LLVMGenerator()
+    ll_ir = gen.generate(tokens)
+    
+    with open(sys.argv[2], 'w') as f:
+        f.write(ll_ir)
+    print(f"Generated {sys.argv[2]}")
+
+if __name__ == "__main__":
+    main()

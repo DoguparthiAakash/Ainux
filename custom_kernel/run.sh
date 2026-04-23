@@ -1,8 +1,9 @@
 #!/bin/bash
 set -ex
+export PATH="$PATH:$HOME/.cargo/bin"
 
 # Ensure common paths are included (especially for snap and rustup in WSL)
-export PATH="$PATH:/snap/bin:$HOME/.cargo/bin"
+
 
 # Build C and ASM
 nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
@@ -11,7 +12,13 @@ nasm -f bin src/asm/ap_trampoline.asm -o src/asm/ap_trampoline.bin
 
 # Compile C/Zig modules not handled by build.rs
 gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
-zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+# Ensure zig is in path (Check common locations)
+export PATH="$PATH:/usr/local/bin:/snap/bin"
+if ! command -v zig >/dev/null 2>&1; then
+    echo "Warning: zig not found in PATH. Attempting to use existing tui.o..."
+else
+    zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+fi
 
 # Build Kernel
 echo "Building Kernel..."
@@ -89,7 +96,10 @@ qemu-system-x86_64 \
     -cdrom ainux.iso \
     -boot d \
     -serial stdio \
+    -display vnc=:0 \
     -drive file=disk2.img,format=raw,index=0,media=disk \
     $ACCEL \
     -net nic,model=rtl8139 \
-    -net user
+    -net user,hostfwd=tcp::2223-:22,hostfwd=tcp::8081-:8080 \
+    -device usb-ehci,id=usb \
+    -device usb-host,vendorid=0x148f,productid=0x7601

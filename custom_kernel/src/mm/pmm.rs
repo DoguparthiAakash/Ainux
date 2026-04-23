@@ -506,30 +506,43 @@ impl BitmapPmm {
     }
 
     /// Allocate N contiguous physical frames. Returns the base physical address.
+    /// Optimized: Uses Word-at-a-Time scanning to jump 64 frames at a time.
     pub fn alloc_contiguous(&mut self, count: usize) -> Option<u64> {
         if count == 0 { return None; }
         if count == 1 { return self.alloc_frame(); }
 
-        // Scan for `count` contiguous free frames
-        let mut run_start = 0;
-        let mut run_len = 0;
+        let len = self.bitmap.len();
+        let mut i = self.last_idx;
+        let mut scanned = 0;
 
-        for frame in 0..self.total_frames {
-            if !self.test_bit(frame) {
-                if run_len == 0 { run_start = frame; }
-                run_len += 1;
-                if run_len >= count {
-                    // Found! Mark all as used via batch operation
-                    self.mark_region_used(
-                        run_start as u64 * PAGE_SIZE as u64,
-                        count * PAGE_SIZE,
-                    );
-                    self.allocated_frames.fetch_add(count, Ordering::Relaxed);
-                    return Some(run_start as u64 * PAGE_SIZE as u64);
+        while scanned < len {
+            // Optimization: If a word is 0xFF..., it has no free bits. Skip it.
+            if self.bitmap[i] != !0 {
+                // Bit-level scan within this word and neighbors
+                let start_frame = i * 64;
+                let check_limit = core::cmp::min(self.total_frames, start_frame + 256); // Lookahead 256 bits
+                
+                let mut run_start = 0;
+                let mut run_len = 0;
+
+                for frame in start_frame..check_limit {
+                    if !self.test_bit(frame) {
+                        if run_len == 0 { run_start = frame; }
+                        run_len += 1;
+                        if run_len >= count {
+                            let addr = run_start as u64 * PAGE_SIZE as u64;
+                            self.mark_region_used(addr, count * PAGE_SIZE);
+                            self.allocated_frames.fetch_add(count, Ordering::Relaxed);
+                            self.last_idx = i;
+                            return Some(addr);
+                        }
+                    } else {
+                        run_len = 0;
+                    }
                 }
-            } else {
-                run_len = 0;
             }
+            i = (i + 1) % len;
+            scanned += 1;
         }
         None
     }

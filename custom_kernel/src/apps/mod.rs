@@ -10,3 +10,5 @@ pub mod settings;
 pub mod metus;
 pub mod awm;
 pub mod taskman;
+pub mod fetch;
+pub mod httpd;

@@ -54,5 +54,11 @@ else
     echo "Zig already installed: $(zig version)"
 fi
 
+echo "--- Normalizing Line Endings for Scripts ---"
+# This ensures that even if files were edited on Windows, they run correctly in WSL.
+find . -maxdepth 1 -name "*.sh" -exec sed -i 's/\r$//' {} +
+if [ -f run ]; then sed -i 's/\r$//' run; fi
+
 echo "--- Setup Complete! ---"
-echo "IMPORTANT: Please run 'source \$HOME/.cargo/env' or restart your terminal to update your PATH."
+echo "IMPORTANT: Please run 'source \$HOME/.cargo/env' or restart your terminal."
+echo "If you still see 'bash\r' errors, run: sed -i 's/\r$//' run.sh"

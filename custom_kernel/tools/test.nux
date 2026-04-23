@@ -1,14 +1,12 @@
-PUSH 72
-PRINT_CHAR
-PUSH 101
-PRINT_CHAR
-PUSH 108
-PRINT_CHAR
-PUSH 108
-PRINT_CHAR
-PUSH 111
-PRINT_CHAR
-PUSH 10
-PRINT_CHAR
-PUSH 0
-EXIT
+func main() {
+    var x = 10;
+    var y = 20;
+    var z = x + y;
+    println(z);
+    
+    if (z > 25) {
+        println("Greater than 25");
+    } else {
+        println("Less than or equal to 25");
+    }
+}

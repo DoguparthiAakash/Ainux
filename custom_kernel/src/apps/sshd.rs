@@ -17,20 +17,20 @@ pub fn main() {
     crate::drivers::video::put_str("sshd: Starting native SSH server on port 22...\n");
 
     // 1. Create Socket
-    let fd = unsafe { syscall(40, 1, 0, 0) }; // sys_socket(1=TCP)
+    let fd = unsafe { syscall(40, 1, 0, 0, 0, 0) }; // sys_socket(1=TCP)
     if fd == u64::MAX {
         crate::drivers::video::put_str("sshd: Failed to create socket.\n");
         return;
     }
 
     // 2. Bind to Port 22
-    if unsafe { syscall(41, fd, 22, 0) } != 0 {
+    if unsafe { syscall(41, fd, 22, 0, 0, 0) } != 0 {
         crate::drivers::video::put_str("sshd: Failed to bind to port 22.\n");
         return;
     }
 
     // 3. Listen
-    if unsafe { syscall(42, fd, 0, 0) } != 0 {
+    if unsafe { syscall(42, fd, 0, 0, 0, 0) } != 0 {
         crate::drivers::video::put_str("sshd: Failed to listen.\n");
         return;
     }
@@ -39,7 +39,7 @@ pub fn main() {
 
     loop {
         // 4. Accept Connection
-        let client_fd = unsafe { syscall(43, fd, 0, 0) };
+        let client_fd = unsafe { syscall(43, fd, 0, 0, 0, 0) };
         if client_fd != u64::MAX {
             crate::drivers::video::put_str("sshd: Incoming connection accepted.\n");
             
@@ -53,11 +53,11 @@ pub fn main() {
 fn handle_client(fd: usize) {
     // 5. Send Banner
     let banner = "SSH-2.0-Ainux-SSHD_0.1\r\n";
-    unsafe { syscall(1, fd as u64, banner.as_ptr() as u64, banner.len() as u64); }
+    unsafe { syscall(1, fd as u64, banner.as_ptr() as u64, banner.len() as u64, 0, 0); }
 
     // 6. Receive Client Banner
     let mut buf = [0u8; 128];
-    let n = unsafe { syscall(7, fd as u64, buf.as_mut_ptr() as u64, 128) };
+    let n = unsafe { syscall(7, fd as u64, buf.as_mut_ptr() as u64, 128, 0, 0) };
     if n > 0 {
         // Log connection
         crate::drivers::video::put_str("sshd: Client protocol handshaked.\n");
@@ -72,17 +72,17 @@ fn handle_client(fd: usize) {
 
     // Stub: Successful Auth
     let welcome = "Welcome to Ainux Sovereign Environment!\r\nainux:/> ";
-    unsafe { syscall(1, fd as u64, welcome.as_ptr() as u64, welcome.len() as u64); }
+    unsafe { syscall(1, fd as u64, welcome.as_ptr() as u64, welcome.len() as u64, 0, 0); }
 
     // 8. Command Loop Bridge
     loop {
         let mut cmd_buf = [0u8; 256];
-        let bytes = unsafe { syscall(7, fd as u64, cmd_buf.as_mut_ptr() as u64, 256) };
+        let bytes = unsafe { syscall(7, fd as u64, cmd_buf.as_mut_ptr() as u64, 256, 0, 0) };
         if bytes == 0 || bytes == u64::MAX { break; }
 
         // Forward to system shell command dispatcher
         // (In maturity phase 2, we spawn a separate shell process)
     }
 
-    unsafe { syscall(8, fd as u64, 0, 0); } // sys_close
+    unsafe { syscall(8, fd as u64, 0, 0, 0, 0); } // sys_close
 }

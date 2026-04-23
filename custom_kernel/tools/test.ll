@@ -1,113 +1,88 @@
-; NUX Native LLVM IR Compiler
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-unknown-none-elf"
-
-@vm_stack = global [1024 x i64] zeroinitializer
-@vm_stack_ptr = global i64 0
-
-define i64 @_start() {
-entry:
-  %sp_val_0 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_0 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_0
-  store i64 72, ptr %sp_ptr_0
-  %sp_next_0 = add i64 %sp_val_0, 1
-  store i64 %sp_next_0, ptr @vm_stack_ptr
-  %sp_curr_char_1 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_1 = sub i64 %sp_curr_char_1, 1
-  store i64 %sp_prev_char_1, ptr @vm_stack_ptr
-  %sp_ptr_char_1 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_1
-  %char_1 = load i64, ptr %sp_ptr_char_1
-  %buf_1 = alloca i8, align 1
-  %tr_1 = trunc i64 %char_1 to i8
-  store i8 %tr_1, ptr %buf_1
-  %buf_i64_1 = ptrtoint ptr %buf_1 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_1, i64 1)
-  %sp_val_2 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_2 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_2
-  store i64 101, ptr %sp_ptr_2
-  %sp_next_2 = add i64 %sp_val_2, 1
-  store i64 %sp_next_2, ptr @vm_stack_ptr
-  %sp_curr_char_3 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_3 = sub i64 %sp_curr_char_3, 1
-  store i64 %sp_prev_char_3, ptr @vm_stack_ptr
-  %sp_ptr_char_3 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_3
-  %char_3 = load i64, ptr %sp_ptr_char_3
-  %buf_3 = alloca i8, align 1
-  %tr_3 = trunc i64 %char_3 to i8
-  store i8 %tr_3, ptr %buf_3
-  %buf_i64_3 = ptrtoint ptr %buf_3 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_3, i64 1)
-  %sp_val_4 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_4 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_4
-  store i64 108, ptr %sp_ptr_4
-  %sp_next_4 = add i64 %sp_val_4, 1
-  store i64 %sp_next_4, ptr @vm_stack_ptr
-  %sp_curr_char_5 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_5 = sub i64 %sp_curr_char_5, 1
-  store i64 %sp_prev_char_5, ptr @vm_stack_ptr
-  %sp_ptr_char_5 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_5
-  %char_5 = load i64, ptr %sp_ptr_char_5
-  %buf_5 = alloca i8, align 1
-  %tr_5 = trunc i64 %char_5 to i8
-  store i8 %tr_5, ptr %buf_5
-  %buf_i64_5 = ptrtoint ptr %buf_5 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_5, i64 1)
-  %sp_val_6 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_6 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_6
-  store i64 108, ptr %sp_ptr_6
-  %sp_next_6 = add i64 %sp_val_6, 1
-  store i64 %sp_next_6, ptr @vm_stack_ptr
-  %sp_curr_char_7 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_7 = sub i64 %sp_curr_char_7, 1
-  store i64 %sp_prev_char_7, ptr @vm_stack_ptr
-  %sp_ptr_char_7 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_7
-  %char_7 = load i64, ptr %sp_ptr_char_7
-  %buf_7 = alloca i8, align 1
-  %tr_7 = trunc i64 %char_7 to i8
-  store i8 %tr_7, ptr %buf_7
-  %buf_i64_7 = ptrtoint ptr %buf_7 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_7, i64 1)
-  %sp_val_8 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_8 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_8
-  store i64 111, ptr %sp_ptr_8
-  %sp_next_8 = add i64 %sp_val_8, 1
-  store i64 %sp_next_8, ptr @vm_stack_ptr
-  %sp_curr_char_9 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_9 = sub i64 %sp_curr_char_9, 1
-  store i64 %sp_prev_char_9, ptr @vm_stack_ptr
-  %sp_ptr_char_9 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_9
-  %char_9 = load i64, ptr %sp_ptr_char_9
-  %buf_9 = alloca i8, align 1
-  %tr_9 = trunc i64 %char_9 to i8
-  store i8 %tr_9, ptr %buf_9
-  %buf_i64_9 = ptrtoint ptr %buf_9 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_9, i64 1)
-  %sp_val_10 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_10 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_10
-  store i64 10, ptr %sp_ptr_10
-  %sp_next_10 = add i64 %sp_val_10, 1
-  store i64 %sp_next_10, ptr @vm_stack_ptr
-  %sp_curr_char_11 = load i64, ptr @vm_stack_ptr
-  %sp_prev_char_11 = sub i64 %sp_curr_char_11, 1
-  store i64 %sp_prev_char_11, ptr @vm_stack_ptr
-  %sp_ptr_char_11 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_char_11
-  %char_11 = load i64, ptr %sp_ptr_char_11
-  %buf_11 = alloca i8, align 1
-  %tr_11 = trunc i64 %char_11 to i8
-  store i8 %tr_11, ptr %buf_11
-  %buf_i64_11 = ptrtoint ptr %buf_11 to i64
-  call void asm sideeffect "syscall", "{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i64 %buf_i64_11, i64 1)
-  %sp_val_12 = load i64, ptr @vm_stack_ptr
-  %sp_ptr_12 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_val_12
-  store i64 0, ptr %sp_ptr_12
-  %sp_next_12 = add i64 %sp_val_12, 1
-  store i64 %sp_next_12, ptr @vm_stack_ptr
-  %sp_curr_exit_code_13 = load i64, ptr @vm_stack_ptr
-  %sp_prev_exit_code_13 = sub i64 %sp_curr_exit_code_13, 1
-  store i64 %sp_prev_exit_code_13, ptr @vm_stack_ptr
-  %sp_ptr_exit_code_13 = getelementptr [1024 x i64], ptr @vm_stack, i64 0, i64 %sp_prev_exit_code_13
-  %exit_code_13 = load i64, ptr %sp_ptr_exit_code_13
-  call void asm sideeffect "syscall", "{rax},{rdi},~{rcx},~{r11},~{memory}"(i64 60, i64 %exit_code_13)
+@.str.0 = private unnamed_addr constant [17 x i8] c"Greater than 25\0a\00"
+@.str.1 = private unnamed_addr constant [26 x i8] c"Less than or equal to 25\0a\00"
+; Auto-generated by Nux-LLVM Transpiler (Bare-Metal)
+define void @_start() {
+  %ret = call i32 @main()
+  call i64 asm sideeffect "syscall", "={rax},{rax},{rdi},~{rcx},~{r11},~{memory}"(i64 60, i64 0)
   unreachable
-  ret i64 0
+}
+
+define void @print_i64(i64 %n) {
+entry:
+  %buf = alloca [24 x i8], align 1
+  %end = getelementptr [24 x i8], [24 x i8]* %buf, i32 0, i32 23
+  store i8 10, i8* %end
+  
+  %is_neg = icmp slt i64 %n, 0
+  %neg_val = sub i64 0, %n
+  %val_abs = select i1 %is_neg, i64 %neg_val, i64 %n
+  
+  br label %loop
+
+loop:
+  %curr_val = phi i64 [ %val_abs, %entry ], [ %next_val, %loop_cont ]
+  %curr_ptr = phi i8* [ %end, %entry ], [ %next_ptr, %loop_cont ]
+  
+  %rem = urem i64 %curr_val, 10
+  %digit = trunc i64 %rem to i8
+  %ascii = add i8 %digit, 48
+  
+  %next_ptr = getelementptr i8, i8* %curr_ptr, i64 -1
+  store i8 %ascii, i8* %next_ptr
+  
+  %next_val = udiv i64 %curr_val, 10
+  %done = icmp eq i64 %next_val, 0
+  br i1 %done, label %exit, label %loop_cont
+
+loop_cont:
+  br label %loop
+
+exit:
+  %final_ptr = phi i8* [ %next_ptr, %loop ]
+  
+  br i1 %is_neg, label %sign, label %print
+
+sign:
+  %sign_ptr = getelementptr i8, i8* %final_ptr, i64 -1
+  store i8 45, i8* %sign_ptr
+  br label %print
+
+print:
+  %p = phi i8* [ %final_ptr, %exit ], [ %sign_ptr, %sign ]
+  %p_int = ptrtoint i8* %p to i64
+  %end_int = ptrtoint i8* %end to i64
+  %len_plus_one = sub i64 %end_int, %p_int
+  %len = add i64 %len_plus_one, 1
+  
+  %res = call i64 asm sideeffect "syscall", "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i8* %p, i64 %len)
+  ret void
+}
+
+define i32 @main() {
+  %x.ptr = alloca i64
+  store i64 10, i64* %x.ptr
+  %y.ptr = alloca i64
+  store i64 20, i64* %y.ptr
+  %1 = load i64, i64* %x.ptr
+  %2 = load i64, i64* %y.ptr
+  %3 = add i64 %1, %2
+  %z.ptr = alloca i64
+  store i64 %3, i64* %z.ptr
+  %4 = load i64, i64* %z.ptr
+  call void @print_i64(i64 %4)
+  %5 = load i64, i64* %z.ptr
+  %6 = icmp sgt i64 %5, 25
+  %7 = zext i1 %6 to i64
+  %8 = icmp ne i64 %7, 0
+  br i1 %8, label %then_1, label %else_2
+then_1:
+  %9 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.0, i32 0, i32 0
+  %10 = call i64 asm sideeffect "syscall", "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i8* %9, i64 16)
+  br label %merge_3
+else_2:
+  %11 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.1, i32 0, i32 0
+  %12 = call i64 asm sideeffect "syscall", "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"(i64 1, i64 1, i8* %11, i64 25)
+  br label %merge_3
+merge_3:
+  ret i32 0
 }
