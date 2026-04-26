@@ -42,6 +42,14 @@ pub fn get_prcb_addr(id: usize) -> u64 {
     unsafe { &CPUS[id] as *const PRCB as u64 }
 }
 
+pub fn get_current_cpu_id() -> usize {
+    let id: u32;
+    unsafe {
+        core::arch::asm!("mov {:e}, gs:[8]", out(reg) id, options(nostack, nomem, preserves_flags));
+    }
+    id as usize
+}
+
 /// Sets the GS_BASE MSR to point to this CPU's PRCB
 pub unsafe fn write_gs_base(addr: u64) {
     let low = (addr & 0xFFFFFFFF) as u32;

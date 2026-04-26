@@ -409,7 +409,56 @@ pub fn process_pipe() -> (isize, isize) {
     })
 }
 
-pub fn process_open(path: &str, _flags: u32) -> isize {
+pub fn process_open(path: &str, flags: u32) -> isize {
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
+        if let Ok(handle) = inode.open(flags) {
+            return crate::cpu::without_interrupts(|| {
+                let mut tasks = TASKS.lock();
+                let current_pid = crate::cpu::smp::get_current_pid();
+                if let Some(task) = &mut tasks[current_pid] {
+                    if let Some(fd) = task.fds.alloc_fd(handle) {
+                        return fd as isize;
+                    }
+                }
+                -1
+            });
+        }
+    }
+    -1
+}
+
+pub fn process_mkdir(path: &str) -> isize {
+    // Basic implementation: split path into parent and name
+    let last_slash = path.rfind('/');
+    let (parent_path, name) = if let Some(idx) = last_slash {
+        let p = if idx == 0 { "/" } else { &path[..idx] };
+        (p, &path[idx + 1..])
+    } else {
+        (".", path)
+    };
+
+    if let Ok(parent_inode) = crate::fs::vfs::resolve_path(parent_path) {
+        if parent_inode.mkdir(name).is_ok() {
+            return 0;
+        }
+    }
+    -1
+}
+
+pub fn process_unlink(path: &str) -> isize {
+    let last_slash = path.rfind('/');
+    let (parent_path, name) = if let Some(idx) = last_slash {
+        let p = if idx == 0 { "/" } else { &path[..idx] };
+        (p, &path[idx + 1..])
+    } else {
+        (".", path)
+    };
+
+    if let Ok(parent_inode) = crate::fs::vfs::resolve_path(parent_path) {
+        if parent_inode.unlink(name).is_ok() {
+            return 0;
+        }
+    }
     -1
 }
 

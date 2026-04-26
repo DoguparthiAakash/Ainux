@@ -293,6 +293,7 @@ impl BitmapPmm {
                 if base < max_addr {
                     let actual_len = core::cmp::min(len as u64, max_addr - base) as usize;
                     pmm.free_region(base, actual_len);
+                    crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, actual_len);
                 }
             }
             offset += e_size as usize + 4;
@@ -351,6 +352,7 @@ impl BitmapPmm {
         // Free everything above 2MB up to max
         if max_addr > 0x200000 {
             pmm.free_region(0x200000, (max_addr - 0x200000) as usize);
+            crate::mm::buddy::ZONED_PMM.lock().add_free_region(0x200000, (max_addr - 0x200000) as usize);
         }
         // Re-mark first 2MB + bitmap
         pmm.mark_region_used(0, 0x200000);
@@ -486,81 +488,27 @@ impl BitmapPmm {
     }
 
     pub fn alloc_frame(&mut self) -> Option<u64> {
-        // Next-fit search with BSF acceleration: O(1) per word instead of O(64)
-        let len = self.bitmap.len();
-        for scan in 0..len {
-            let idx = (self.last_idx + scan) % len;
-            if self.bitmap[idx] != !0 {
-                if let Some(bit) = Self::find_first_free(self.bitmap[idx]) {
-                    let frame = idx * 64 + bit as usize;
-                    if frame < self.total_frames {
-                        self.bitmap[idx] |= 1u64 << bit;
-                        self.last_idx = idx;
-                        self.allocated_frames.fetch_add(1, Ordering::Relaxed);
-                        return Some(frame as u64 * PAGE_SIZE as u64);
-                    }
-                }
-            }
-        }
-        None
+        let phys = crate::mm::buddy::ZONED_PMM.lock().alloc(crate::mm::buddy::ZoneType::Normal, 0)?;
+        self.allocated_frames.fetch_add(1, Ordering::Relaxed);
+        Some(phys)
     }
 
     /// Allocate N contiguous physical frames. Returns the base physical address.
     /// Optimized: Uses Word-at-a-Time scanning to jump 64 frames at a time.
     pub fn alloc_contiguous(&mut self, count: usize) -> Option<u64> {
         if count == 0 { return None; }
-        if count == 1 { return self.alloc_frame(); }
-
-        let len = self.bitmap.len();
-        let mut i = self.last_idx;
-        let mut scanned = 0;
-
-        while scanned < len {
-            // Optimization: If a word is 0xFF..., it has no free bits. Skip it.
-            if self.bitmap[i] != !0 {
-                // Bit-level scan within this word and neighbors
-                let start_frame = i * 64;
-                let check_limit = core::cmp::min(self.total_frames, start_frame + 256); // Lookahead 256 bits
-                
-                let mut run_start = 0;
-                let mut run_len = 0;
-
-                for frame in start_frame..check_limit {
-                    if !self.test_bit(frame) {
-                        if run_len == 0 { run_start = frame; }
-                        run_len += 1;
-                        if run_len >= count {
-                            let addr = run_start as u64 * PAGE_SIZE as u64;
-                            self.mark_region_used(addr, count * PAGE_SIZE);
-                            self.allocated_frames.fetch_add(count, Ordering::Relaxed);
-                            self.last_idx = i;
-                            return Some(addr);
-                        }
-                    } else {
-                        run_len = 0;
-                    }
-                }
-            }
-            i = (i + 1) % len;
-            scanned += 1;
+        let mut target_order = 0;
+        while (1 << target_order) < count {
+            target_order += 1;
         }
-        None
+        let phys = crate::mm::buddy::ZONED_PMM.lock().alloc(crate::mm::buddy::ZoneType::Normal, target_order)?;
+        self.allocated_frames.fetch_add(count, Ordering::Relaxed);
+        Some(phys)
     }
 
     pub fn free_frame(&mut self, phys_addr: u64) {
-        let frame = (phys_addr / PAGE_SIZE as u64) as usize;
-        if frame < self.total_frames && self.test_bit(frame) {
-            // Zero the page for security (prevent info leaks)
-            let virt = phys_addr + self.hhdm_offset;
-            unsafe {
-                core::ptr::write_bytes(virt as *mut u8, 0, PAGE_SIZE);
-            }
-            self.clear_bit(frame);
-            self.allocated_frames.fetch_sub(1, Ordering::Relaxed);
-            if frame / 64 < self.last_idx {
-                self.last_idx = frame / 64;
-            }
-        }
+        crate::mm::buddy::ZONED_PMM.lock().free(phys_addr, 0);
+        self.allocated_frames.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn hhdm_offset(&self) -> u64 {

@@ -113,39 +113,24 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 
     // Hot path — no debug output, no heap allocation
     match id {
-        1 => { // Write (handle_idx, ptr, len)
-            let handle_idx = a1 as usize;
+        1 => { // Write (fd, ptr, len)
+            let fd = a1 as usize;
             let len = a3 as usize;
             if len > 8192 { return 0; }
             if !crate::mm::user::validate_user_ptr(a2, len) { return 0; }
 
-            // Capability Check: Must have WRITE capability
-            let pid = crate::process::scheduler::get_current_pid();
-            let handle_idx = a1 as usize;
-            
-            let handle_table = {
-                let tasks = crate::process::scheduler::TASKS.lock();
-                if let Some(task) = &tasks[pid] {
-                    // We need a way to keep handle_table alive or just use it here.
-                    // Since Task is in a Mutex, we can't easily get a long-lived ref.
-                    // But we can just use the indices.
-                    // Better: just lock handle_table inside the tasks lock briefly.
-                    let h_table = task.handle_table.lock();
-                    h_table.get(handle_idx, crate::object::CapabilitySet::WRITE).is_some()
-                } else {
-                    false
-                }
-            };
-
-            if handle_table {
+            let mut buf = alloc::vec![0u8; len];
+            if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf).is_ok() {
                 // Hack: if fd 1/2, still go to video
-                if handle_idx <= 2 {
-                     let mut buf = alloc::vec![0u8; len];
-                     if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf).is_ok() {
-                         if let Ok(s) = core::str::from_utf8(&buf) {
-                            video::put_str(s);
-                            return a3;
-                         }
+                if fd <= 2 {
+                     if let Ok(s) = core::str::from_utf8(&buf) {
+                        video::put_str(s);
+                        return len as u64;
+                     }
+                } else {
+                     let n = crate::process::scheduler::process_write(fd, &buf);
+                     if n >= 0 {
+                         return n as u64;
                      }
                 }
             }
@@ -259,6 +244,30 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64,
         },
         8 => { // Sys_close (fd)
             crate::process::scheduler::process_close(a1 as usize) as u64
+        },
+        14 => { // Sys_mkdir (path_ptr, path_len)
+             let len = a2 as usize;
+             if len > 256 { return u64::MAX; }
+             if !crate::mm::user::validate_user_ptr(a1, len) { return u64::MAX; }
+             
+             let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
+             if let Ok(path) = core::str::from_utf8(s) {
+                 crate::process::scheduler::process_mkdir(path) as u64
+             } else {
+                 u64::MAX
+             }
+        },
+        15 => { // Sys_unlink (path_ptr, path_len)
+             let len = a2 as usize;
+             if len > 256 { return u64::MAX; }
+             if !crate::mm::user::validate_user_ptr(a1, len) { return u64::MAX; }
+             
+             let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
+             if let Ok(path) = core::str::from_utf8(s) {
+                 crate::process::scheduler::process_unlink(path) as u64
+             } else {
+                 u64::MAX
+             }
         },
         9 => { // Sys_kill (handle_idx, sig)
             let handle_idx = a1 as usize;
@@ -472,6 +481,9 @@ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64,
              crate::process::scheduler::clone_task(a1, a2) as u64
         },
         20 => crate::sem::sys_agent_op(a1, a2, a3),
+        40 => sys_socket(a1),
+        41 => sys_bind(a1, a2),
+        42 => sys_listen(a1),
         43 => sys_accept(a1),
         44 => sys_connect(a1, a2, a3),
         45 => sys_resolve(a1, a2, a3),
