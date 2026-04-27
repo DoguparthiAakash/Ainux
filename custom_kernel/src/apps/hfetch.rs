@@ -160,8 +160,8 @@ pub fn cmd_hfetch(args: &[&str]) {
     let a_col = theme.accent;
     let f_col = theme.fg;
     let b_col = theme.bg;
-    let shadow_col = 0x000F0F0F; // Consistent shadow
-    let box_bg = 0x002D2D2D;    // Whiptail charcoal (WP_BOX)
+    let box_bg     = crate::apps::dcustom::blend_dark_pub(b_col, 0x18);
+    let shadow_col = crate::apps::dcustom::blend_dark_pub(b_col, 0x08);
     drop(theme);
 
     let info = [

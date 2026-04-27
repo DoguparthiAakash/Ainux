@@ -1,5 +1,7 @@
 // =============================================================================
 // Ainux DCustom — Whiptail-Style TUI Customizer
+// All colors are derived at render-time from video::THEME so that
+// every dialog automatically adapts when the user changes the theme.
 // =============================================================================
 
 extern crate alloc;
@@ -9,16 +11,82 @@ use alloc::format;
 use crate::drivers::video::{self, THEME};
 use crate::drivers::keyboard;
 
-pub const WP_BG: u32 = 0x00111122;    // Midnight Blue-Black
-pub const WP_BOX: u32 = 0x002D2D2D;   // Deep Charcoal Gray
-pub const WP_SHADOW: u32 = 0x000F0F0F;// Near Black Shadow
-pub const WP_TITLE: u32 = 0x000088AA; // Teal Header
-pub const WP_SEL: u32 = 0x0000AAAA;   // Cyan Highlight
-pub const WP_TEXT: u32 = 0x00DDDDDD;  // Soft White Text
-pub const WP_WHITE: u32 = 0xFFFFFFFF; // Pure White
+/// Computed palette — derived from THEME at render time.
+/// Never store these globally; call theme_colors() fresh on each render.
+pub struct Palette {
+    pub bg:     u32, // Dialog box interior
+    pub shadow: u32, // Drop shadow
+    pub title:  u32, // Title bar
+    pub sel:    u32, // Selected item highlight
+    pub text:   u32, // Body text
+    pub white:  u32, // Bright foreground
+    pub screen: u32, // Full-screen background
+}
+
+/// Read THEME once and derive a full dialog palette from it.
+/// This is the single source of truth for ALL dcustom/settings colors.
+pub fn theme_colors() -> Palette {
+    let t = THEME.lock();
+    // Derive box background: darken the theme bg slightly
+    let box_bg = blend_dark(t.bg, 0x18);
+    // Derive shadow: almost pure black tinted with bg
+    let shadow  = blend_dark(t.bg, 0x08);
+    // Title bar: use accent color
+    let title   = t.accent;
+    // Selection: slightly brighter accent
+    let sel     = brighten(t.accent, 0x20);
+    // Text: theme fg
+    let text    = t.fg;
+    let screen  = t.bg;
+    drop(t);
+    Palette { bg: box_bg, shadow, title, sel, text, white: 0x00FFFFFF, screen }
+}
+
+/// Blend a color toward black by subtracting `amount` from each channel.
+/// Also exported for use by other modules (hinfo, hfetch, taskman).
+pub fn blend_dark_pub(c: u32, amount: u32) -> u32 {
+    blend_dark(c, amount)
+}
+
+/// Blend a color toward black by subtracting `amount` from each channel.
+fn blend_dark(c: u32, amount: u32) -> u32 {
+    let r = ((c >> 16) & 0xFF).saturating_sub(amount);
+    let g = ((c >>  8) & 0xFF).saturating_sub(amount);
+    let b = ( c        & 0xFF).saturating_sub(amount);
+    (r << 16) | (g << 8) | b
+}
+
+/// Brighten a color by adding `amount` to each channel (clamped at 0xFF).
+fn brighten(c: u32, amount: u32) -> u32 {
+    let r = (((c >> 16) & 0xFF) + amount).min(0xFF);
+    let g = (((c >>  8) & 0xFF) + amount).min(0xFF);
+    let b = (( c        & 0xFF) + amount).min(0xFF);
+    (r << 16) | (g << 8) | b
+}
+
+// Legacy aliases so callers that use WP_* still compile.
+// These now read from theme at the call site instead of being const.
+#[inline] pub fn wp_bg()     -> u32 { theme_colors().screen }
+#[inline] pub fn wp_box()    -> u32 { theme_colors().bg }
+#[inline] pub fn wp_shadow() -> u32 { theme_colors().shadow }
+#[inline] pub fn wp_title()  -> u32 { theme_colors().title }
+#[inline] pub fn wp_sel()    -> u32 { theme_colors().sel }
+#[inline] pub fn wp_text()   -> u32 { theme_colors().text }
+#[inline] pub fn wp_white()  -> u32 { 0x00FFFFFF }
+
+// Keep old const names working in files that use them directly.
+// They resolve to the default theme startup values; components that render
+// correctly MUST call theme_colors() at render time instead.
+pub const WP_BG:     u32 = 0x001A1B26;
+pub const WP_BOX:    u32 = 0x00111827;
+pub const WP_SHADOW: u32 = 0x00080C12;
+pub const WP_TITLE:  u32 = 0x007AA2F7; // matches default accent
+pub const WP_SEL:    u32 = 0x009AC2FF;
+pub const WP_TEXT:   u32 = 0x00C0CAF5; // matches default fg
+pub const WP_WHITE:  u32 = 0x00FFFFFF;
 
 const COLOR_LIST: [(&str, u32); 12] = [
-    ("Black",   0x00000000), ("White",   0xFFFFFFFF), ("Red",     0x00FF0000),
+    ("Black",   0x00000000), ("White",   0x00FFFFFF), ("Red",     0x00FF0000),
     ("Green",   0x0000FF00), ("Blue",    0x000000FF), ("Yellow",  0x00FFFF00),
     ("Cyan",    0x0000FFFF), ("Magenta", 0x00FF00FF), ("Silver",  0x00C0C0C0),
     ("Gray",    0x00808080), ("Orange",  0x00FFA500), ("SkyBlue", 0x0087CEEB),
@@ -48,11 +116,16 @@ pub fn main_personalization() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        draw_background();
-        draw_dialog(&dialog);
+        if dirty {
+            draw_background();
+            draw_dialog(&dialog);
+            dirty = false;
+        }
 
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -62,6 +135,7 @@ pub fn main_personalization() {
                 '\n' => {
                     if dialog.active_btn == 2 { video::clear(); return; } // Finish/Exit
                     if dialog.active_btn == 1 || dialog.active_btn == 0 {
+                        dirty = true; // re-render after sub-menu returns
                         match dialog.selected {
                             0 => color_menu(),
                             1 => appearance_menu(),
@@ -72,7 +146,7 @@ pub fn main_personalization() {
                     }
                 }
                 '\x1B' => { video::clear(); return; }, // ESC
-                _ => {}
+                _ => { dirty = false; } // unknown key — don't flicker
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -92,10 +166,15 @@ fn color_menu() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        draw_background();
-        draw_dialog(&dialog);
+        if dirty {
+            draw_background();
+            draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -106,7 +185,7 @@ fn color_menu() {
                     if dialog.active_btn == 2 { return; } // Back
                     pick_color(dialog.selected);
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -121,10 +200,15 @@ fn pick_color(target: usize) {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        draw_background();
-        draw_dialog(&dialog);
+        if dirty {
+            draw_background();
+            draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -144,7 +228,7 @@ fn pick_color(target: usize) {
                     }
                     return;
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -163,10 +247,15 @@ fn appearance_menu() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        draw_background();
-        draw_dialog(&dialog);
+        if dirty {
+            draw_background();
+            draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -182,7 +271,7 @@ fn appearance_menu() {
                         resolution_menu();
                     }
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -202,10 +291,15 @@ fn resolution_menu() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        draw_background();
-        draw_dialog(&dialog);
+        if dirty {
+            draw_background();
+            draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -223,7 +317,7 @@ fn resolution_menu() {
                     }
                     return;
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -232,14 +326,15 @@ fn resolution_menu() {
 
 fn about_dialog() {
     draw_background();
+    let p = theme_colors();
     let w = 40; let h = 10;
     let x = (80 - w) / 2; let y = (25 - h) / 2;
-    video::draw_rect_grid(x + 1, y + 1, w, h, WP_SHADOW, WP_SHADOW);
-    video::draw_rect_grid(x, y, w, h, WP_BOX, WP_BOX);
-    video::put_str_at(x + 2, y + 2, "   Ainux DCustom v1.2", WP_TEXT, WP_BOX);
-    video::put_str_at(x + 2, y + 4, "   Sovereign TUI System", WP_TEXT, WP_BOX);
-    video::put_str_at(x + 2, y + 6, "   Press any key to return", WP_TITLE, WP_BOX);
-    
+    video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+    video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+    video::put_str_at(x + 2, y + 2, "   Ainux DCustom v1.2",   p.text,  p.bg);
+    video::put_str_at(x + 2, y + 4, "   Sovereign TUI System", p.text,  p.bg);
+    video::put_str_at(x + 2, y + 6, "   Press any key to return", p.title, p.bg);
+
     loop {
         if keyboard::pop_char().is_some() { return; }
         unsafe { core::arch::asm!("hlt"); }
@@ -247,46 +342,47 @@ fn about_dialog() {
 }
 
 pub fn draw_background() {
+    let p = theme_colors();
     let (cols, rows) = (80, 25);
-    video::draw_rect_grid(0, 0, cols, rows, WP_WHITE, WP_BG);
-    video::put_str_at(1, 0, " Ainux Configuration Hub (Sovereign) ", WP_TEXT, WP_BOX);
-    video::draw_rect_grid(0, rows - 1, cols, 1, WP_WHITE, WP_BOX);
-    video::put_str_at(1, rows - 1, " <Tab>/<Arrows> Move | <Enter> Select ", WP_TEXT, WP_BOX);
+    video::draw_rect_grid(0, 0, cols, rows, p.white, p.screen);
+    video::put_str_at(1, 0, " Ainux Configuration Hub (Sovereign) ", p.text, p.bg);
+    video::draw_rect_grid(0, rows - 1, cols, 1, p.white, p.bg);
+    video::put_str_at(1, rows - 1, " <Tab>/<Arrows> Move | <Enter> Select ", p.text, p.bg);
 }
 
 pub fn draw_dialog(d: &Dialog) {
+    let p = theme_colors();
     let w = 60;
     let h = (d.options.len() + 8).max(12);
     let x = (80 - w) / 2;
     let y = (25 - h) / 2;
 
-    video::draw_rect_grid(x + 1, y + 1, w, h, WP_SHADOW, WP_SHADOW);
-    video::draw_rect_grid(x, y, w, h, WP_BOX, WP_BOX);
-    draw_box_lines(x, y, w, h, WP_TEXT, WP_BOX);
-    
+    video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+    video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+    draw_box_lines(x, y, w, h, p.text, p.bg);
+
     let title_x = x + (w - d.title.len()) / 2;
-    video::put_str_at(title_x, y, d.title, WP_WHITE, WP_TITLE);
+    video::put_str_at(title_x, y, d.title, p.white, p.title);
 
     for (i, opt) in d.options.iter().enumerate() {
         let (fg, bg) = if d.active_btn == 0 && i == d.selected {
-            (WP_WHITE, WP_SEL)
+            (p.white, p.sel)
         } else {
-            (WP_TEXT, WP_BOX)
+            (p.text, p.bg)
         };
         let display = if opt.len() > w - 6 { &opt[..w - 6] } else { opt };
         video::put_str_at(x + 3, y + 3 + i, &format!(" {:<width$} ", display, width = w - 8), fg, bg);
     }
 
     let btn_y = y + h - 3;
-    let (p_fg, p_bg) = if d.active_btn == 1 { (WP_WHITE, WP_SEL) } else { (WP_TEXT, WP_BOX) };
-    let (s_fg, s_bg) = if d.active_btn == 2 { (WP_WHITE, WP_SEL) } else { (WP_TEXT, WP_BOX) };
+    let (p_fg, p_bg) = if d.active_btn == 1 { (p.white, p.sel) } else { (p.text, p.bg) };
+    let (s_fg, s_bg) = if d.active_btn == 2 { (p.white, p.sel) } else { (p.text, p.bg) };
 
-    // Dynamic button labels
     let p_txt = if d.title.contains("Sovereign") { " <Select> " } else { " <  Ok  > " };
     let s_txt = if d.title.contains("Sovereign") { " <Finish> " } else { " < Back > " };
 
     video::put_str_at(x + (w / 2) - 13, btn_y, p_txt, p_fg, p_bg);
-    video::put_str_at(x + (w / 2) + 3, btn_y, s_txt, s_fg, s_bg);
+    video::put_str_at(x + (w / 2) + 3,  btn_y, s_txt, s_fg, s_bg);
 }
 
 pub fn draw_box_lines(x: usize, y: usize, w: usize, h: usize, fg: u32, bg: u32) {
@@ -301,44 +397,43 @@ pub fn draw_box_lines(x: usize, y: usize, w: usize, h: usize, fg: u32, bg: u32) 
 }
 
 pub fn draw_input_box(title: &'static str, prompt: &str, buffer: &str, masked: bool) {
+    let p = theme_colors();
     let w = 50;
     let h = 10;
     let x = (80 - w) / 2;
     let y = (25 - h) / 2;
 
-    video::draw_rect_grid(x + 1, y + 1, w, h, WP_SHADOW, WP_SHADOW);
-    video::draw_rect_grid(x, y, w, h, WP_BOX, WP_BOX);
-    draw_box_lines(x, y, w, h, WP_TEXT, WP_BOX);
-    
-    let title_x = x + (w - title.len()) / 2;
-    video::put_str_at(title_x, y, title, WP_WHITE, WP_TITLE);
+    video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+    video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+    draw_box_lines(x, y, w, h, p.text, p.bg);
 
-    video::put_str_at(x + 3, y + 2, prompt, WP_TEXT, WP_BOX);
-    
-    // Draw Input Field
-    video::draw_rect_grid(x + 3, y + 4, w - 6, 3, WP_SHADOW, WP_WHITE);
-    draw_box_lines(x + 3, y + 4, w - 6, 3, WP_TEXT, WP_WHITE);
-    
+    let title_x = x + (w - title.len()) / 2;
+    video::put_str_at(title_x, y, title, p.white, p.title);
+
+    video::put_str_at(x + 3, y + 2, prompt, p.text, p.bg);
+
+    // Input field — white bg for contrast regardless of theme
+    video::draw_rect_grid(x + 3, y + 4, w - 6, 3, p.shadow, 0x00FFFFFF);
+    draw_box_lines(x + 3, y + 4, w - 6, 3, p.text, 0x00FFFFFF);
+
     let display = if masked {
-        let mut s = String::new();
+        let mut s = alloc::string::String::new();
         for _ in 0..buffer.len() { s.push('*'); }
         s
     } else {
-        String::from(buffer)
+        alloc::string::String::from(buffer)
     };
-    
-    video::put_str_at(x + 5, y + 5, &display, WP_TEXT, WP_WHITE);
-    
-    // Buttons
-    video::put_str_at(x + (w / 2) - 10, y + h - 2, " <  Ok  > ", WP_WHITE, WP_SEL);
-    video::put_str_at(x + (w / 2) + 2, y + h - 2, " < Back > ", WP_TEXT, WP_BOX);
+    video::put_str_at(x + 5, y + 5, &display, 0x00000000, 0x00FFFFFF);
+
+    video::put_str_at(x + (w / 2) - 10, y + h - 2, " <  Ok  > ", p.white, p.sel);
+    video::put_str_at(x + (w / 2) + 2,  y + h - 2, " < Back > ", p.text,  p.bg);
 }
 
 fn reset_theme() {
     let mut t = THEME.lock();
-    t.bg = 0x00000000;
-    t.fg = 0xFFFFFFFF;
-    t.accent = 0x00AAAAFF;
-    t.root = 0x00FF5555;
+    t.bg     = 0x001A1B26; // Nvix dark (matches global theme default)
+    t.fg     = 0x00C0CAF5; // Soft blue-white
+    t.accent = 0x007AA2F7; // Neovim accent blue
+    t.root   = 0x009ECE6A; // Neovim accent green
     t.font_size = 1;
 }

@@ -134,7 +134,7 @@ pub fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
 }
 
 /// Resolves a path to its parent inode and the child name.
-fn find_parent_and_name(path: &str) -> vfs::VfsResult<(Arc<dyn vfs::Inode>, String)> {
+pub fn find_parent_and_name(path: &str) -> vfs::VfsResult<(Arc<dyn vfs::Inode>, String)> {
     let resolved = resolve_path(path);
     if resolved == "/" { return Err(vfs::VfsError::PermissionDenied); }
     
@@ -161,7 +161,7 @@ static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 fn redraw_line(buffer: &str, cursor_pos: usize, clear_trailing: bool) {
     let rest = &buffer[cursor_pos..];
     crate::drivers::video::put_str(rest);
-    let mut chars_to_move_back = rest.len();
+    let mut chars_to_move_back = rest.chars().count();
     if clear_trailing {
         crate::drivers::video::put_char(' '); // Clear potential trailing char
         chars_to_move_back += 1;
@@ -174,12 +174,21 @@ fn redraw_line(buffer: &str, cursor_pos: usize, clear_trailing: bool) {
 }
 
 fn restore_cursor(buffer: &str, cursor_pos: usize) {
+    let theme = crate::drivers::video::THEME.lock();
+    let bg = theme.bg;
+    let fg = theme.fg;
+    drop(theme);
+
+    let x = *crate::drivers::video::CONSOLE_X.lock();
+    let y = *crate::drivers::video::CONSOLE_Y.lock();
+
     if cursor_pos < buffer.len() {
-        let c = buffer.chars().nth(cursor_pos).unwrap();
-        crate::drivers::video::put_char(c);
-        crate::drivers::video::put_str("\x08"); // Step back visual cursor
+        // Redraw the character that was under the cursor in-place (don't move console pos)
+        let c = buffer[cursor_pos..].chars().next().unwrap_or(' ');
+        crate::drivers::video::put_char_at(x, y, c, fg, bg);
     } else {
-        crate::drivers::video::draw_cursor(0x00000000);
+        // Cursor is at end of input — erase the block with theme bg
+        crate::drivers::video::put_char_at(x, y, ' ', bg, bg);
     }
 }
 
@@ -188,9 +197,12 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
         video::put_char('\n');
     } else if c == '\x08' || c == '\x7F' { // Backspace or Delete
          if *cursor_pos > 0 && input_buffer.len() > 0 {
-             let remove_idx = *cursor_pos - 1;
-             input_buffer.remove(remove_idx);
-             *cursor_pos -= 1;
+             let mut new_pos = *cursor_pos - 1;
+             while new_pos > 0 && !input_buffer.is_char_boundary(new_pos) {
+                 new_pos -= 1;
+             }
+             input_buffer.remove(new_pos);
+             *cursor_pos = new_pos;
              
              // Redraw Line
              video::put_str("\x08"); // Move back visual cursor
@@ -198,16 +210,20 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
          }
     } else if c == '\u{2190}' { // Left Arrow
         if *cursor_pos > 0 {
-            *cursor_pos -= 1;
+             let mut new_pos = *cursor_pos - 1;
+             while new_pos > 0 && !input_buffer.is_char_boundary(new_pos) {
+                 new_pos -= 1;
+             }
+             *cursor_pos = new_pos;
             // Use backspace to visually move left without erasing (video.rs updated)
             video::put_str("\x08");
         }
     } else if c == '\u{2192}' { // Right Arrow
         if *cursor_pos < input_buffer.len() {
-            let ch = input_buffer.chars().nth(*cursor_pos).unwrap();
+            let ch = input_buffer[*cursor_pos..].chars().next().unwrap();
             // Just re-printing the char advances the cursor
             video::put_char(ch);
-            *cursor_pos += 1;
+            *cursor_pos += ch.len_utf8();
         }
     } else if c == '\u{2191}' { // Up Arrow (History Prev)
         let hist = HISTORY.lock();
@@ -217,15 +233,11 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              }
              
              // Clear visual line
-             // 1. Move to start
-             while *cursor_pos > 0 {
-                 video::put_str("\x08");
-                 *cursor_pos -= 1;
-             }
-             // 2. Erase content
-             for _ in 0..input_buffer.len() { video::put_char(' '); }
-             // 3. Move back to start
-             for _ in 0..input_buffer.len() { video::put_str("\x08"); }
+             let chars_before = input_buffer[..*cursor_pos].chars().count();
+             for _ in 0..chars_before { video::put_str("\x08"); }
+             let total_chars = input_buffer.chars().count();
+             for _ in 0..total_chars { video::put_char(' '); }
+             for _ in 0..total_chars { video::put_str("\x08"); }
              
              // Load history
              *input_buffer = hist[*history_index].clone();
@@ -241,9 +253,11 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              }
              
              // Clear visual line
-             while *cursor_pos > 0 { video::put_str("\x08"); *cursor_pos -= 1; }
-             for _ in 0..input_buffer.len() { video::put_char(' '); }
-             for _ in 0..input_buffer.len() { video::put_str("\x08"); }
+             let chars_before = input_buffer[..*cursor_pos].chars().count();
+             for _ in 0..chars_before { video::put_str("\x08"); }
+             let total_chars = input_buffer.chars().count();
+             for _ in 0..total_chars { video::put_char(' '); }
+             for _ in 0..total_chars { video::put_str("\x08"); }
              
              if *history_index == last_idx {
                  input_buffer.clear();
@@ -261,12 +275,12 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
                  if *cursor_pos == input_buffer.len() {
                      input_buffer.push(c);
                      video::put_char(c);
-                     *cursor_pos += 1;
+                     *cursor_pos += c.len_utf8();
                  } else {
                      // Insert in middle
                      input_buffer.insert(*cursor_pos, c);
                      video::put_char(c); // Print the new char
-                     *cursor_pos += 1;
+                     *cursor_pos += c.len_utf8();
                      
                      // Print rest (shifted right)
                      redraw_line(input_buffer, *cursor_pos, false);
@@ -474,7 +488,7 @@ fn execute_command_inner(cmd: &str, args: &[&str]) {
             "ls" => cmd_ls(&args),
             "cat" => cmd_cat(&args),
             "nvix" => crate::apps::nvi::cmd_nvix(&args),
-            "nuxc" => crate::apps::nuxc::cmd_nuxc(&args),
+            "nuxc" | "gcc" | "clang" | "llvm" | "cc" => crate::apps::nuxc::cmd_nuxc(&args),
             "nuxa" => crate::apps::nuxa::cmd_nuxa(&args),
             "nuxv" => crate::apps::nuxv::cmd_nuxv(&args),
             "run" => cmd_run(&args),
@@ -490,7 +504,7 @@ fn execute_command_inner(cmd: &str, args: &[&str]) {
             "write" => cmd_write(&args),
             "test_write" => cmd_test_write(),
             "exec" => cmd_exec(&args),
-            "top" => cmd_top(),
+            "top" | "taskmgr" | "tm" => crate::apps::taskman::cmd_taskman(&args),
             "tree" => cmd_tree(&args),
             "cp" => cmd_cp(&args),
             "mv" => cmd_mv(&args),
@@ -600,7 +614,8 @@ fn cmd_help() {
 
     video::put_str("\n--- Development & Native Platform ---\n");
     video::put_str("  run <file>          - Unified Runner (.c, .s, .v, .q)\n");
-    video::put_str("  nuxc / nuxa / nuxv  - Native C / ASM / Sovereign Compilers\n");
+    video::put_str("  nuxc / gcc / clang  - Native C Compiler (LLVM-style Unified Frontend)\n");
+    video::put_str("  nuxa / nuxv         - Native ASM / Sovereign Compilers\n");
     video::put_str("  nvix <file>         - nvix Turbo IDE\n");
     video::put_str("  exec <file.alo>     - Execute Native Segmented Binary\n");
     video::put_str("  view <file>         - Visual File/Hex/Image Viewer\n");

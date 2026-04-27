@@ -11,10 +11,10 @@ pub struct Theme {
 }
 
 pub static THEME: Mutex<Theme> = Mutex::new(Theme {
-    bg: 0x00111122,     // Midnight Blue-Black (WP_BG)
-    fg: 0x00DDDDDD,     // Soft White (WP_TEXT)
-    accent: 0x0000AAAA, // Industrial Cyan (WP_SEL)
-    root: 0x000088AA,   // Teal (WP_TITLE)
+    bg: 0x001A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
+    fg: 0x00C0CAF5,     // Soft Blue-White Text
+    accent: 0x007AA2F7, // Neovim Accent Blue
+    root: 0x009ECE6A,   // Neovim Accent Green
     font_size: 1,
 });
 
@@ -258,8 +258,9 @@ pub fn put_str_colored(s: &str, fg: u32, bg: u32) {
 pub fn draw_cursor(color: u32) {
     let x = *CONSOLE_X.lock();
     let y = *CONSOLE_Y.lock();
-    // draw a small rectangle at the cursor position
-    draw_rect_grid(x, y, 1, 1, 0, color);
+    // If the caller passes 0 (erase), use theme background — never raw black
+    let actual_color = if color == 0x00000000 { THEME.lock().bg } else { color };
+    draw_rect_grid(x, y, 1, 1, 0, actual_color);
 }
 
 /// Draw a character at a specific char-grid coordinate without updating console state.
@@ -377,8 +378,9 @@ pub fn fill_rect(x: i64, y: i64, w: i64, h: i64, color: u32) {
 }
 
 pub fn draw_char_raw(x: usize, y: usize, c: char, fg: u32) {
+    let bg = THEME.lock().bg;
     unsafe {
-        c_draw_char(x as i32, y as i32, c as u32, fg, 0); // Transparent BG? Assume 0 is transparent/ignored or we don't care
+        c_draw_char(x as i32, y as i32, c as u32, fg, bg);
     }
 }
 
@@ -444,8 +446,9 @@ pub fn copy_buffer(buffer: &[u32]) {
 
 pub fn draw_char_at(x: usize, y: usize, c: u32, fg: u32) {
     if *FRAMEBUFFER_ADDR.lock() != 0 {
+        let bg = THEME.lock().bg; // Use theme bg so no black box artefacts
         unsafe {
-            c_draw_char(x as i32, y as i32, c, fg, 0x00000000);
+            c_draw_char(x as i32, y as i32, c, fg, bg);
         }
     }
 }

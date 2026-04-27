@@ -15,21 +15,17 @@ pub fn cmd_nuxv(args: &[&str]) {
     
     // Load Source
     let mut source_code = String::new();
-    let root = ROOT.lock();
-    if let Some(r) = root.as_ref() {
-        if let Ok(inode) = r.lookup(source_file) {
-            if let Ok(handle) = inode.open(0) {
-                 let mut data = alloc::vec![0u8; 16384];
-                 if let Ok(bytes) = handle.read(&mut data, 0) {
-                     source_code = String::from(core::str::from_utf8(&data[..bytes]).unwrap_or(""));
-                 }
-            }
-        } else {
-            video::put_str("VM: Could not load Sovereign binary.\n");
-            return;
+    if let Ok(inode) = crate::shell::find_inode(source_file) {
+        if let Ok(handle) = inode.open(0) {
+             let mut data = alloc::vec![0u8; 16384];
+             if let Ok(bytes) = handle.read(&mut data, 0) {
+                 source_code = String::from(core::str::from_utf8(&data[..bytes]).unwrap_or(""));
+             }
         }
+    } else {
+        video::put_str("VM: Could not load Sovereign binary.\n");
+        return;
     }
-    core::mem::drop(root);
 
     video::put_str(&format!("Assembling {} (Sovereign Engine)...\n", source_file));
 
@@ -93,15 +89,16 @@ pub fn cmd_nuxv(args: &[&str]) {
     }
 
     // Save
-    let root = ROOT.lock();
-    if let Some(r) = root.as_ref() {
-        let _ = r.create(target_file, FileType::File);
-        if let Ok(inode) = r.lookup(target_file) {
+    if let Ok((parent, name)) = crate::shell::find_parent_and_name(target_file) {
+        let _ = parent.create(&name, FileType::File);
+        if let Ok(inode) = parent.lookup(&name) {
             if let Ok(handle) = inode.open(0) {
                  let _ = handle.truncate();
                  let _ = handle.write(&bytecode, 0);
                  video::put_str(&format!("Success! Produced Sovereign bin: {} bytes\n", bytecode.len()));
             }
         }
+    } else {
+        video::put_str("nuxv: Target directory not found.\n");
     }
 }

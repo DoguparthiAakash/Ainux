@@ -469,10 +469,10 @@ fn pci_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
 
 fn draw_boxed_info(title: &str, logo: &[&str], info: &[(&str, String)]) {
     let theme = video::THEME.lock();
-    let a_col = theme.accent;
-    let f_col = theme.fg;
-    let box_bg = 0x002D2D2D;    // Whiptail charcoal (WP_BOX)
-    let shadow_col = 0x000F0F0F;
+    let a_col  = theme.accent;
+    let f_col  = theme.fg;
+    let box_bg = crate::apps::dcustom::blend_dark_pub(theme.bg, 0x18);
+    let shadow_col = crate::apps::dcustom::blend_dark_pub(theme.bg, 0x08);
     drop(theme);
 
     let box_w = 64;

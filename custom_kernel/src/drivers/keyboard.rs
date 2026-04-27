@@ -319,6 +319,8 @@ fn decode_scancode(code: u8) -> Option<char> {
             0x51 => if NUMLOCK { Some('3') } else { Some(KEY_PGDN) },
             0x52 => if NUMLOCK { Some('0') } else { Some(KEY_INS) },
             0x53 => Some('.'), // Numpad Del
+            0x60 => Some('₹'), // Custom mapped keysym 8377
+            0x61 => Some('૫'), // Custom mapped keysym 2730
             
             _ => None,
         };

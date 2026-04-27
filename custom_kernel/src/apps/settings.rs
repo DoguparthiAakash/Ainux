@@ -28,12 +28,17 @@ pub fn main() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
-        net::poll(); // Background network processing
-        dcustom::draw_background();
-        dcustom::draw_dialog(&dialog);
+        net::poll();
+        if dirty {
+            dcustom::draw_background();
+            dcustom::draw_dialog(&dialog);
+            dirty = false;
+        }
 
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -43,6 +48,7 @@ pub fn main() {
                 '\n' => {
                     if dialog.active_btn == 2 { video::clear(); return; } // Back/Exit
                     if dialog.active_btn == 1 || dialog.active_btn == 0 {
+                        dirty = true;
                         match dialog.selected {
                             0 => wifi_menu(),
                             1 => dcustom::main_personalization(),
@@ -55,7 +61,7 @@ pub fn main() {
                     }
                 }
                 '\x1B' => { video::clear(); return; }, // ESC
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -76,13 +82,18 @@ fn wifi_menu() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
         net::poll();
         dialog.options[0] = net_mgr::get_status_str();
-        
-        dcustom::draw_background();
-        dcustom::draw_dialog(&dialog);
+
+        if dirty {
+            dcustom::draw_background();
+            dcustom::draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -96,13 +107,12 @@ fn wifi_menu() {
                         2 => wifi_manual_entry(),
                         3 => {
                             video::clear();
-                            // In this real-world implementation, we use the shell-style PING logic
                             video::put_str("=== Internet Connectivity Test ===\n");
                             net_mgr::run_ping_test();
                             video::put_str("\nPress any key to return...");
-                            while keyboard::pop_char().is_none() { 
+                            while keyboard::pop_char().is_none() {
                                 net::poll();
-                                unsafe { core::arch::asm!("hlt"); } 
+                                unsafe { core::arch::asm!("hlt"); }
                             }
                         },
                         4 => {
@@ -112,7 +122,7 @@ fn wifi_menu() {
                         _ => {}
                     }
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -135,11 +145,16 @@ fn wifi_scan_menu() {
         active_btn: 0,
     };
 
+    let mut dirty = true;
     loop {
         net::poll();
-        dcustom::draw_background();
-        dcustom::draw_dialog(&dialog);
+        if dirty {
+            dcustom::draw_background();
+            dcustom::draw_dialog(&dialog);
+            dirty = false;
+        }
         if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
             match ch {
                 '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
                 '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
@@ -154,7 +169,7 @@ fn wifi_scan_menu() {
                         error_dialog(" Hardware Alert ", "Atheros Radio not detected on PCI Bus.");
                     }
                 }
-                _ => {}
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
@@ -231,18 +246,24 @@ fn input_box_logic(title: &'static str, prompt: &str) -> String {
 }
 
 fn error_dialog(title: &'static str, msg: &str) {
+    // Draw once — only redraw if key pressed (dirty-flag)
+    let mut dirty = true;
     loop {
         net::poll();
-        dcustom::draw_background();
-        let w = 50; let h = 8;
-        let x = (80 - w) / 2; let y = (25 - h) / 2;
-        video::draw_rect_grid(x + 1, y + 1, w, h, WP_SHADOW, WP_SHADOW);
-        video::draw_rect_grid(x, y, w, h, WP_BOX, WP_BOX);
-        dcustom::draw_box_lines(x, y, w, h, WP_TEXT, WP_BOX);
-        video::put_str_at(x + (w - title.len()) / 2, y, title, WP_WHITE, WP_TITLE);
-        video::put_str_at(x + 4, y + 3, msg, WP_TEXT, WP_BOX);
-        video::put_str_at(x + (w / 2) - 5, y + h - 2, " <  Ok  > ", WP_WHITE, WP_SEL);
-        
+        if dirty {
+            let p = dcustom::theme_colors();
+            dcustom::draw_background();
+            let w = 50; let h = 8;
+            let x = (80 - w) / 2; let y = (25 - h) / 2;
+            video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+            video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+            dcustom::draw_box_lines(x, y, w, h, p.text, p.bg);
+            video::put_str_at(x + (w - title.len()) / 2, y, title, p.white, p.title);
+            video::put_str_at(x + 4, y + 3, msg, p.text, p.bg);
+            video::put_str_at(x + (w / 2) - 5, y + h - 2, " <  Ok  > ", p.white, p.sel);
+            dirty = false;
+        }
+
         if let Some(ch) = keyboard::pop_char() {
             if ch == '\n' || ch == '\x1B' { return; }
         }
@@ -251,11 +272,13 @@ fn error_dialog(title: &'static str, msg: &str) {
 }
 
 fn time_settings() {
+    // time_settings redraws the clock every loop tick because seconds change — but
+    // we throttle by only checking after a small spin so we don't repaint at interrupt rate.
     loop {
         net::poll();
         let t = rtc::read_time();
         dcustom::draw_background();
-        
+
         let w = 50; let h = 12;
         let x = (80 - w) / 2; let y = (25 - h) / 2;
 
@@ -269,7 +292,7 @@ fn time_settings() {
 
         video::put_str_at(x + 5, y + 3, "Current System Time:", WP_TEXT, WP_BOX);
         video::put_str_at(x + 25, y + 3, &time_str, WP_SEL, WP_BOX);
-        
+
         video::put_str_at(x + 5, y + 5, "Current System Date:", WP_TEXT, WP_BOX);
         video::put_str_at(x + 25, y + 5, &date_str, WP_SEL, WP_BOX);
 
@@ -281,7 +304,8 @@ fn time_settings() {
         if let Some(ch) = keyboard::pop_char() {
             if ch == '\n' || ch == '\x1B' { return; }
         }
-        for _ in 0..1000000 { unsafe { core::arch::asm!("nop"); } }
+        // Throttle redraws to ~1 Hz so seconds tick cleanly without flickering
+        for _ in 0..3_000_000 { unsafe { core::arch::asm!("nop"); } }
     }
 }
 

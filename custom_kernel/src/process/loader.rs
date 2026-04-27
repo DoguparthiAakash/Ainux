@@ -105,6 +105,84 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
     Err(())
 }
 
+#[repr(C, packed)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AloHeader {
+    pub magic: [u8; 4],
+    pub entry: u64,
+    pub segment_count: u32,
+    pub header_size: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AloSegment {
+    pub typ: u32,
+    pub flags: u32,
+    pub offset: u64,
+    pub vaddr: u64,
+    pub size: u64,
+}
+
+pub fn load_alo(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
+    let handle = inode.open(0).map_err(|_| ())?;
+    let mut header = AloHeader::default();
+    let header_ptr = &mut header as *mut _ as *mut u8;
+    let header_slice = unsafe { core::slice::from_raw_parts_mut(header_ptr, core::mem::size_of::<AloHeader>()) };
+    
+    handle.read(header_slice, 0).map_err(|_| ())?;
+
+    if header.magic != *b"ALO\x02" && header.magic != *b"ALO\0" {
+        return Err(()); // Not an ALO
+    }
+
+    // Parse Segments
+    for i in 0..header.segment_count {
+        let mut seg = AloSegment::default();
+        let seg_ptr = &mut seg as *mut _ as *mut u8;
+        let seg_slice = unsafe { core::slice::from_raw_parts_mut(seg_ptr, core::mem::size_of::<AloSegment>()) };
+        
+        let offset = header.header_size as u64 + (i as u64 * core::mem::size_of::<AloSegment>() as u64);
+        handle.read(seg_slice, offset).map_err(|_| ())?;
+
+        if seg.typ == 1 || seg.typ == 2 { // CODE or DATA
+             let pages = (seg.size + 4095) / 4096;
+             for p in 0..pages {
+                 let virt = seg.vaddr + (p * 4096);
+                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                 unsafe {
+                     crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, 0x07); // Present, Write, User
+                     if p * 4096 < seg.size {
+                         let to_copy = core::cmp::min(4096, seg.size - (p * 4096));
+                         let mut buf = alloc::vec![0u8; 4096];
+                         handle.read(&mut buf[..to_copy as usize], seg.offset + (p * 4096)).unwrap();
+                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
+                     }
+                 }
+             }
+        }
+    }
+
+    Ok(header.entry)
+}
+
 pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
-    load_elf_from_file(path)
+    if let Ok(inode) = crate::shell::find_inode(path) {
+        let cr3 = crate::mm::vmm::create_address_space();
+        if cr3 == 0 { return Err(()); }
+        
+        if let Ok(entry) = load_alo(inode, cr3) {
+            // Allocate a user stack (1MB)
+            let stack_top = 0x00007FFFFFFFF000;
+            let stack_pages = 256;
+            for p in 0..stack_pages {
+                let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
+            }
+            
+            let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
+            return Ok(pid);
+        }
+    }
+    Err(())
 }

@@ -9,15 +9,12 @@ use crate::shell;
 
 // Stable Nvix - Neovim-style usage
 // Optimized to prevent flickering by only redrawing on change.
+// BG and FG are derived from video::THEME at render time — adapts to user theme changes.
+// Mode indicator colors are intentionally fixed (semantic meaning, not style).
 
-const COLOR_BG: u32 = 0x000B0D15;
-const COLOR_FG: u32 = 0x00A0A8C0;
-const COLOR_STATUS_BG: u32 = 0x001C1E26;
-const COLOR_STATUS_FG: u32 = 0x00FFFFFF;
-
-const COLOR_MODE_NORMAL: u32 = 0x005E81AC;
-const COLOR_MODE_INSERT: u32 = 0x00A3BE8C;
-const COLOR_MODE_CMD: u32 = 0x00EBCB8B;
+const COLOR_MODE_NORMAL: u32 = 0x005E81AC; // Blue  — Normal
+const COLOR_MODE_INSERT: u32 = 0x00A3BE8C; // Green — Insert
+const COLOR_MODE_CMD:    u32 = 0x00EBCB8B; // Amber — Command
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Mode {
@@ -122,52 +119,72 @@ pub fn cmd_nvix(args: &[&str]) {
         unsafe { core::arch::asm!("hlt"); }
     }
 
-    // Clear screen on exit
-    unsafe { video::fast_grid_clear(console_w as u32, console_h as u32, 0xFFFFFF, 0, ' ' as u32); }
+    // Restore shell screen on exit: fill with theme background, not black
+    let theme_bg = video::THEME.lock().bg;
+    video::clear(); // fills entire framebuffer with theme bg
+    // Reset cursor to top-left so shell prompt redraws from the top
+    *video::CONSOLE_X.lock() = 0;
+    *video::CONSOLE_Y.lock() = 0;
 }
 
 fn render_all(doc: &Document, mode: Mode, cmd_buf: &str, msg: &Option<String>, w: usize, h: usize) {
+    // Read theme once per render — always reflects the current user theme
+    let (c_bg, c_fg, c_status_bg) = {
+        let t = video::THEME.lock();
+        let bg   = t.bg;
+        let fg   = t.fg;
+        let s_bg = crate::apps::dcustom::blend_dark_pub(bg, 0x08);
+        (bg, fg, s_bg)
+    };
+    let c_status_fg = 0x00FFFFFF;
+    let c_line_num  = crate::apps::dcustom::blend_dark_pub(c_fg, 0x60);
+
     let main_h = h - 2;
     unsafe {
-        video::fast_grid_clear(w as u32, main_h as u32, COLOR_FG, COLOR_BG, ' ' as u32);
-        
+        video::fast_grid_clear(w as u32, main_h as u32, c_fg, c_bg, ' ' as u32);
+
         // 1. Draw Text Buffer
         for row in 0..main_h {
             let idx = doc.scroll_top + row;
             if idx < doc.buffer.len() {
                 let line = &doc.buffer[idx];
-                // Line Numbers
-                let num_str = if idx == doc.cy { format!(" {:2} ", idx + 1) } else { format!(" {:2} ", (idx as isize - doc.cy as isize).abs()) };
-                video::put_str_at(0, row, &num_str, 0x444444, COLOR_BG);
-                
-                // Content
-                video::put_str_at(4, row, line, COLOR_FG, COLOR_BG);
+                let num_str = if idx == doc.cy {
+                    format!(" {:2} ", idx + 1)
+                } else {
+                    format!(" {:2} ", (idx as isize - doc.cy as isize).abs())
+                };
+                video::put_str_at(0, row, &num_str, c_line_num, c_bg);
+                video::put_str_at(4, row, line, c_fg, c_bg);
             }
         }
 
         // 2. Status Line
-        video::draw_rect_grid(0, h - 2, w, 1, COLOR_STATUS_FG, COLOR_STATUS_BG);
+        video::draw_rect_grid(0, h - 2, w, 1, c_status_fg, c_status_bg);
         let mode_str = match mode {
-            Mode::Normal => " NORMAL ",
-            Mode::Insert => " INSERT ",
+            Mode::Normal  => " NORMAL ",
+            Mode::Insert  => " INSERT ",
             Mode::Command => " COMMAND ",
         };
         let mode_col = match mode {
-            Mode::Normal => COLOR_MODE_NORMAL,
-            Mode::Insert => COLOR_MODE_INSERT,
+            Mode::Normal  => COLOR_MODE_NORMAL,
+            Mode::Insert  => COLOR_MODE_INSERT,
             Mode::Command => COLOR_MODE_CMD,
         };
         video::put_str_at(0, h - 2, mode_str, 0, mode_col);
-        video::put_str_at(mode_str.len() + 1, h - 2, &format!(" {} {}", doc.path, if doc.dirty { "[+]" } else { "" }), COLOR_STATUS_FG, COLOR_STATUS_BG);
+        video::put_str_at(
+            mode_str.len() + 1, h - 2,
+            &format!(" {} {}", doc.path, if doc.dirty { "[+]" } else { "" }),
+            c_status_fg, c_status_bg,
+        );
         let pos_str = format!(" {}:{} ", doc.cy + 1, doc.cx + 1);
         video::put_str_at(w - pos_str.len(), h - 2, &pos_str, 0, mode_col);
 
         // 3. Command Line
-        video::draw_rect_grid(0, h - 1, w, 1, COLOR_FG, COLOR_BG);
+        video::draw_rect_grid(0, h - 1, w, 1, c_fg, c_bg);
         if let Some(m) = msg {
-            video::put_str_at(0, h - 1, m, COLOR_FG, COLOR_BG);
+            video::put_str_at(0, h - 1, m, c_fg, c_bg);
         } else if mode == Mode::Command {
-            video::put_str_at(0, h - 1, &format!(":{}", cmd_buf), COLOR_FG, COLOR_BG);
+            video::put_str_at(0, h - 1, &format!(":{}", cmd_buf), c_fg, c_bg);
         }
     }
 }
@@ -176,26 +193,31 @@ fn draw_cursor_only(doc: &Document, mode: Mode, visible: bool, main_h: usize) {
     if doc.cy < doc.scroll_top || doc.cy >= doc.scroll_top + main_h { return; }
     let y = doc.cy - doc.scroll_top;
     let x = 4 + doc.cx;
-    
+
+    let (c_bg, c_fg) = {
+        let t = video::THEME.lock();
+        (t.bg, t.fg)
+    };
+
     let col = if visible {
         match mode {
-            Mode::Normal => COLOR_MODE_NORMAL,
-            Mode::Insert => COLOR_MODE_INSERT,
+            Mode::Normal  => COLOR_MODE_NORMAL,
+            Mode::Insert  => COLOR_MODE_INSERT,
             Mode::Command => COLOR_MODE_CMD,
         }
     } else {
-        COLOR_BG
+        c_bg
     };
-    
+
     unsafe {
         video::draw_rect_grid(x, y, 1, 1, 0, col);
         if !visible {
-             // Redraw the character that was under the cursor
-             if let Some(line) = doc.buffer.get(doc.cy) {
-                 if let Some(c) = line.chars().nth(doc.cx) {
-                     video::put_char_at(x, y, c, COLOR_FG, COLOR_BG);
-                 }
-             }
+            // Redraw the character that was under the cursor
+            if let Some(line) = doc.buffer.get(doc.cy) {
+                if let Some(c) = line.chars().nth(doc.cx) {
+                    video::put_char_at(x, y, c, c_fg, c_bg);
+                }
+            }
         }
     }
 }
