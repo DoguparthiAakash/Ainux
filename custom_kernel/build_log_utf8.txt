@@ -1,0 +1,280 @@
+wsl : + export 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/
+wsl/lib:/mnt/c/Program Files/Eclipse Adoptium/jdk-21.0.9.10-hotspot/bin:/mnt/c/Program Files/Eclipse 
+Adoptium/jdk-21.0.9.10-hotspot/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin:/mnt/c/Program 
+Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/libnvvp:/mnt/c/Program Files/Common 
+Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/Common Files/Oracle/Java/java8path:/mnt/c/Program Files 
+(x86)/Common Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/VMware/VMware Workstation/bin/:/mnt/c/Windows/system
+32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/
+OpenSSH/:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDO
+WS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program 
+Files/Git/cmd:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA 
+app/NvDLISR:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program 
+Files/Java/jdk-21/bin:/mnt/c/ProgramData/chocolatey/lib/maven/apache-maven-3.9.10/bin:/mnt/c/Program 
+Files/dotnet/:/mnt/e/NeoVim/bin:/mnt/e/Flutter/flutter_windows_3.35.4-stable/flutter/flutter/bin:/mnt/c/Program 
+Files/NVIDIA Corporation/Nsight Compute 2025.2.0/:/mnt/c/Program Files/PuTTY/:/mnt/c/Program Files/Git 
+LFS:/mnt/c/Program Files/Rust stable MSVC 1.90/bin:/mnt/c/Program Files/Docker/Docker/resources/bin:/mnt/c/Program 
+Files/Go/bin:/mnt/c/Gradle/gradle-9.2.0/bin:/mnt/c/Program Files/CMake/bin:/mnt/c/Program Files/nodejs/:/mnt/c/Program 
+Files/usbipd-win/:/mnt/c/Users/dogup/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCac
+he/local-packages/Python311/Scripts:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin:/mnt/c/Users/dogup
+/.unsloth/studio/unsloth_studio/Scripts:/mnt/c/Users/dogup/.cargo/bin:/mnt/c/Users/dogup/.local/bin:/mnt/c/Users/dogup/
+AppData/Local/Programs/Python/Python314/Scripts/:/mnt/c/Users/dogup/AppData/Local/Programs/Python/Python314/:/mnt/c/Use
+rs/dogup/AppData/Local/Programs/Python/Python39/Scripts/:/mnt/c/Users/dogup/AppData/Local/Programs/Python/Python39/:/mn
+t/c/Program Files/Common Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/Common 
+Files/Oracle/Java/java8path:/mnt/c/Program Files (x86)/Common Files/Oracle/Java/javapath:/mnt/c/Program Files 
+(x86)/VMware/VMware Workstation/bin/:/mnt/c/Python312/Scripts/:/mnt/c/Python312/:/mnt/c/Program Files/NVIDIA GPU 
+Computing Toolkit/CUDA/v12.6/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/libnvvp:/mnt/c/Windows/sy
+stem32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/Syste
+m32/OpenSSH/:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/W
+INDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program 
+Files/Git/cmd:/mnt/c/Program Files/NVIDIA Corporation/Nsight Compute 2024.3.2/:/mnt/c/Program Files/NVIDIA 
+Corporation/NVIDIA app/NvDLISR:/mnt/c/Program Files/nodejs/:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program 
+Files/Java/jdk-23/bin:/mnt/c/ProgramData/chocolatey/lib/maven/apache-maven-3.9.10/bin:/mnt/c/Program 
+Files/dotnet/:/mnt/e/Flexpilot/bi:/mnt/c/Users/dogup/.cache/lm-studio/bin:/mnt/e/VS CODE/bin:/mnt/c/Users/dogup/AppData
+/Local/Microsoft/WindowsApps:/mnt/e/:/mnt/c/Users/dogup/AppData/Local/GitHubDesktop/bin:/mnt/c/Users/dogup/AppData/Loca
+l/PowerToys/:/mnt/c/Users/dogup/go/bin:/mnt/c/Users/dogup/AppData/Local/Programs/Antigravity/bin:/mnt/c/Users/dogup/App
+Data/Local/Voidstar/FilePilot:/mnt/c/Users/dogup/AppData/Local/Programs/Ollama:/mnt/c/Users/dogup/AppData/Local/Microso
+ft/WinGet/Packages/zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe/zig-x86_64-windows-0.15.2:/mnt/c/Users/dogup/AppData/L
+ocal/Microsoft/WinGet/Packages/astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/dogup/AppData/Roaming/np
+m:/mnt/c/Users/dogup/AppData/Local/Microsoft/WindowsApps:/mnt/e/endee:/mnt/c/Users/dogup/AppData/Local/Microsoft/WinGet
+/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin:/home/mute/.cargo/bin'
+At line:1 char:1
++ wsl bash build_only.sh > build_log.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (+ export 'PATH=...ute/.cargo/bin':String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
++ PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/
+c/Program Files/Eclipse Adoptium/jdk-21.0.9.10-hotspot/bin:/mnt/c/Program Files/Eclipse 
+Adoptium/jdk-21.0.9.10-hotspot/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin:/mnt/c/Program 
+Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/libnvvp:/mnt/c/Program Files/Common 
+Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/Common Files/Oracle/Java/java8path:/mnt/c/Program Files 
+(x86)/Common Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/VMware/VMware Workstation/bin/:/mnt/c/Windows/system
+32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/
+OpenSSH/:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDO
+WS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program 
+Files/Git/cmd:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA 
+app/NvDLISR:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program 
+Files/Java/jdk-21/bin:/mnt/c/ProgramData/chocolatey/lib/maven/apache-maven-3.9.10/bin:/mnt/c/Program 
+Files/dotnet/:/mnt/e/NeoVim/bin:/mnt/e/Flutter/flutter_windows_3.35.4-stable/flutter/flutter/bin:/mnt/c/Program 
+Files/NVIDIA Corporation/Nsight Compute 2025.2.0/:/mnt/c/Program Files/PuTTY/:/mnt/c/Program Files/Git 
+LFS:/mnt/c/Program Files/Rust stable MSVC 1.90/bin:/mnt/c/Program Files/Docker/Docker/resources/bin:/mnt/c/Program 
+Files/Go/bin:/mnt/c/Gradle/gradle-9.2.0/bin:/mnt/c/Program Files/CMake/bin:/mnt/c/Program Files/nodejs/:/mnt/c/Program 
+Files/usbipd-win/:/mnt/c/Users/dogup/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCac
+he/local-packages/Python311/Scripts:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin:/mnt/c/Users/dogup
+/.unsloth/studio/unsloth_studio/Scripts:/mnt/c/Users/dogup/.cargo/bin:/mnt/c/Users/dogup/.local/bin:/mnt/c/Users/dogup/
+AppData/Local/Programs/Python/Python314/Scripts/:/mnt/c/Users/dogup/AppData/Local/Programs/Python/Python314/:/mnt/c/Use
+rs/dogup/AppData/Local/Programs/Python/Python39/Scripts/:/mnt/c/Users/dogup/AppData/Local/Programs/Python/Python39/:/mn
+t/c/Program Files/Common Files/Oracle/Java/javapath:/mnt/c/Program Files (x86)/Common 
+Files/Oracle/Java/java8path:/mnt/c/Program Files (x86)/Common Files/Oracle/Java/javapath:/mnt/c/Program Files 
+(x86)/VMware/VMware Workstation/bin/:/mnt/c/Python312/Scripts/:/mnt/c/Python312/:/mnt/c/Program Files/NVIDIA GPU 
+Computing Toolkit/CUDA/v12.6/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/libnvvp:/mnt/c/Windows/sy
+stem32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Windows/Syste
+m32/OpenSSH/:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/W
+INDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program 
+Files/Git/cmd:/mnt/c/Program Files/NVIDIA Corporation/Nsight Compute 2024.3.2/:/mnt/c/Program Files/NVIDIA 
+Corporation/NVIDIA app/NvDLISR:/mnt/c/Program Files/nodejs/:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program 
+Files/Java/jdk-23/bin:/mnt/c/ProgramData/chocolatey/lib/maven/apache-maven-3.9.10/bin:/mnt/c/Program 
+Files/dotnet/:/mnt/e/Flexpilot/bi:/mnt/c/Users/dogup/.cache/lm-studio/bin:/mnt/e/VS CODE/bin:/mnt/c/Users/dogup/AppData
+/Local/Microsoft/WindowsApps:/mnt/e/:/mnt/c/Users/dogup/AppData/Local/GitHubDesktop/bin:/mnt/c/Users/dogup/AppData/Loca
+l/PowerToys/:/mnt/c/Users/dogup/go/bin:/mnt/c/Users/dogup/AppData/Local/Programs/Antigravity/bin:/mnt/c/Users/dogup/App
+Data/Local/Voidstar/FilePilot:/mnt/c/Users/dogup/AppData/Local/Programs/Ollama:/mnt/c/Users/dogup/AppData/Local/Microso
+ft/WinGet/Packages/zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe/zig-x86_64-windows-0.15.2:/mnt/c/Users/dogup/AppData/L
+ocal/Microsoft/WinGet/Packages/astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/dogup/AppData/Roaming/np
+m:/mnt/c/Users/dogup/AppData/Local/Microsoft/WindowsApps:/mnt/e/endee:/mnt/c/Users/dogup/AppData/Local/Microsoft/WinGet
+/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin:/home/mute/.cargo/bin'
++ nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
++ nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
+src/asm/boot.asm:130: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:132: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:134: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:137: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:142: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:143: warning: uninitialized space declared in non-BSS section `.boot_bss': zeroing [-w+zeroing]
+src/asm/boot.asm:151: warning: uninitialized space declared in non-BSS section `.stack': zeroing [-w+zeroing]
++ nasm -f bin src/asm/ap_trampoline.asm -o src/asm/ap_trampoline.bin
++ gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
++ command -v zig
++ echo 'Warning: zig not found in PATH. Attempting to use existing tui.o...'
+Warning: zig not found in PATH. Attempting to use existing tui.o...
+Building Kernel...
++ echo 'Building Kernel...'
++ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS='-C code-model=kernel -C relocation-model=static -C link-arg=-Tlinker.ld 
+-C link-arg=src/asm/boot.o -C link-arg=src/asm/utils.o -C link-arg=src/c/hardware.o -C link-arg=src/c/tui.o'
++ cargo build --release --target x86_64-unknown-none
+   Compiling ainux_kernel v0.1.0 (/mnt/e/bsd_parent/Ainux/custom_kernel)
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+error[E0308]: mismatched types
+   --> src/gui/graphics.rs:117:27
+    |
+117 | ... + (r_b as i32 - r_t as i32) * i as i32 / h as i32;
+    |       ^^^^^^^^^^^^^^^^^^^... `u32`, found `i32`
+
+error[E0277]: cannot add `i32` to `u32`
+   --> src/gui/graphics.rs:117:25
+    |
+117 | ..._t + (r...
+    |       ^ no implementation for `u32 + i32`
+    |
+    = help: the trait `Add<i32>` is not implemented for `u32`
+help: the following other types implement trait `Add<Rhs>`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:22:8
+    |
+    = note: `&u32` implements `Add<u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:33:8
+    |
+    = note: `u32` implements `Add<&u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:44:8
+    |
+    = note: `&u32` implements `Add`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:99:8
+    |
+    = note: `u32` implements `Add`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:114:0
+    |
+    = note: in this macro invocation
+    = note: this error originates in the macro `forward_ref_binop` which comes from the expansion of the macro 
+`add_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> src/gui/graphics.rs:118:27
+    |
+118 | ... + (g_b as i32 - g_t as i32) * i as i32 / h as i32;
+    |       ^^^^^^^^^^^^^^^^^^^... `u32`, found `i32`
+
+error[E0277]: cannot add `i32` to `u32`
+   --> src/gui/graphics.rs:118:25
+    |
+118 | ..._t + (g...
+    |       ^ no implementation for `u32 + i32`
+    |
+    = help: the trait `Add<i32>` is not implemented for `u32`
+help: the following other types implement trait `Add<Rhs>`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:22:8
+    |
+    = note: `&u32` implements `Add<u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:33:8
+    |
+    = note: `u32` implements `Add<&u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:44:8
+    |
+    = note: `&u32` implements `Add`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:99:8
+    |
+    = note: `u32` implements `Add`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:114:0
+    |
+    = note: in this macro invocation
+    = note: this error originates in the macro `forward_ref_binop` which comes from the expansion of the macro 
+`add_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+   --> src/gui/graphics.rs:119:27
+    |
+119 | ... + (b_b as i32 - b_t as i32) * i as i32 / h as i32;
+    |       ^^^^^^^^^^^^^^^^^^^... `u32`, found `i32`
+
+error[E0277]: cannot add `i32` to `u32`
+   --> src/gui/graphics.rs:119:25
+    |
+119 | ..._t + (b...
+    |       ^ no implementation for `u32 + i32`
+    |
+    = help: the trait `Add<i32>` is not implemented for `u32`
+help: the following other types implement trait `Add<Rhs>`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:22:8
+    |
+    = note: `&u32` implements `Add<u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:33:8
+    |
+    = note: `u32` implements `Add<&u32>`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/internal_macros.rs:44:8
+    |
+    = note: `&u32` implements `Add`
+   --> /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:99:8
+    |
+    = note: `u32` implements `Add`
+   ::: /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/arith.rs:114:0
+    |
+    = note: in this macro invocation
+    = note: this error originates in the macro `forward_ref_binop` which comes from the expansion of the macro 
+`add_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0277, E0308.
+For more information about an error, try `rustc --explain E0277`.
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+warning: ainux_kernel@0.1.0: Inherited flag "-mcmodel=kernel" is not supported by the currently used CC
+error: could not compile `ainux_kernel` (bin "ainux_kernel") due to 6 previous errors
++ echo 'Cargo build failed'
++ exit 1
+Cargo build failed

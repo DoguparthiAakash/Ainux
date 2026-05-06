@@ -1,5 +1,5 @@
 // =============================================================================
-// Ainux DCustom — Whiptail-Style TUI Customizer
+// Ainux DCustom — Sovereign TUI Customizer
 // All colors are derived at render-time from video::THEME so that
 // every dialog automatically adapts when the user changes the theme.
 // =============================================================================
@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::format;
 use crate::drivers::video::{self, THEME};
 use crate::drivers::keyboard;
+use crate::drivers::colors::Color;
 
 /// Computed palette — derived from THEME at render time.
 /// Never store these globally; call theme_colors() fresh on each render.
@@ -27,15 +28,10 @@ pub struct Palette {
 /// This is the single source of truth for ALL dcustom/settings colors.
 pub fn theme_colors() -> Palette {
     let t = THEME.lock();
-    // Derive box background: darken the theme bg slightly
-    let box_bg = blend_dark(t.bg, 0x18);
-    // Derive shadow: almost pure black tinted with bg
+    let box_bg = t.dialog_bg;
     let shadow  = blend_dark(t.bg, 0x08);
-    // Title bar: use accent color
     let title   = t.accent;
-    // Selection: slightly brighter accent
-    let sel     = brighten(t.accent, 0x20);
-    // Text: theme fg
+    let sel     = t.sel;
     let text    = t.fg;
     let screen  = t.bg;
     drop(t);
@@ -85,11 +81,14 @@ pub const WP_SEL:    u32 = 0x009AC2FF;
 pub const WP_TEXT:   u32 = 0x00C0CAF5; // matches default fg
 pub const WP_WHITE:  u32 = 0x00FFFFFF;
 
-const COLOR_LIST: [(&str, u32); 12] = [
-    ("Black",   0x00000000), ("White",   0x00FFFFFF), ("Red",     0x00FF0000),
-    ("Green",   0x0000FF00), ("Blue",    0x000000FF), ("Yellow",  0x00FFFF00),
-    ("Cyan",    0x0000FFFF), ("Magenta", 0x00FF00FF), ("Silver",  0x00C0C0C0),
-    ("Gray",    0x00808080), ("Orange",  0x00FFA500), ("SkyBlue", 0x0087CEEB),
+// Color target labels — maps a target index to a friendly name
+const COLOR_TARGETS: [(&str, &str); 6] = [
+    ("1", "Desktop Background   Screen fill color"),
+    ("2", "Text Foreground      Body and shell text"),
+    ("3", "Header / Accent      Titles and highlights"),
+    ("4", "Root Prompt Color    root@ainux: color"),
+    ("5", "Dialog Background    Settings box fill"),
+    ("6", "Selection Highlight  Active item glow"),
 ];
 
 pub struct Dialog {
@@ -107,7 +106,7 @@ pub fn main_personalization() {
     let mut dialog = Dialog {
         title: " Ainux Sovereign Customization Tool ",
         options: alloc::vec![
-            String::from("1 Change UI Colors     Configure desktop color themes"),
+            String::from("1 Theme & Colors       Select presets or edit colors"),
             String::from("2 System Appearance    Set font scaling and density"),
             String::from("3 Load Defaults        Reset all theme settings"),
             String::from("4 About dcustom        Information about this tool")
@@ -127,40 +126,46 @@ pub fn main_personalization() {
         if let Some(ch) = keyboard::pop_char() {
             dirty = true;
             match ch {
-                '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
-                '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
-                '\u{2190}' => if dialog.active_btn == 2 { dialog.active_btn = 1; },
-                '\u{2192}' => if dialog.active_btn == 1 { dialog.active_btn = 2; },
+                '\u{2191}' => {
+                    if dialog.active_btn != 0 { dialog.active_btn = 0; }
+                    else if dialog.selected > 0 { dialog.selected -= 1; }
+                },
+                '\u{2193}' => {
+                    if dialog.active_btn == 0 {
+                        if dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; }
+                        else { dialog.active_btn = 1; }
+                    }
+                },
+                '\u{2190}' => if dialog.active_btn == 2 { dialog.active_btn = 1; } else if dialog.active_btn == 1 { dialog.active_btn = 2; },
+                '\u{2192}' => if dialog.active_btn == 1 { dialog.active_btn = 2; } else if dialog.active_btn == 2 { dialog.active_btn = 1; },
                 '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
                 '\n' => {
                     if dialog.active_btn == 2 { video::clear(); return; } // Finish/Exit
                     if dialog.active_btn == 1 || dialog.active_btn == 0 {
-                        dirty = true; // re-render after sub-menu returns
                         match dialog.selected {
-                            0 => color_menu(),
+                            0 => theme_and_custom_menu(),
                             1 => appearance_menu(),
                             2 => reset_theme(),
                             3 => about_dialog(),
                             _ => {}
                         }
+                        dirty = true;
                     }
                 }
-                '\x1B' => { video::clear(); return; }, // ESC
-                _ => { dirty = false; } // unknown key — don't flicker
+                '\x1B' => { video::clear(); return; },
+                _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
     }
 }
 
-fn color_menu() {
+fn theme_and_custom_menu() {
     let mut dialog = Dialog {
-        title: " Color Options ",
+        title: " Theme & Color Settings ",
         options: alloc::vec![
-            String::from("Desktop Background"),
-            String::from("Text Foreground"),
-            String::from("Header Accent Color"),
-            String::from("Root Prompt Color")
+            String::from("1 Choose Theme Preset   Select from TokyoNight, Gruvbox..."),
+            String::from("2 Custom Color Editor   Modify individual theme slots")
         ],
         selected: 0,
         active_btn: 0,
@@ -182,9 +187,14 @@ fn color_menu() {
                 '\u{2192}' => if dialog.active_btn == 1 { dialog.active_btn = 2; },
                 '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
                 '\n' => {
-                    if dialog.active_btn == 2 { return; } // Back
-                    pick_color(dialog.selected);
+                    if dialog.active_btn == 2 { return; }
+                    match dialog.selected {
+                        0 => theme_preset_menu(),
+                        1 => color_menu(),
+                        _ => {}
+                    }
                 }
+                '\x1B' => return,
                 _ => { dirty = false; }
             }
         }
@@ -192,10 +202,14 @@ fn color_menu() {
     }
 }
 
-fn pick_color(target: usize) {
+fn theme_preset_menu() {
     let mut dialog = Dialog {
-        title: " Choose a Color ",
-        options: COLOR_LIST.iter().map(|(n, _)| String::from(*n)).collect(),
+        title: " Select Theme Preset ",
+        options: alloc::vec![
+            String::from("TokyoNight   (Default Dark Blue)"),
+            String::from("Gruvbox      (Warm Retro Tones)"),
+            String::from("Nord         (Arctic Frost Blue)")
+        ],
         selected: 0,
         active_btn: 0,
     };
@@ -216,23 +230,287 @@ fn pick_color(target: usize) {
                 '\u{2192}' => if dialog.active_btn == 1 { dialog.active_btn = 2; },
                 '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
                 '\n' => {
-                    if dialog.active_btn == 2 { return; } // Back
-                    let color = COLOR_LIST[dialog.selected].1;
-                    let mut t = THEME.lock();
-                    match target {
-                        0 => t.bg = color,
-                        1 => t.fg = color,
-                        2 => t.accent = color,
-                        3 => t.root = color,
+                    if dialog.active_btn == 2 { return; }
+                    match dialog.selected {
+                        0 => apply_preset_tokyo(),
+                        1 => apply_preset_gruvbox(),
+                        2 => apply_preset_nord(),
                         _ => {}
                     }
                     return;
                 }
+                '\x1B' => return,
                 _ => { dirty = false; }
             }
         }
         unsafe { core::arch::asm!("hlt"); }
     }
+}
+
+pub fn color_menu() {
+    // Build option list from COLOR_TARGETS, showing current value for each
+    let mut selected = 0usize;
+    let mut active_btn = 0usize;
+    let mut dirty = true;
+
+    loop {
+        if dirty {
+            draw_background();
+            draw_color_editor(selected, active_btn);
+            dirty = false;
+        }
+        if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
+            match ch {
+                '\u{2191}' => if active_btn == 0 && selected > 0 { selected -= 1; },
+                '\u{2193}' => if active_btn == 0 && selected < COLOR_TARGETS.len() - 1 { selected += 1; },
+                '\u{2190}' => if active_btn == 2 { active_btn = 1; },
+                '\u{2192}' => if active_btn == 1 { active_btn = 2; },
+                '\t' => active_btn = (active_btn + 1) % 3,
+                '\n' => {
+                    if active_btn == 2 { return; }
+                    pick_color(selected);
+                    dirty = true;
+                }
+                '\x1B' => return,
+                _ => { dirty = false; }
+            }
+        }
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+/// Draw the color editor panel with live swatches for each theme slot.
+fn draw_color_editor(selected: usize, active_btn: usize) {
+    let p = theme_colors();
+    let w = 66usize;
+    let h = COLOR_TARGETS.len() + 9;
+    let x = (80 - w) / 2;
+    let y = (25 - h) / 2;
+
+    video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+    video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+    draw_box_lines(x, y, w, h, p.text, p.bg);
+
+    let title = " Sovereign Color Editor ";
+    video::put_str_at(x + (w - title.len()) / 2, y, title, p.white, p.title);
+
+    // Column headers
+    video::put_str_at(x + 3,  y + 2, "  # Target               Current        Swatch", p.white, p.bg);
+
+    // Read current theme values
+    let t = THEME.lock();
+    let curr = [t.bg, t.fg, t.accent, t.root, p.bg, p.sel];
+    drop(t);
+
+    for (i, &(num, label)) in COLOR_TARGETS.iter().enumerate() {
+        let is_sel = active_btn == 0 && i == selected;
+        let (row_fg, row_bg) = if is_sel { (0x00FFFFFF, p.sel) } else { (p.text, p.bg) };
+
+        let prefix = if is_sel { " -> " } else { "    " };
+        let row = format!("{}{} {:<22}", prefix, num, label);
+        video::put_str_at(x + 2, y + 3 + i, &row, row_fg, row_bg);
+
+        // Draw the swatch (3 chars wide, filled with the actual color)
+        let swatch_x = x + w - 11;
+        let swatch_y = y + 3 + i;
+        video::draw_rect_grid(swatch_x, swatch_y, 7, 1, curr[i], curr[i]);
+        // Overlay the hex value in contrasting text
+        let hex = format!("{:06X}", curr[i] & 0xFFFFFF);
+        // pick a contrasting fg for the hex label
+        let brightness = ((curr[i] >> 16) & 0xFF) as u32
+            + ((curr[i] >> 8) & 0xFF) as u32
+            + (curr[i] & 0xFF) as u32;
+        let hex_fg = if brightness > 384 { 0x00000000 } else { 0x00FFFFFF };
+        video::put_str_at(swatch_x, swatch_y, &hex, hex_fg, curr[i]);
+    }
+
+    // Preset theme buttons (below the list)
+    let preset_y = y + h - 4;
+    video::put_str_at(x + 3, preset_y - 1, "--- Quick Presets: Press 1-3 to apply ---", p.text, p.bg);
+    video::put_str_at(x + 3, preset_y,     "[1] TokyoNight", 0x007AA2F7, p.bg);
+    video::put_str_at(x + 20, preset_y,    "[2] Gruvbox",    0x00D65D0E, p.bg);
+    video::put_str_at(x + 34, preset_y,    "[3] Nord",       0x0081A1C1, p.bg);
+
+    // Navigation buttons
+    let btn_y = y + h - 2;
+    let (p_fg, p_bg) = if active_btn == 1 { (0x00000000, 0x00FFFFFF) } else { (p.text, p.bg) };
+    let (s_fg, s_bg) = if active_btn == 2 { (0x00000000, 0x00FFFFFF) } else { (p.text, p.bg) };
+
+    let p_arr = if active_btn == 1 { "-> " } else { "   " };
+    let s_arr = if active_btn == 2 { "-> " } else { "   " };
+
+    let left_x  = x + (w / 2) - 16;
+    let right_x = x + (w / 2) + 2;
+
+    video::put_str_at(left_x,     btn_y, p_arr,  p_fg, p_bg);
+    video::put_str_at(left_x + 3, btn_y, "[ Select ]", p_fg, p_bg);
+    video::put_str_at(right_x,     btn_y, s_arr,  s_fg, s_bg);
+    video::put_str_at(right_x + 3, btn_y, "[  Back  ]", s_fg, s_bg);
+}
+
+/// Color picker: shows all 18 palette entries with swatches
+fn pick_color(target: usize) {
+    let target_name = match target {
+        0 => "Background",
+        1 => "Foreground",
+        2 => "Accent / Header",
+        3 => "Root Prompt",
+        4 => "Dialog BG",
+        5 => "Selection",
+        _ => "Color",
+    };
+
+    let mut selected = 0usize;
+    let mut active_btn = 0usize;
+    let mut dirty = true;
+
+    loop {
+        if dirty {
+            draw_background();
+            draw_color_picker(target_name, selected, active_btn);
+            dirty = false;
+        }
+        if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
+            match ch {
+                '\u{2191}' => if active_btn == 0 && selected > 0 { selected -= 1; },
+                '\u{2193}' => if active_btn == 0 && selected < Color::LIST.len() - 1 { selected += 1; },
+                '\u{2190}' => if active_btn == 2 { active_btn = 1; },
+                '\u{2192}' => if active_btn == 1 { active_btn = 2; },
+                '\t' => active_btn = (active_btn + 1) % 3,
+                '\n' => {
+                    if active_btn == 2 { return; }
+                    // Apply the selected color to the correct theme slot
+                    let color = Color::LIST[selected].1;
+                    apply_color(target, color);
+                    return;
+                }
+                '1' => { apply_preset_tokyo(); return; }
+                '2' => { apply_preset_gruvbox(); return; }
+                '3' => { apply_preset_nord(); return; }
+                '\x1B' => return,
+                _ => { dirty = false; }
+            }
+        }
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+/// Draw the 18-color picker with swatches
+fn draw_color_picker(target_name: &str, selected: usize, active_btn: usize) {
+    let p = theme_colors();
+    let w = 60usize;
+    let h = Color::LIST.len() + 8;
+    let x = (80 - w) / 2;
+    let y = (25usize).saturating_sub(h) / 2;
+
+    video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
+    video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
+    draw_box_lines(x, y, w, h, p.text, p.bg);
+
+    let title_str = format!(" Set: {} ", target_name);
+    video::put_str_at(x + (w - title_str.len()) / 2, y, &title_str, p.white, p.title);
+    video::put_str_at(x + 3, y + 2, "  Name          Swatch   Hex Code", p.white, p.bg);
+
+    for (i, &(name, color)) in Color::LIST.iter().enumerate() {
+        let is_sel = active_btn == 0 && i == selected;
+        let (row_fg, row_bg) = if is_sel { (0x00FFFFFF, p.sel) } else { (p.text, p.bg) };
+
+        let prefix = if is_sel { " -> " } else { "    " };
+        let name_col = format!("{}{:<12}", prefix, name);
+        video::put_str_at(x + 2, y + 3 + i, &name_col, row_fg, row_bg);
+
+        // Swatch (5 chars)
+        let sw_x = x + 20;
+        video::draw_rect_grid(sw_x, y + 3 + i, 5, 1, color, color);
+
+        // Hex label over swatch
+        let hex = format!("{:06X}", color & 0xFFFFFF);
+        let brightness = ((color >> 16) & 0xFF) + ((color >> 8) & 0xFF) + (color & 0xFF);
+        let hex_fg = if brightness > 384 { 0x00000000 } else { 0x00FFFFFF };
+        video::put_str_at(sw_x, y + 3 + i, "     ", hex_fg, color); // fill
+
+        // Hex value to the right of swatch
+        video::put_str_at(x + 27, y + 3 + i, &format!("#{}", hex), p.text, row_bg);
+    }
+
+    // Preset shortcuts
+    let btn_y = y + h - 2;
+    let (p_fg, p_bg) = if active_btn == 1 { (0x00000000, 0x00FFFFFF) } else { (p.text, p.bg) };
+    let (s_fg, s_bg) = if active_btn == 2 { (0x00000000, 0x00FFFFFF) } else { (p.text, p.bg) };
+
+    let p_arr = if active_btn == 1 { "-> " } else { "   " };
+    let s_arr = if active_btn == 2 { "-> " } else { "   " };
+
+    let left_x  = x + (w / 2) - 16;
+    let right_x = x + (w / 2) + 2;
+
+    video::put_str_at(left_x,     btn_y, p_arr,  p_fg, p_bg);
+    video::put_str_at(left_x + 3, btn_y, "[ Apply  ]", p_fg, p_bg);
+    video::put_str_at(right_x,     btn_y, s_arr,  s_fg, s_bg);
+    video::put_str_at(right_x + 3, btn_y, "[  Back  ]", s_fg, s_bg);
+}
+
+/// Apply color to the correct theme slot by target index
+fn apply_color(target: usize, color: u32) {
+    let mut t = THEME.lock();
+    match target {
+        0 => t.bg = color,
+        1 => t.fg = color,
+        2 => t.accent = color,
+        3 => t.root = color,
+        4 => t.dialog_bg = color,
+        5 => t.sel = color,
+        _ => {}
+    }
+    crate::config::sync_from_theme();
+    crate::config::save();
+}
+
+/// Preset: apply full TokyoNight palette in one shot
+pub fn apply_preset_tokyo() {
+    let mut t = THEME.lock();
+    t.bg     = Color::TOKYO_BG;
+    t.fg     = Color::TOKYO_FG;
+    t.accent = Color::TOKYO_ACCENT;
+    t.root   = Color::TOKYO_SUCCESS;
+    t.dialog_bg = 0x0016161E;
+    t.sel    = 0x002F334D;
+    t.font_size = 1;
+    drop(t);
+    crate::config::sync_from_theme();
+    crate::config::save();
+}
+
+/// Preset: apply full Gruvbox Dark palette
+pub fn apply_preset_gruvbox() {
+    let mut t = THEME.lock();
+    t.bg     = Color::GRUV_BG;
+    t.fg     = Color::GRUV_FG;
+    t.accent = Color::GRUV_ACCENT;
+    t.root   = Color::GRUV_GREEN;
+    t.dialog_bg = 0x00282828;
+    t.sel    = 0x00504945;
+    t.font_size = 1;
+    drop(t);
+    crate::config::sync_from_theme();
+    crate::config::save();
+}
+
+/// Preset: apply full Nord palette
+pub fn apply_preset_nord() {
+    let mut t = THEME.lock();
+    t.bg     = Color::NORD_BG;
+    t.fg     = Color::NORD_FG;
+    t.accent = Color::NORD_BLUE;
+    t.root   = 0x00A3BE8C; // Nord green
+    t.dialog_bg = 0x002E3440;
+    t.sel    = 0x004C566A;
+    t.font_size = 1;
+    drop(t);
+    crate::config::sync_from_theme();
+    crate::config::save();
 }
 
 fn appearance_menu() {
@@ -344,10 +622,16 @@ fn about_dialog() {
 pub fn draw_background() {
     let p = theme_colors();
     let (cols, rows) = (80, 25);
+    // Full screen fill
     video::draw_rect_grid(0, 0, cols, rows, p.white, p.screen);
-    video::put_str_at(1, 0, " Ainux Configuration Hub (Sovereign) ", p.text, p.bg);
+    // Title bar
+    video::draw_rect_grid(0, 0, cols, 1, p.white, p.title);
+    video::put_str_at(2, 0, "Ainux OS  |  Configuration Hub", 0x00FFFFFF, p.title);
+    // Status bar at bottom
     video::draw_rect_grid(0, rows - 1, cols, 1, p.white, p.bg);
-    video::put_str_at(1, rows - 1, " <Tab>/<Arrows> Move | <Enter> Select ", p.text, p.bg);
+    video::put_str_at(1, rows - 1,
+        "Up/Down:Move  Tab:Switch Buttons  Enter:Select  Esc:Back",
+        p.text, p.bg);
 }
 
 pub fn draw_dialog(d: &Dialog) {
@@ -357,43 +641,71 @@ pub fn draw_dialog(d: &Dialog) {
     let x = (80 - w) / 2;
     let y = (25 - h) / 2;
 
+    // Shadow + box fill + border
     video::draw_rect_grid(x + 1, y + 1, w, h, p.shadow, p.shadow);
     video::draw_rect_grid(x, y, w, h, p.bg, p.bg);
-    draw_box_lines(x, y, w, h, p.text, p.bg);
+    draw_box_lines(x, y, w, h, p.title, p.bg);
 
+    // Title
     let title_x = x + (w - d.title.len()) / 2;
     video::put_str_at(title_x, y, d.title, p.white, p.title);
 
+    // --- Menu items ---
     for (i, opt) in d.options.iter().enumerate() {
-        let (fg, bg) = if d.active_btn == 0 && i == d.selected {
-            (p.white, p.sel)
+        let is_selected = d.active_btn == 0 && i == d.selected;
+        let (fg, bg) = if is_selected {
+            (0x00FFFFFF, p.sel)
         } else {
             (p.text, p.bg)
         };
-        let display = if opt.len() > w - 6 { &opt[..w - 6] } else { opt };
-        video::put_str_at(x + 3, y + 3 + i, &format!(" {:<width$} ", display, width = w - 8), fg, bg);
+        let prefix = if is_selected { "-> " } else { "   " };
+        let display = if opt.len() > w - 9 { &opt[..w - 9] } else { opt };
+        let line = format!("{}{:<width$}", prefix, display, width = w - 9);
+        video::put_str_at(x + 2, y + 3 + i, &line, fg, bg);
     }
 
+    // --- Button row ---
+    // Determine labels
+    let is_sovereign = d.title.contains("Sovereign") || d.title.contains("Color") || d.title.contains("Set:");
+    let p_label = if is_sovereign { "[ Select ]" } else { "[   Ok   ]" };
+    let s_label = if is_sovereign { "[ Finish ]" } else { "[  Back  ]" };
+
     let btn_y = y + h - 3;
-    let (p_fg, p_bg) = if d.active_btn == 1 { (p.white, p.sel) } else { (p.text, p.bg) };
-    let (s_fg, s_bg) = if d.active_btn == 2 { (p.white, p.sel) } else { (p.text, p.bg) };
 
-    let p_txt = if d.title.contains("Sovereign") { " <Select> " } else { " <  Ok  > " };
-    let s_txt = if d.title.contains("Sovereign") { " <Finish> " } else { " < Back > " };
+    // Positions: left button at ~1/3, right at ~2/3
+    let left_x  = x + (w / 2) - 16;
+    let right_x = x + (w / 2) + 2;
 
-    video::put_str_at(x + (w / 2) - 13, btn_y, p_txt, p_fg, p_bg);
-    video::put_str_at(x + (w / 2) + 3,  btn_y, s_txt, s_fg, s_bg);
+    // Left button (action: Select/Ok)
+    let (p_fg, p_bg) = if d.active_btn == 1 {
+        (0x00000000, 0x00FFFFFF)  // Inverse = clearly selected
+    } else {
+        (p.text, p.bg)
+    };
+    let p_arrow = if d.active_btn == 1 { "-> " } else { "   " };
+    video::put_str_at(left_x,     btn_y, p_arrow,  p_fg, p_bg);
+    video::put_str_at(left_x + 3, btn_y, p_label,  p_fg, p_bg);
+
+    // Right button (action: Finish/Back)
+    let (s_fg, s_bg) = if d.active_btn == 2 {
+        (0x00000000, 0x00FFFFFF)  // Inverse = clearly selected
+    } else {
+        (p.text, p.bg)
+    };
+    let s_arrow = if d.active_btn == 2 { "-> " } else { "   " };
+    video::put_str_at(right_x,     btn_y, s_arrow,  s_fg, s_bg);
+    video::put_str_at(right_x + 3, btn_y, s_label,  s_fg, s_bg);
 }
 
 pub fn draw_box_lines(x: usize, y: usize, w: usize, h: usize, fg: u32, bg: u32) {
-    video::put_char_at(x, y, '╔', fg, bg);
-    video::put_char_at(x + w - 1, y, '╗', fg, bg);
-    for i in 1..(w - 1) { video::put_char_at(x + i, y, '═', fg, bg); }
-    for i in 1..(h - 1) { video::put_char_at(x, y + i, '║', fg, bg); }
-    for i in 1..(h - 1) { video::put_char_at(x + w - 1, y + i, '║', fg, bg); }
-    for i in 1..(w - 1) { video::put_char_at(x + i, y + h - 1, '═', fg, bg); }
-    video::put_char_at(x, y + h - 1, '╚', fg, bg);
-    video::put_char_at(x + w - 1, y + h - 1, '╝', fg, bg);
+    video::put_char_at(x, y, '\u{2554}', fg, bg); // ╔
+    video::put_char_at(x + w - 1, y, '\u{2557}', fg, bg); // ╗
+    for i in 1..(w - 1) { video::put_char_at(x + i, y, '\u{2550}', fg, bg); } // ═
+    for i in 1..(h - 1) { video::put_char_at(x, y + i, '\u{2551}', fg, bg); } // ║
+    for i in 1..(h - 1) { video::put_char_at(x + w - 1, y + i, '\u{2551}', fg, bg); } // ║
+    for i in 1..(w - 1) { video::put_char_at(x + i, y + h - 1, '\u{2550}', fg, bg); } // ═
+    video::put_char_at(x, y + h - 1, '\u{255A}', fg, bg); // ╚
+    video::put_char_at(x + w - 1, y + h - 1, '\u{255D}', fg, bg); // ╝
 }
 
 pub fn draw_input_box(title: &'static str, prompt: &str, buffer: &str, masked: bool) {
@@ -430,10 +742,7 @@ pub fn draw_input_box(title: &'static str, prompt: &str, buffer: &str, masked: b
 }
 
 fn reset_theme() {
-    let mut t = THEME.lock();
-    t.bg     = 0x001A1B26; // Nvix dark (matches global theme default)
-    t.fg     = 0x00C0CAF5; // Soft blue-white
-    t.accent = 0x007AA2F7; // Neovim accent blue
-    t.root   = 0x009ECE6A; // Neovim accent green
-    t.font_size = 1;
+    apply_preset_tokyo();
+    crate::config::sync_from_theme();
+    crate::config::save();
 }

@@ -168,10 +168,12 @@ pub extern "C" fn rust_keyboard_handler() {
     unsafe {
         let status = inb(0x64);
         if (status & 1) == 0 {
+            notify_eoi(1);
             return;
         }
 
         let scancode = inb(0x60);
+        notify_eoi(1);
         
         if scancode == 0xE0 {
             EXTENDED = true;

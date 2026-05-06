@@ -31,17 +31,19 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
             case 0x2502: // Vertical line │
                 for(int i=0; i<12; i++) { synth[i] = 0x18; } break;
             case 0x250C: // Top-Left ┌
-                synth[5] = 0xF0; synth[6] = 0xF0;
-                for(int i=7; i<12; i++) { synth[i] = 0x10; } break;
+                synth[5] = 0xFC; synth[6] = 0xFC;
+                for(int i=7; i<12; i++) { synth[i] = 0x30; } break;
             case 0x2510: // Top-Right ┐
-                synth[5] = 0x0F; synth[6] = 0x0F;
-                for(int i=7; i<12; i++) { synth[i] = 0x08; } break;
+                synth[5] = 0x3F; synth[6] = 0x3F;
+                for(int i=7; i<12; i++) { synth[i] = 0x0C; } break;
             case 0x2514: // Bottom-Left └
-                for(int i=0; i<5; i++) { synth[i] = 0x10; }
-                synth[5] = 0xF0; synth[6] = 0xF0; break;
+                for(int i=0; i<5; i++) { synth[i] = 0x30; }
+                synth[5] = 0xFC; synth[6] = 0xFC; break;
             case 0x2518: // Bottom-Right ┘
-                for(int i=0; i<5; i++) { synth[i] = 0x08; }
-                synth[5] = 0x0F; synth[6] = 0x0F; break;
+                for(int i=0; i<5; i++) { synth[i] = 0x0C; }
+                synth[5] = 0x3F; synth[6] = 0x3F; break;
+            
+            // DOUBLE LINES (Corrected for MSB-first)
             case 0x2550: // Double Horizontal ═
                 synth[4] = 0xFF; synth[7] = 0xFF; break;
             case 0x2551: // Double Vertical ║
@@ -58,6 +60,7 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
             case 0x255D: // Double Bottom-Right ╝
                 for(int i=0; i<4; i++) { synth[i] = 0x24; }
                 synth[4] = 0x3F; synth[5] = 0x20; synth[6] = 0x20; synth[7] = 0x3F; break;
+
             case 0x2580: // Upper block ▀
                 for(int i=0; i<6; i++) { synth[i] = 0xFF; } break;
             case 0x203E: // Overline ‾
@@ -76,7 +79,7 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
         for (int dy = 0; dy < 12; dy++) {
             uint8_t row = synth[dy];
             for (int dx = 0; dx < 8; dx++) {
-                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
+                uint32_t color = (row & (0x80 >> dx)) ? fg_color : bg_color;
                 gfx_put_pixel_safe(px + dx, py + dy, color);
             }
         }
@@ -84,7 +87,7 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
         for (int dy = 0; dy < 8; dy++) {
             uint8_t row = glyph8x8[dy];
             for (int dx = 0; dx < 8; dx++) {
-                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
+                uint32_t color = (row & (0x80 >> dx)) ? fg_color : bg_color;
                 gfx_put_pixel_safe(px + dx, py + dy, color);
             }
         }

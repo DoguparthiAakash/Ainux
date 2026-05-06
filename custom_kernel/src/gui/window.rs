@@ -2,6 +2,7 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 use crate::gui::graphics::{Color, Graphics};
+use crate::drivers::video::THEME;
 
 #[derive(Clone)]
 pub struct Window {
@@ -19,6 +20,10 @@ pub struct Window {
 
 impl Window {
     pub fn new(id: usize, x: isize, y: isize, w: usize, h: usize, title: &str) -> Window {
+        let theme = THEME.lock();
+        let bg_color = 0xFF000000 | (theme.bg & 0xFFFFFF);
+        drop(theme);
+
         Window {
             id,
             x,
@@ -26,7 +31,7 @@ impl Window {
             width: w,
             height: h,
             title: String::from(title),
-            content: alloc::vec![0xFFFFFFFF; w * h], // White background
+            content: alloc::vec![bg_color; w * h],
             dragging: false,
             is_maximized: false,
             is_minimized: false,
@@ -34,49 +39,58 @@ impl Window {
     }
 
     pub fn get_close_button_rect(&self) -> crate::gui::rect::Rect {
-        crate::gui::rect::Rect::new(self.x + self.width as isize - 24, self.y + 4, 16, 16)
-    }
-
-    pub fn get_max_button_rect(&self) -> crate::gui::rect::Rect {
-        crate::gui::rect::Rect::new(self.x + self.width as isize - 44, self.y + 4, 16, 16)
+        crate::gui::rect::Rect::new(self.x + 10, self.y + 8, 12, 12) // Mac style left
     }
 
     pub fn get_min_button_rect(&self) -> crate::gui::rect::Rect {
-        crate::gui::rect::Rect::new(self.x + self.width as isize - 64, self.y + 4, 16, 16)
+        crate::gui::rect::Rect::new(self.x + 30, self.y + 8, 12, 12)
+    }
+
+    pub fn get_max_button_rect(&self) -> crate::gui::rect::Rect {
+        crate::gui::rect::Rect::new(self.x + 50, self.y + 8, 12, 12)
     }
 
     pub fn draw(&self, buffer: &mut [u32], stride: usize) {
         if self.is_minimized { return; }
         
-        // 1. Draw Titlebar (Modern Gradient/Rounded look)
-        let title_color = 0xFF5555FF; // Modern Blue
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, self.y as usize, self.width, 24, title_color);
+        let theme = THEME.lock();
+        let bg = 0xFF000000 | (theme.bg & 0xFFFFFF);
+        let fg = 0xFF000000 | (theme.fg & 0xFFFFFF);
+        let accent = 0xFF000000 | (theme.accent & 0xFFFFFF);
+        drop(theme);
+
+        // Shadow
+        Graphics::draw_shadow(buffer, stride, self.x as usize, self.y as usize, self.width, self.height, 8);
+
+        // Window Frame (Rounded Glass)
+        let frame_col = (bg & 0x00FFFFFF) | 0xEE000000;
+        Graphics::draw_rounded_rect(buffer, stride, self.x as usize, self.y as usize, self.width, self.height, 12, frame_col);
         
-        // 2. Draw Window Content Shadow/Border
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, (self.y + 24) as usize, self.width, self.height - 24, 0xFFEEEEEE);
+        // Titlebar Gradient
+        let g1 = bg;
+        let g2 = (bg & 0x00FFFFFF) | 0xFF000000; // Slightly different alpha/shade maybe? 
+        // For now just use bg and a darkened version
+        let g2_dark = 0xFF000000 | (((bg >> 16 & 0xFF) * 3/4) << 16) | (((bg >> 8 & 0xFF) * 3/4) << 8) | ((bg & 0xFF) * 3/4);
 
-        // 3. Draw Buttons
-        // Close [X] - Red
-        let close_rect = self.get_close_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, close_rect.x as usize, close_rect.y as usize, close_rect.w, close_rect.h, 0xFFFF4444);
+        Graphics::draw_gradient_h(buffer, stride, self.x as usize, self.y as usize, self.width, 28, g1, g2_dark);
         
-        // Max [ ] - Green
-        let max_rect = self.get_max_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, max_rect.x as usize, max_rect.y as usize, max_rect.w, max_rect.h, 0xFF44FF44);
+        // Title Text (Centered)
+        let title_x = self.x as usize + (self.width - self.title.len() * 8) / 2;
+        Graphics::draw_text(buffer, stride, title_x, self.y as usize + 8, &self.title, fg);
 
-        // Min [-] - Yellow
-        let min_rect = self.get_min_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, min_rect.x as usize, min_rect.y as usize, min_rect.w, min_rect.h, 0xFFFFFF44);
+        // Mac Style Buttons
+        Graphics::draw_rounded_rect(buffer, stride, self.x as usize + 10, self.y as usize + 8, 12, 12, 6, 0xFFF7768E); // Close
+        Graphics::draw_rounded_rect(buffer, stride, self.x as usize + 30, self.y as usize + 8, 12, 12, 6, 0xFFE0AF68); // Min
+        Graphics::draw_rounded_rect(buffer, stride, self.x as usize + 50, self.y as usize + 8, 12, 12, 6, 0xFF9ECE6A); // Max
 
-        // 4. Content
-        let content_w = self.width;
-        let content_h = self.height - 24;
+        // Content
+        let content_w = self.width - 4; // Padding
+        let content_h = self.height - 32;
         if self.content.len() >= content_w * content_h {
-             Graphics::copy_buffer(buffer, stride, &self.content, content_w, self.x as usize, (self.y + 24) as usize, content_w, content_h);
+             Graphics::copy_buffer(buffer, stride, &self.content, content_w, (self.x + 2) as usize, (self.y + 30) as usize, content_w, content_h);
         }
     }
 
-    // Simple paint helper for content
     pub fn fill_content(&mut self, color: u32) {
         for pixel in self.content.iter_mut() {
             *pixel = color;

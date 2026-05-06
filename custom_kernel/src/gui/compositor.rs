@@ -7,7 +7,6 @@ use spin::Mutex;
 const MAX_WINDOWS: usize = 16;
 
 pub static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
-
 pub static BACKBUFFER: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 pub struct Compositor;
@@ -25,7 +24,7 @@ impl Compositor {
          let h = *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock();
          let mut bb = BACKBUFFER.lock();
          if w > 0 && h > 0 {
-             bb.resize(w * h, 0); // Init backbuffer
+             bb.resize(w * h, 0); 
          }
     }
 
@@ -33,7 +32,6 @@ impl Compositor {
         let mut wins = WINDOWS.lock();
         let mouse_point = crate::gui::rect::Point { x: mx, y: my };
         
-        // 1. Check for Dragging/Focus (from top to bottom)
         let mut focused_idx: Option<usize> = None;
         let mut dragging_occurred = false;
 
@@ -44,14 +42,10 @@ impl Compositor {
             let title_rect = crate::gui::rect::Rect::new(win.x, win.y, win.width, 24);
 
             if buttons & 1 != 0 {
-                // Left Click
                 if !dragging_occurred && title_rect.contains(mouse_point) {
-                    // Check buttons first
                     if win.get_close_button_rect().contains(mouse_point) {
-                         // Close handled in next phase? Or here.
                          continue; 
                     }
-                    
                     win.dragging = true;
                     focused_idx = Some(i);
                     dragging_occurred = true;
@@ -63,14 +57,11 @@ impl Compositor {
             }
 
             if win.dragging {
-                // Update position (simplified dx/dy is needed, using absolute for now)
-                // In a real OS you'd track the offset from mouse to window corner
                 win.x = mx - (win.width / 2) as isize;
                 win.y = my - 12;
             }
         }
 
-        // 2. Move focused window to top
         if let Some(idx) = focused_idx {
             let win = wins.remove(idx);
             wins.push(win);
@@ -87,9 +78,8 @@ impl Compositor {
         }
         let bb = &mut *bb_lock;
 
-        // Mouse State
         let (mx, my) = crate::drivers::mouse::get_position();
-        let buttons = unsafe { crate::drivers::mouse::get_buttons() }; // Need to expose buttons
+        let buttons = crate::drivers::mouse::get_buttons();
         Self::handle_mouse(mx, my, buttons);
 
         crate::gui::desktop::draw_desktop(bb, w, h);
@@ -101,23 +91,14 @@ impl Compositor {
         
         crate::gui::desktop::draw_overlay(bb, w, h);
         
-        // Modern Cursor (Translucent Arrow)
-        Graphics::draw_rect_to_buffer(bb, w, mx as usize, my as usize, 8, 8, 0xFFFFFFFF);
+        // Premium Cursor (Translucent Rounded Arrow)
+        Graphics::draw_rounded_rect(bb, w, mx as usize, my as usize, 12, 12, 2, 0xCCFFFFFF);
+        Graphics::draw_rect_to_buffer(bb, w, mx as usize + 2, my as usize + 2, 8, 8, 0xFF000000);
         
         unsafe {
              let fb_addr = *crate::drivers::video::FRAMEBUFFER_ADDR.lock();
-             let fb_pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock();
              let fb_ptr = fb_addr as *mut u32;
-             let stride = fb_pitch / 4;
-             
-             for y in 0..h {
-                 for x in 0..w {
-                     let val = bb[y * w + x];
-                     *fb_ptr.add(y * stride + x) = val;
-                 }
-             }
+             core::ptr::copy_nonoverlapping(bb.as_ptr(), fb_ptr, w * h);
         }
-
-        crate::gui::desktop::draw_text_overlay();
     }
 }

@@ -193,5 +193,7 @@ pub extern "C" fn rust_mouse_handler() {
             }
             _ => MOUSE_CYCLE = 0,
         }
+
+        notify_eoi(12);
     }
-}
+}

@@ -7,14 +7,18 @@ pub struct Theme {
     pub fg: u32,
     pub accent: u32, // Head/Header color
     pub root: u32,   // root@ainux color
+    pub dialog_bg: u32,
+    pub sel: u32,
     pub font_size: u8,
 }
 
 pub static THEME: Mutex<Theme> = Mutex::new(Theme {
-    bg: 0xFF1A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
-    fg: 0xFFC0CAF5,     // Soft Blue-White Text
-    accent: 0xFF7AA2F7, // Neovim Accent Blue
-    root: 0xFF9ECE6A,   // Neovim Accent Green
+    bg: 0x001A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
+    fg: 0x00C0CAF5,     // Soft Blue-White Text
+    accent: 0x007AA2F7, // Neovim Accent Blue
+    root: 0x009ECE6A,   // Neovim Accent Green
+    dialog_bg: 0x0016161E,
+    sel: 0x002F334D,
     font_size: 1,
 });
 
