@@ -116,8 +116,20 @@ pub fn resolve_path(path: &str) -> String {
 
 /// Resolves a path to an Inode by walking the VFS tree.
 pub fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
+    unsafe {
+        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+        let _ = write!(serial, "[Shell] find_inode for path: {}\n", path);
+    }
     let resolved = resolve_path(path);
+    unsafe {
+        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+        let _ = write!(serial, "[Shell] resolved path: {}\n", resolved);
+    }
     let mut current = vfs::root();
+    unsafe {
+        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+        let _ = write!(serial, "[Shell] vfs::root() acquired.\n");
+    }
     
     if resolved == "/" {
         return Ok(current);

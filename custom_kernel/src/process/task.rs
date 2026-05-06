@@ -58,6 +58,10 @@ pub struct Task {
     pub canary: u64,
     pub room: Arc<crate::process::room::RoomContext>,
     pub handle_table: Mutex<HandleTable>,
+    
+    // --- Phase 7: Wasm Orchestration ---
+    pub wasm_fuel: u64,
+    pub wasm_state: Option<alloc::sync::Arc<Mutex<crate::wasm::WasmProcessState>>>,
 }
 
 impl KernelObject for Task {
@@ -126,6 +130,8 @@ impl Task {
             canary: STACK_CANARY_MAGIC,
             room,
             handle_table: Mutex::new(HandleTable::new()),
+            wasm_fuel: 0,
+            wasm_state: None,
         }
     }
 }

@@ -122,6 +122,15 @@ pub fn get_current_pid() -> usize {
     crate::cpu::smp::get_current_pid()
 }
 
+pub fn update_current_task_fuel(consumed: u64) {
+    let pid = get_current_pid();
+    let mut tasks = TASKS.lock();
+    if let Some(task) = &mut tasks[pid] {
+        task.wasm_fuel = task.wasm_fuel.saturating_sub(consumed);
+        task.cpu_time_ticks += consumed / 1000;
+    }
+}
+
 pub fn get_current_room() -> Option<alloc::sync::Arc<crate::process::room::RoomContext>> {
     let pid = get_current_pid();
     let tasks = TASKS.lock();
@@ -244,7 +253,7 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
                 task.cr3 = cr3;
                 task.userspace_stack_top = rsp;
                 
-                let kstack_top = task.stack.as_ptr() as u64 + 4096;
+                let kstack_top = task.stack.as_ptr() as u64 + 16384;
                 let mut sp = kstack_top & !0xF;
                 unsafe {
                     sp -= 8;
@@ -263,16 +272,21 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
     })
 }
 
-pub fn kernel_shim_entry() {
-    let rip: u64;
-    let rsp: u64;
+#[unsafe(naked)]
+pub unsafe extern "C" fn kernel_shim_entry() {
     unsafe {
-        crate::drivers::video::put_str("Shim Entry\n");
-        core::arch::asm!("mov {}, r12", out(reg) rip);
-        core::arch::asm!("mov {}, r13", out(reg) rsp);
-        
-        crate::cpu::userspace::enter_userspace(rip, rsp);
+        core::arch::naked_asm!(
+            "mov rdi, r12", // user rip
+            "mov rsi, r13", // user rsp
+            "call enter_userspace_rust",
+            "1: jmp 1b"
+        );
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn enter_userspace_rust(rip: u64, rsp: u64) {
+    crate::cpu::userspace::enter_userspace(rip, rsp);
 }
 
 pub fn schedule() {
@@ -280,72 +294,82 @@ pub fn schedule() {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
 
-        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
-            next
-        } else {
-             // IDLE STRATEGY: Reduce host CPU load
-             unsafe { core::arch::asm!("hlt"); }
-             return;
-        };
+        let next_pid = pick_next_task_internal(&mut tasks, current_pid);
         
-        if next_pid == current_pid {
+        if let Some(next) = next_pid {
+            if next == current_pid {
+                return;
+            }
+            
+            // Switch
+            let old_pid = current_pid;
+            crate::cpu::smp::set_current_pid(next);
+            let current_tsc = crate::cpu::cpuid::rdtsc();
+
+            // Safety: we know old_pid != next_pid.
+            let tasks_ptr = tasks.as_mut_ptr();
+            let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
+            
+            // Security: Check Stack Canary
+            if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
+                panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
+            }
+            
+            // Account final cycles for old task
+            if old_task.last_tsc != 0 {
+                old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
+            }
+            old_task.last_tsc = 0; // Clear on deschedule
+
+            let next_task = unsafe { (*tasks_ptr.add(next)).as_mut().unwrap() };
+            next_task.state = TaskState::Running;
+            next_task.last_tsc = current_tsc; // Mark start on reschedule
+            clear_ready(next);
+
+            if old_task.state == TaskState::Running {
+                old_task.state = TaskState::Ready;
+                set_ready(old_pid);
+            }
+            
+            // Switch CR3
+            let next_cr3 = next_task.cr3;
+            if next_cr3 != 0 {
+                unsafe {
+                     core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
+                }
+            }
+            
+            // Update TSS RSP0 and per-cpu PRCB
+            let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
+            
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            use core::fmt::Write;
+            if next == 2 { // Only log for the user task to reduce spam
+                let _ = write!(serial, "[Sched] Switching to Task {} (KStack: {:#x})\n", next, kstack_top);
+            }
+
+            unsafe {
+                crate::cpu::gdt::set_kernel_stack(kstack_top);
+                crate::cpu::percpu::set_kernel_stack(kstack_top);
+            }
+            
+            // Maturation: Final pointers for switch
+            let old_task_ptr = &mut old_task.context as *mut Context;
+            let next_task_ptr = &next_task.context as *const Context;
+            
+            drop(tasks); 
+            
+            unsafe {
+                __switch(old_task_ptr, next_task_ptr);
+            }
+        } else {
+            // IDLE: Drop lock then halt
+            drop(tasks);
+            unsafe {
+                core::arch::asm!("sti; hlt");
+            }
             return;
         }
-    
-    // Switch
-    let old_pid = current_pid;
-    crate::cpu::smp::set_current_pid(next_pid);
-
-    let current_tsc = crate::cpu::cpuid::rdtsc();
-    
-    // Safety: we know old_pid != next_pid.
-    let tasks_ptr = tasks.as_mut_ptr();
-    let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
-    
-    // Security: Check Stack Canary
-    if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
-        panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
-    }
-    
-    // Account final cycles for old task
-    if old_task.last_tsc != 0 {
-        old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
-    }
-    old_task.last_tsc = 0; // Clear on deschedule
-
-    let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap() };
-    next_task.state = TaskState::Running;
-    next_task.last_tsc = current_tsc; // Mark start on reschedule
-    clear_ready(next_pid);
-
-    if old_task.state == TaskState::Running {
-        old_task.state = TaskState::Ready;
-        set_ready(old_pid);
-    }
-    
-    // Switch CR3
-    let next_cr3 = next_task.cr3;
-    if next_cr3 != 0 {
-        unsafe {
-             core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
-        }
-    }
-    
-    // Update TSS RSP0
-    let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
-    unsafe {
-        crate::cpu::gdt::set_kernel_stack(kstack_top);
-    }
-    
-    // Maturation: Final pointers for switch
-    let old_task_ptr = &mut old_task.context as *mut Context;
-    let next_task_ptr = &next_task.context as *const Context;
-    
-    drop(tasks); 
-    
-    unsafe {
-        __switch(old_task_ptr, next_task_ptr);
-    }
     });
 }
 

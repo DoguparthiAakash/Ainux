@@ -8,25 +8,18 @@ const MSR_LSTAR: u32 = 0xC0000082;
 const MSR_FMASK: u32 = 0xC0000084;
 const EFER_SCE: u64 = 1;
 
-static mut KERNEL_STACK_PTR: u64 = 0;
-static mut USER_STACK_BACKUP: u64 = 0;
-
 pub unsafe fn init() {
     let efer = rdmsr(MSR_EFER);
     wrmsr(MSR_EFER, efer | EFER_SCE);
 
     // Star: 63:48 User Base (0x10), 47:32 Kernel Base (0x08)
-    // 0x10 Base => Sysret CS=0x20(User Code), SS=0x18(User Data)
+    // 0x10 Base => Sysret CS=0x20(User Code 64), SS=0x18(User Data 64)
     let star = (0x0010u64 << 48) | (0x0008u64 << 32);
     wrmsr(MSR_STAR, star);
 
     wrmsr(MSR_LSTAR, syscall_handler as u64);
-    wrmsr(MSR_FMASK, 0x200); // Disable IF
-    
-    // Set kernel stack for syscall (Temporary: use current RSP)
-    let rsp: u64;
-    asm!("mov {}, rsp", out(reg) rsp);
-    KERNEL_STACK_PTR = rsp; // Use boot stack for now
+    // Mask: IF (0x200), DF (0x400), TF (0x100)
+    wrmsr(MSR_FMASK, 0x700); 
 }
 
 
@@ -57,51 +50,81 @@ pub unsafe fn syscall(id: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u
 #[unsafe(naked)]
 extern "C" fn syscall_handler() {
     naked_asm!(
-        // Save User RSP
-        "mov [rip + {USER_BACKUP}], rsp",
+        "swapgs",
+        // Save User RSP to PRCB.temp_rsp (offset 48)
+        "mov gs:[48], rsp",
+        "mov rsp, gs:[40]",
         
-        // Load Kernel RSP
-        "mov rsp, [rip + {KERNEL_BACKUP}]",
+        // Debug Assert: Ensure we are now on a high-half stack
+        "bt rsp, 63",
+        "jc 1f",
+        "ud2", // Not high-half? Crash immediately.
+        "1:",
         
-        // Save scratch
+        // Save scratch registers that Syscall might clobber or Rust might use
         "push rcx", // User RIP
         "push r11", // User RFLAGS
         "push rbp",
-        
-        // Call Handler(ID=RAX, Arg1=RDI, Arg2=RSI, Arg3=RDX, Arg4=R10, Arg5=R8)
-        // Rust ABI (AMD64): RDI, RSI, RDX, RCX, R8, R9.
-        // We map to these. Note: Syscall R10 becomes RCX for Rust.
-        "push r9",
+        "push rdi",
+        "push rsi",
+        "push rdx",
         "push r8",
-        "mov r9, r8",   // Arg6 (R9) = R8 (Syscall Arg5)
-        "mov r8, r10",  // Arg5 (R8) = R10 (Syscall Arg4)
-        "mov rcx, rdx", // Arg4 (RCX) = RDX (Syscall Arg3)
-        "mov rdx, rsi", // Arg3 (RDX) = RSI (Syscall Arg2)
-        "mov rsi, rdi", // Arg2 (RSI) = RDI (Syscall Arg1)
-        "mov rdi, rax", // Arg1 (RDI) = ID (RAX)
+        "push r9",
+        "push r10",
         
-        "sub rsp, 32", // Shadow space for Win64-like calls or alignment
+        // Map arguments to Rust ABI (RDI, RSI, RDX, RCX, R8, R9)
+        // Syscall ABI: RAX(ID), RDI(1), RSI(2), RDX(3), R10(4), R8(5), R9(6)
+        // Rust ABI: RDI(ID), RSI(1), RDX(2), RCX(3), R8(4), R9(5)
+        
+        "mov r9, r8",   // Arg5 (R8) -> Rust Arg6 (R9)
+        "mov r8, r10",  // Arg4 (R10) -> Rust Arg5 (R8)
+        "mov rcx, rdx", // Arg3 (RDX) -> Rust Arg4 (RCX)
+        "mov rdx, rsi", // Arg2 (RSI) -> Rust Arg3 (RDX)
+        "mov rsi, rdi", // Arg1 (RDI) -> Rust Arg2 (RSI)
+        "mov rdi, rax", // ID (RAX) -> Rust Arg1 (RDI)
+        
+        "sub rsp, 8",   // Align stack to 16 bytes (9 pushes = 72 bytes, +8 = 80)
         "call rust_syscall_dispatch",
-        "add rsp, 32",
+        "add rsp, 8",
         
-        "pop r8", // Pop back
+        // Restore scratch registers
+        "pop r10",
         "pop r9",
+        "pop r8",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
         "pop rbp",
         "pop r11",
         "pop rcx",
         
-        // Restore User RSP
-        "mov rsp, [rip + {USER_BACKUP}]",
+        // Restore User RSP from PRCB.temp_rsp (offset 48)
+        "mov rsp, gs:[48]",
         
-        "sysretq",
-        
-        USER_BACKUP = sym USER_STACK_BACKUP,
-        KERNEL_BACKUP = sym KERNEL_STACK_PTR,
+        // Enforce Canonical RIP in RCX before sysretq (AMD64 rule)
+        "mov rax, rcx",
+        "sar rax, 47",
+        "inc rax",
+        "cmp rax, 2",
+        "jb 1f",
+        "ud2", // Non-canonical RIP would #GP on sysretq
+        "1:",
+
+        "swapgs",
+        "sysretq"
     );
 }
 
+use core::fmt::Write;
+use crate::process::scheduler;
+
 #[no_mangle]
 extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
+    {
+        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+        let _ = write!(serial, "[Syscall] CPU={} PID={} ID={} A1={:#x} A2={:#x}\n", 
+            crate::cpu::percpu::get_current_cpu_id(), crate::process::scheduler::get_current_pid(), id, a1, a2);
+    }
     // Increment Syscall Count (Maturity Metering)
     {
         let mut tasks = crate::process::scheduler::TASKS.lock();

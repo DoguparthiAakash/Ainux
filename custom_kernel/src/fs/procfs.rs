@@ -115,6 +115,7 @@ impl Inode for ProcDirInode {
     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
 }
 
 impl Inode for ProcFileInode {
@@ -168,6 +169,7 @@ impl Inode for ProcFileInode {
     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
 }
 
 #[derive(Debug)]

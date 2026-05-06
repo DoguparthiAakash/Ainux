@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use crate::mm::vmm;
+use core::fmt::Write;
 use crate::fs::vfs::{self, ArcInode, FileType};
 
 #[repr(C)]
@@ -65,7 +66,7 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
              // Map segment in memory
              // For simple functional kernel, we allocate pages and copy data
              let pages = (ph.p_memsz + 4095) / 4096;
-             for p in 0..pages {
+              for p in 0..pages {
                  let virt = ph.p_vaddr + (p * 4096);
                  let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
                  unsafe {
@@ -74,7 +75,10 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
                          let to_copy = core::cmp::min(4096, ph.p_filesz - (p * 4096));
                          let mut buf = alloc::vec![0u8; 4096];
                          handle.read(&mut buf[..to_copy as usize], ph.p_offset + (p * 4096)).unwrap();
-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
+                         
+                         // Use HHDM to copy data into the frame
+                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
+                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
                      }
                  }
              }
@@ -86,10 +90,22 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
 
 pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
     if let Ok(inode) = crate::shell::find_inode(path) {
+        unsafe {
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            let _ = write!(serial, "[Loader] Found inode for {}\n", path);
+        }
         let cr3 = crate::mm::vmm::create_address_space();
         if cr3 == 0 { return Err(()); }
+        unsafe {
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            let _ = write!(serial, "[Loader] Address space created: {:#x}\n", cr3);
+        }
         
         if let Ok(entry) = load_elf(inode, cr3) {
+            unsafe {
+                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                let _ = write!(serial, "[Loader] ELF segments loaded. Entry: {:#x}\n", entry);
+            }
             // Allocate a user stack (1MB)
             let stack_top = 0x00007FFFFFFFF000;
             let stack_pages = 256;
@@ -97,9 +113,23 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
             }
+            unsafe {
+                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                let _ = write!(serial, "[Loader] User stack allocated.\n");
+            }
             
             let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
             return Ok(pid);
+        } else {
+            unsafe {
+                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                let _ = write!(serial, "loader: load_elf failed for path: {}\n", path);
+            }
+        }
+    } else {
+        unsafe {
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            let _ = write!(serial, "loader: find_inode failed for path: {}\n", path);
         }
     }
     Err(())
@@ -156,7 +186,10 @@ pub fn load_alo(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
                          let to_copy = core::cmp::min(4096, seg.size - (p * 4096));
                          let mut buf = alloc::vec![0u8; 4096];
                          handle.read(&mut buf[..to_copy as usize], seg.offset + (p * 4096)).unwrap();
-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
+                         
+                         // Use HHDM to copy data into the frame
+                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
+                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
                      }
                  }
              }

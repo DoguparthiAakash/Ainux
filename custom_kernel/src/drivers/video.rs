@@ -11,10 +11,10 @@ pub struct Theme {
 }
 
 pub static THEME: Mutex<Theme> = Mutex::new(Theme {
-    bg: 0x001A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
-    fg: 0x00C0CAF5,     // Soft Blue-White Text
-    accent: 0x007AA2F7, // Neovim Accent Blue
-    root: 0x009ECE6A,   // Neovim Accent Green
+    bg: 0xFF1A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
+    fg: 0xFFC0CAF5,     // Soft Blue-White Text
+    accent: 0xFF7AA2F7, // Neovim Accent Blue
+    root: 0xFF9ECE6A,   // Neovim Accent Green
     font_size: 1,
 });
 

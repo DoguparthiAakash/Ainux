@@ -166,4 +166,13 @@ impl Inode for UnionInode {
             Err(VfsError::PermissionDenied)
         }
     }
+
+    fn parent(&self) -> VfsResult<ArcInode> {
+        // Step 7.2: Return parent of the primary layer (upper shadows lower)
+        if let Some(upper) = &self.upper {
+            upper.parent()
+        } else {
+            self.lower.parent()
+        }
+    }
 }

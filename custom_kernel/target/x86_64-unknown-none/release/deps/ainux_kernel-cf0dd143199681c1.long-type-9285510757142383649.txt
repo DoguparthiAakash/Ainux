@@ -1,1 +1,0 @@
-Arc<(dyn Inode + 'static)>

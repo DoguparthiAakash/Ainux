@@ -258,7 +258,50 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
     let pt = slice::from_raw_parts_mut((pt_phys + hhdm_offset) as *mut u64, 512);
 
-    pt[p1_idx] = paddr | flags | 1;
+    pt[p1_index(vaddr)] = paddr | flags | 1;
+}
+
+/// Returns the raw page table entry for a given virtual address in a specific PML4.
+/// Returns None if the mapping does not exist at any level.
+pub unsafe fn get_mapping_info(pml4_phys: u64, vaddr: u64) -> Option<u64> {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let pml4 = slice::from_raw_parts((pml4_phys + hhdm_offset) as *const u64, 512);
+
+    let p4_idx = p4_index(vaddr);
+    let p3_idx = p3_index(vaddr);
+    let p2_idx = p2_index(vaddr);
+    let p1_idx = p1_index(vaddr);
+
+    if pml4[p4_idx] & PRESENT == 0 { return None; }
+    
+    let pdpt_phys = pml4[p4_idx] & 0x000FFFFFFFFFF000;
+    let pdpt = slice::from_raw_parts((pdpt_phys + hhdm_offset) as *const u64, 512);
+    if pdpt[p3_idx] & PRESENT == 0 { return None; }
+
+    let pd_phys = pdpt[p3_idx] & 0x000FFFFFFFFFF000;
+    let pd = slice::from_raw_parts((pd_phys + hhdm_offset) as *const u64, 512);
+    if pd[p2_idx] & PRESENT == 0 { return None; }
+    
+    if pd[p2_idx] & HUGE_PAGE != 0 {
+        return Some(pd[p2_idx]);
+    }
+
+    let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
+    let pt = slice::from_raw_parts((pt_phys + hhdm_offset) as *const u64, 512);
+    if pt[p1_idx] & PRESENT == 0 { return None; }
+
+    Some(pt[p1_idx])
+}
+
+/// Maps a contiguous region of memory in a specific address space with user permissions.
+pub unsafe fn map_user_region(pml4_phys: u64, vaddr: u64, paddr: u64, size: usize, flags: u64) -> Result<(), &'static str> {
+    let pages = (size + 4095) / 4096;
+    for i in 0..pages {
+        let v = vaddr + (i as u64 * 4096);
+        let p = paddr + (i as u64 * 4096);
+        map_page_in_pml4(pml4_phys, v, p, flags | USER | PRESENT);
+    }
+    Ok(())
 }
 
 /// Creates a new address space (PML4) by copying kernel mappings from the active one.
@@ -278,8 +321,6 @@ pub fn create_address_space() -> u64 {
                     pml4.entries[i] = active.entries[i];
                 }
                 
-                // Also copy the first entry for identity mapping (TEMPORARY: until bootstrap finished)
-                pml4.entries[0] = active.entries[0];
             }
             return pml4_phys;
         }

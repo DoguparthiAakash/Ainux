@@ -1,0 +1,2168 @@
+diff -ur -w Ainux/Ainux/custom_kernel/src/asm/boot.asm src/asm/boot.asm
+--- Ainux/Ainux/custom_kernel/src/asm/boot.asm	2026-05-06 09:42:41.379611900 +0000
++++ src/asm/boot.asm	2026-05-06 08:52:31.591263200 +0000
+@@ -1,211 +1,152 @@
+-; =============================================================================
+-; Ainux Multiboot Boot Stub — 32-bit Protected Mode → 64-bit Long Mode
+-; Passes Multiboot info struct pointer to Rust kernel_main(info_ptr: u64)
+-; Maps first 4GB identity + higher-half for ACPI/hardware access
+-;
+-; OPTIMIZED: Merged PD loops, fixed STOSD count, NX+PGE enabled
+-; =============================================================================
++; src/asm/boot.asm
++; Ainux Bootloader Shim — Multiboot to Long Mode (64-bit)
+ 
+-global _start_multiboot
+-global boot_pml4
+-extern _start               ; Rust entry: fn _start() -> !
+-
+-; We store the multiboot info pointer in a global so Rust can read it
+-global MULTIBOOT_INFO_PTR
+-global MULTIBOOT_MAGIC_VAL
++extern _start
++; extern rust_main ; Renamed to _start in main.rs
+ 
+ section .multiboot
+ align 4
+-    dd 0x1BADB002            ; Multiboot1 magic
+-    dd 0x00000007            ; Flags: ALIGN(0) | MEMINFO(1) | VIDEO(2)
+-    dd -(0x1BADB002 + 0x00000007) ; Checksum
+-    dd 0                     ; header_addr
+-    dd 0                     ; load_addr
+-    dd 0                     ; load_end_addr
+-    dd 0                     ; bss_end_addr
+-    dd 0                     ; entry_addr
+-    dd 0                     ; mode_type (0 = linear graphics)
+-    dd 0                     ; width (auto)
+-    dd 0                     ; height (auto)
+-    dd 32                    ; depth (32 bpp preferred)
+-
+-section .data
+-align 8
+-MULTIBOOT_INFO_PTR: dq 0    ; Will hold physical address of multiboot_info
+-MULTIBOOT_MAGIC_VAL: dq 0   ; Will hold the magic number from EAX
+-
+-; Table of PD base addresses for the unified fill loop
+-align 8
+-pd_table:
+-    dd boot_pd0              ; PD index 0: maps 0x00000000 - 0x3FFFFFFF
+-    dd boot_pd1              ; PD index 1: maps 0x40000000 - 0x7FFFFFFF
+-    dd boot_pd2              ; PD index 2: maps 0x80000000 - 0xBFFFFFFF
+-    dd boot_pd3              ; PD index 3: maps 0xC0000000 - 0xFFFFFFFF
++    dd 0x1BADB002               ; Magic
++    dd 0x00                     ; Flags
++    dd -(0x1BADB002 + 0x00)     ; Checksum
+ 
+-section .bss
+-align 4096
+-boot_pml4:
+-    resb 4096
+-boot_pdpt:
+-    resb 4096
+-boot_pd0:                   ; PD for 0-1GB
+-    resb 4096
+-boot_pd1:                   ; PD for 1-2GB
+-    resb 4096
+-boot_pd2:                   ; PD for 2-3GB
+-    resb 4096
+-boot_pd3:                   ; PD for 3-4GB
+-    resb 4096
+-boot_pd_high:               ; PD for higher-half kernel
+-    resb 4096
+-stack_bottom:
+-    resb 32768               ; 32 KB stack (generous for SMP init)
+-stack_top:
+-
+-section .text
++; =============================================================================
++; 32-bit Entry Point
++; =============================================================================
+ bits 32
++global _start_multiboot
+ _start_multiboot:
+-    ; Save Multiboot info (EBX = info ptr, EAX = magic)
+-    mov [MULTIBOOT_INFO_PTR], ebx
++    cli
++    cld
++
++    ; Save Multiboot magic and info pointer
+     mov [MULTIBOOT_MAGIC_VAL], eax
++    mov [MULTIBOOT_INFO_PTR], ebx
+ 
+-    mov esp, stack_top
++    ; Set up a temporary boot stack (low memory)
++    mov esp, boot_stack_top
+ 
+-    ; ---- Zero out ALL page tables in one shot ----
+-    ; 7 tables × 4096 bytes = 28672 bytes = 7168 dwords
+-    ; Tables are contiguous in BSS: pml4, pdpt, pd0, pd1, pd2, pd3, pd_high
++    ; ---- Paging Setup (Simplified & Robust) ----
++    ; Clear page tables (6 pages: PML4, PDPT, 4 PDs)
+     mov edi, boot_pml4
+     xor eax, eax
+-    mov ecx, 7168            ; 7 × 1024 dwords = 7 × 4096 bytes
++    mov ecx, 1024 * 6
+     rep stosd
+ 
+-    ; ---- PML4[0] → PDPT (identity map) ----
++    ; 1. Link PML4 entries
+     mov eax, boot_pdpt
+     or eax, 0b11               ; Present + Writable
+-    mov [boot_pml4], eax
++    mov [boot_pml4], eax               ; Identity Map (0..512GB)
++    mov [boot_pml4 + 256 * 8], eax     ; Direct Map (0xFFFF800000000000)
++    mov [boot_pml4 + 511 * 8], eax     ; Higher Half (0xFFFFFFFF80000000)
++
++    ; 2. Link PDPT entries (Map 4GB)
++    ; Identity & Direct Map: 0-4GB (Indices 0, 1, 2, 3)
++    ; Higher Half Map: -2GB and -1GB (Indices 510, 511)
+ 
+-    ; ---- PML4[511] → same PDPT (higher-half) ----
+-    mov [boot_pml4 + 511 * 8], eax
+-
+-    ; ---- PDPT[0..3] → PD0..PD3 ----
+-    mov eax, boot_pd0
++    mov eax, boot_pd
+     or eax, 0b11
+-    mov [boot_pdpt], eax
++    mov [boot_pdpt + 0 * 8], eax       ; Identity 0-1GB
++    mov [boot_pdpt + 510 * 8], eax     ; High-Half 0-1GB (at -2GB)
+ 
+-    mov eax, boot_pd1
++    mov eax, boot_pd + 4096
+     or eax, 0b11
+-    mov [boot_pdpt + 1 * 8], eax
++    mov [boot_pdpt + 1 * 8], eax       ; Identity 1-2GB
++    mov [boot_pdpt + 511 * 8], eax     ; High-Half 1-2GB (at -1GB)
+ 
+-    mov eax, boot_pd2
++    mov eax, boot_pd + 8192
+     or eax, 0b11
+-    mov [boot_pdpt + 2 * 8], eax
++    mov [boot_pdpt + 2 * 8], eax       ; Identity 2-3GB
+ 
+-    mov eax, boot_pd3
++    mov eax, boot_pd + 12288
+     or eax, 0b11
+-    mov [boot_pdpt + 3 * 8], eax
++    mov [boot_pdpt + 3 * 8], eax       ; Identity 3-4GB
+ 
+-    ; ---- PDPT[510] → PD_high (higher-half: 0xFFFFFFFF80000000) ----
+-    mov eax, boot_pd_high
+-    or eax, 0b11
+-    mov [boot_pdpt + 510 * 8], eax
++    ; 4. Map PD[0-3] to 0-4GB using 2MB huge pages
++    mov edi, boot_pd
++    mov eax, 0 | 0x83         ; Start at 0MB
++    mov ecx, 512 * 4          ; Fill 4 Page Directories
++.fill_pd:
++    mov [edi], eax
++    mov dword [edi + 4], 0    ; Clear upper 32 bits
++    add eax, 0x200000         ; Next 2MB
++    add edi, 8
++    loop .fill_pd
+ 
+-    ; ---- Unified PD fill: 4 PDs × 512 entries each ----
+-    ; Maps full 4GB identity using 2MB huge pages
+-    ; PD_high mirrors PD0 for higher-half kernel access
+-    ;
+-    ; Outer loop: ebx = PD index (0..3), using pd_table for base addresses
+-    ; Inner loop: ecx = entry index (0..511)
+-    ; Physical address = (ebx * 512 + ecx) << 21
+-    ; Flags: Present(0) + Writable(1) + HugePage(7) = 0x83
+-    ; Kernel PD_high entries also get GLOBAL(8) = 0x183
+-
+-    xor ebx, ebx             ; PD index = 0
+-.fill_pd_outer:
+-    mov esi, [pd_table + ebx * 4]  ; ESI = base of current PD
+-    xor ecx, ecx             ; entry index = 0
+-
+-.fill_pd_inner:
+-    ; Compute physical page: (ebx * 512 + ecx) * 2MB
+-    mov eax, ebx
+-    shl eax, 9               ; eax = ebx * 512
+-    add eax, ecx             ; eax = ebx * 512 + ecx
+-    shl eax, 21              ; eax = physical address (2MB aligned)
+-    or eax, 0b10000011       ; Present + Writable + HugePage
+-
+-    mov [esi + ecx * 8], eax ; Write PD entry
+-
+-    ; For PD0 (ebx==0): also mirror into boot_pd_high with GLOBAL bit
+-    test ebx, ebx
+-    jnz .skip_high
+-    mov edx, eax
+-    or edx, (1 << 8)         ; Add GLOBAL flag for kernel mappings
+-    mov [boot_pd_high + ecx * 8], edx
+-.skip_high:
+-
+-    inc ecx
+-    cmp ecx, 512
+-    jne .fill_pd_inner
+-
+-    inc ebx
+-    cmp ebx, 4
+-    jne .fill_pd_outer
+-
+-    ; ---- Enable PAE (CR4.PAE bit 5) + PGE (CR4.PGE bit 7) ----
+-    ; PGE enables GLOBAL bit in page table entries for TLB persistence
++    ; ---- Enable PAE and Long Mode ----
+     mov eax, cr4
+-    or eax, (1 << 5) | (1 << 7)
++    or eax, 1 << 5 ; PAE
+     mov cr4, eax
+ 
+-    ; ---- Load PML4 into CR3 ----
+     mov eax, boot_pml4
+     mov cr3, eax
+ 
+-    ; ---- Enable Long Mode + NX (EFER.LME bit 8 + EFER.NXE bit 11) ----
+-    ; NX enables the No-Execute bit in page tables for W^X enforcement
+-    mov ecx, 0xC0000080
++    mov ecx, 0xC0000080 ; EFER
+     rdmsr
+-    or eax, (1 << 8) | (1 << 11)
++    or eax, 1 << 8 ; LME
+     wrmsr
+ 
+-    ; ---- Enable Paging + Protection (CR0.PG | CR0.PE) ----
+     mov eax, cr0
+-    or eax, (1 << 31) | (1 << 0)
++    or eax, 1 << 31 | 1 << 0 ; PG | PE
+     mov cr0, eax
+ 
+-    ; ---- Load 64-bit GDT and far jump to long mode ----
+-    lgdt [gdt64.pointer]
+-    jmp gdt64.code_segment:long_mode_start
++    ; ---- Transition to 64-bit ----
++    lgdt [gdt64_ptr]
++    jmp gdt64_code:long_mode_start
+ 
+-; =============================================================================
+-; 64-bit GDT
+-; =============================================================================
+ align 8
+ gdt64:
+-    dq 0                                                    ; Null
+-.code_segment equ $ - gdt64
+-    dq (1<<43) | (1<<44) | (1<<47) | (1<<53)              ; Code: Exec, Descriptor, Present, 64-bit
+-.data_segment equ $ - gdt64
+-    dq (1<<44) | (1<<47) | (1<<41)                        ; Data: Descriptor, Present, Writable
+-.pointer:
++    dq 0 ; null
++gdt64_code: equ $ - gdt64
++    dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) ; code
++gdt64_data: equ $ - gdt64
++    dq (1 << 44) | (1 << 47) | (1 << 41) ; data
++gdt64_ptr:
+     dw $ - gdt64 - 1
+-    dq gdt64
++    dd gdt64
+ 
+-; =============================================================================
+-; 64-bit Long Mode Entry
+-; =============================================================================
+-bits 64
++[bits 64]
+ long_mode_start:
+-    ; Set up data segments
+-    mov ax, gdt64.data_segment
++    mov ax, gdt64_data
+     mov ds, ax
+     mov es, ax
+     mov fs, ax
+     mov gs, ax
+     mov ss, ax
+ 
+-    ; Set up a proper stack in the higher half
++    ; Set up higher-half stack
+     mov rsp, stack_top
+ 
+-    ; Jump to Rust _start (higher-half linked)
++    ; Enter Rust
+     mov rax, _start
+     jmp rax
++
++; =============================================================================
++; Low-Memory Boot Sections (Paging Tables & Temporary Stack)
++; =============================================================================
++section .boot_bss
++align 4096
++boot_pml4:
++    resb 4096
++boot_pdpt:
++    resb 4096
++boot_pd:
++    resb 4096 * 4  ; 4 PDs to cover 4GB if needed
++
++boot_stack_bottom:
++    resb 4096      ; Small temporary stack for 32-bit boot only
++boot_stack_top:
++
++global MULTIBOOT_INFO_PTR
++global MULTIBOOT_MAGIC_VAL
++MULTIBOOT_INFO_PTR:  resq 1
++MULTIBOOT_MAGIC_VAL: resq 1
++
++; =============================================================================
++; Higher-Half Sections (Final Kernel Stack)
++; =============================================================================
++section .stack
++align 4096
++stack_bottom:
++    resb 16384 * 8 ; 128KB stack (High Half)
++stack_top:
+Binary files Ainux/Ainux/custom_kernel/src/asm/boot.o and src/asm/boot.o differ
+Binary files Ainux/Ainux/custom_kernel/src/c/hardware.o and src/c/hardware.o differ
+Binary files Ainux/Ainux/custom_kernel/src/c/tui.o and src/c/tui.o differ
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/gdt.rs src/cpu/gdt.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/gdt.rs	2026-05-06 09:42:43.182663900 +0000
++++ src/cpu/gdt.rs	2026-05-04 18:25:39.578677600 +0000
+@@ -5,8 +5,8 @@
+ // Segment Selectors
+ pub const KERNEL_CODE: u16 = 0x08;
+ pub const KERNEL_DATA: u16 = 0x10;
+-pub const USER_DATA: u16 = 0x18 | 3;  // Must come BEFORE User Code for SYSRET
+-pub const USER_CODE: u16 = 0x20 | 3;  // SYSRET loads CS = base+16
++pub const USER_DATA: u16 = 0x18 | 3;
++pub const USER_CODE: u16 = 0x20 | 3;
+ pub const TSS_SELECTOR: u16 = 0x28;
+ 
+ #[repr(C, packed)]
+@@ -42,19 +42,9 @@
+     }
+ }
+ 
+-// Global TSS Instance
+-pub static mut TSS: Tss = Tss::new();
+-
+ // IST stack sizes (8KB each — enough for fault handlers)
+ const IST_STACK_SIZE: usize = 8192;
+ 
+-// IST stack storage (statically allocated, page-aligned)
+-#[repr(C, align(4096))]
+-struct IstStack([u8; IST_STACK_SIZE]);
+-
+-static mut IST1_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+-static mut IST2_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+-
+ #[repr(C, packed)]
+ #[derive(Clone, Copy)]
+ pub struct GdtDescriptor {
+@@ -79,54 +69,50 @@
+     }
+ }
+ 
+-#[repr(C, packed)]
+-struct GdtPointer {
+-    limit: u16,
+-    base: u64,
++// Per-CPU state to ensure SMP safety
++struct CpuState {
++    gdt: [GdtDescriptor; 7],
++    tss: Tss,
++    ist1: [u8; IST_STACK_SIZE],
+ }
+ 
+-// GDT Table (7 entries: Null, KC, KD, UC, UD, TSS_Low, TSS_High)
+-static mut GDT: [GdtDescriptor; 7] = [
+-    // 0: Null
++static mut CPU_STATES: [CpuState; crate::cpu::percpu::MAX_CPUS] = [const { 
++    CpuState {
++        gdt: [
+     GdtDescriptor::new(0, 0, 0, 0),
+-    // 1: Kernel Code
+-    GdtDescriptor::new(0, 0, 0x9A, 0x20),
+-    // 2: Kernel Data
+-    GdtDescriptor::new(0, 0, 0x92, 0x00),
+-    // 3: User Data (Access 0xF2: Present, Ring 3, Data, Writable) — MUST be before User Code for SYSRET
+-    GdtDescriptor::new(0, 0, 0xF2, 0x00),
+-    // 4: User Code (Access 0xFA: Present, Ring 3, Code, Readable)
+-    GdtDescriptor::new(0, 0, 0xFA, 0x20),
+-    // 5: TSS Low (will be filled in init)
++            GdtDescriptor::new(0, 0xFFFFFFFF, 0x9B, 0xA0), // 1: Kernel Code (G=1, L=1)
++            GdtDescriptor::new(0, 0xFFFFFFFF, 0x93, 0x80), // 2: Kernel Data (G=1)
++            GdtDescriptor::new(0, 0xFFFFFFFF, 0xF3, 0x80), // 3: User Data 64 (G=1)
++            GdtDescriptor::new(0, 0xFFFFFFFF, 0xFB, 0xA0), // 4: User Code 64 (G=1, L=1)
+     GdtDescriptor::new(0, 0, 0, 0),
+-    // 6: TSS High (will be filled in init)
+     GdtDescriptor::new(0, 0, 0, 0),
+-];
++        ],
++        tss: Tss::new(),
++        ist1: [0; IST_STACK_SIZE],
++    }
++}; crate::cpu::percpu::MAX_CPUS];
++
++#[repr(C, packed)]
++struct GdtPointer {
++    limit: u16,
++    base: u64,
++}
+ 
+ // Helper to write TSS Descriptor (16 bytes)
+-unsafe fn set_tss_descriptor(index: usize, tss: &'static Tss) {
++unsafe fn set_tss_descriptor(gdt: &mut [GdtDescriptor; 7], index: usize, tss: &Tss) {
+     let base = tss as *const _ as u64;
+     let limit = (size_of::<Tss>() - 1) as u64;
+     
+-    // Low Descriptor (Standard GDT layout)
+-    // Type 0x89 (Present, Ring 0, System, 64-bit TSS Available)
+-    // Wait, Type 9 for 64-bit TSS Available? 
+-    // AMD64 Vol 2: System-Segment Descriptor (Type 9 = Available 64-bit TSS)
+-    // Access byte: Present(1) | DPL(00) | S(0) | Type(1001) = 10001001 = 0x89?
+-    // If we want it available.
+-    
+-    GDT[index] = GdtDescriptor {
++    gdt[index] = GdtDescriptor {
+         limit_low: (limit & 0xFFFF) as u16,
+         base_low: (base & 0xFFFF) as u16,
+         base_middle: ((base >> 16) & 0xFF) as u8,
+         access: 0x89, 
+-        granularity: ((limit >> 16) & 0x0F) as u8, // No granularity flags for TSS usually?
++        granularity: ((limit >> 16) & 0x0F) as u8,
+         base_high: ((base >> 24) & 0xFF) as u8,
+     };
+     
+-    // High Descriptor (Extension)
+-    // Base 63:32, Reserved, Zero
+-    GDT[index + 1] = GdtDescriptor {
++    gdt[index + 1] = GdtDescriptor {
+         limit_low: (base >> 32) as u16,
+         base_low: (base >> 48) as u16,
+         base_middle: 0,
+@@ -136,71 +122,68 @@
+     };
+ }
+ 
+-pub fn init() {
+-    unsafe {
++pub unsafe fn init_ap(cpu_id: usize) {
++    let state = &mut CPU_STATES[cpu_id];
++        
+         // Setup IST stacks in TSS for fault isolation
+-        // IST1 = Double Fault stack (prevents triple fault on corrupted RSP)
+-        // IST2 = NMI stack (NMI can arrive at any time, needs dedicated stack)
+-        let ist1_top = IST1_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+-        let ist2_top = IST2_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+-        TSS.ist1 = ist1_top;
+-        TSS.ist2 = ist2_top;
++        let ist1_top = state.ist1.as_ptr() as u64 + IST_STACK_SIZE as u64;
++        state.tss.ist1 = ist1_top;
+ 
+-        // Setup TSS Descriptor
+-        set_tss_descriptor(5, &TSS);
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        use core::fmt::Write;
++        let _ = write!(serial, "GDT: CPU {} IST1_TOP: {:#x}\n", cpu_id, ist1_top);
++
++        // Setup TSS Descriptor in per-CPU GDT at index 5
++        set_tss_descriptor(&mut state.gdt, 5, &state.tss);
+ 
+         let gdt_ptr = GdtPointer {
+             limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
+-            base: GDT.as_ptr() as u64,
++            base: state.gdt.as_ptr() as u64,
+         };
+ 
+-        // Load GDT
+         asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+ 
+-        // Reload Segments
+-        load_segments();
++        // Load Segment Registers
++        asm!(
++            "push {0}",
++            "lea {1}, [rip + 2f]",
++            "push {1}",
++            "retfq",
++            "2:",
++            "mov ds, {2:x}",
++            "mov es, {2:x}",
++            "mov fs, {2:x}",
++            "mov gs, {2:x}",
++            "mov ss, {2:x}",
++            in(reg) KERNEL_CODE as u64,
++            out(reg) _,
++            in(reg) KERNEL_DATA as u16,
++            options(preserves_flags)
++        );
++
++        // Load TSS
++        asm!("ltr {0:x}", in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
+         
+-        // Load Task Register (TSS)
+-        asm!("ltr ax", in("ax") TSS_SELECTOR, options(nostack, preserves_flags));
+-    }
++        // CRITICAL: We must set GS_BASE AFTER loading the GS segment register.
++        // Loading the GS selector (mov gs, ax) reloads the base from the GDT,
++        // which clears any base set by WRMSR.
++        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_id);
++        crate::cpu::percpu::CPUS[cpu_id].init(prcb_addr, cpu_id as u32);
++        crate::cpu::percpu::write_gs_base(prcb_addr);
++        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
+ }
+ 
+-pub fn set_kernel_stack(stack_top: u64) {
+-    unsafe {
+-        TSS.rsp0 = stack_top;
++pub unsafe fn init() {
++    init_ap(0);
+     }
++
++pub fn load_segments() {
++    // This is now integrated into init() via retfq
+ }
+ 
+-/// Load the BSP's GDT on an Application Processor.
+-/// Does NOT touch TSS or load TR — avoids GP fault from "busy" TSS descriptor.
+-/// APs are parked and never do ring transitions, so TSS is not needed.
+-pub fn init_ap() {
++pub fn set_kernel_stack(stack_top: u64) {
++    let cpu_id = crate::cpu::percpu::get_current_cpu_id();
+     unsafe {
+-        let gdt_ptr = GdtPointer {
+-            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
+-            base: GDT.as_ptr() as u64,
+-        };
+-        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+-        load_segments();
++        CPU_STATES[cpu_id].tss.rsp0 = stack_top;
+     }
+ }
+-
+-#[unsafe(naked)]
+-unsafe extern "C" fn load_segments() {
+-    naked_asm!(
+-        "push 0x08",        // Push code segment
+-        "lea rax, [rip + 1f]", // Push return address
+-        "push rax",
+-        "retfq",            // Far return to reload CS
+-        "1:",
+-        "mov ax, 0x10",      // Load data segment
+-        "mov ds, ax",
+-        "mov es, ax",
+-        // NOTE: fs and gs intentionally NOT reloaded here.
+-        // Reloading them would zero FS_BASE/GS_BASE MSRs on AMD64,
+-        // destroying per-CPU state pointers.
+-        "mov ss, ax",
+-        "ret",
+-    );
+-}
+-
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/idt.rs src/cpu/idt.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/idt.rs	2026-05-06 09:42:43.192363900 +0000
++++ src/cpu/idt.rs	2026-05-04 15:31:33.809898100 +0000
+@@ -1,121 +1,85 @@
++// =============================================================================
++// Ainux Interrupt Descriptor Table (IDT) — Safe & Diagnostic
++// =============================================================================
++
+ use core::arch::{asm, naked_asm};
+ use core::mem::size_of;
+ 
++// IDT Entry Structure
+ #[repr(C, packed)]
+-#[derive(Clone, Copy)]
++#[derive(Debug, Clone, Copy)]
+ pub struct IdtEntry {
+     offset_low: u16,
+     selector: u16,
+     ist: u8,
+-    flags: u8,
++    types_attr: u8,
+     offset_mid: u16,
+     offset_high: u32,
+-    reserved: u32,
++    zero: u32,
+ }
+ 
+ impl IdtEntry {
+-    fn missing() -> Self {
++    pub fn new(offset: u64, selector: u16, types_attr: u8) -> Self {
+         Self {
+-            offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0
+-        }
+-    }
+-
+-    fn new(handler: u64, selector: u16, flags: u8) -> Self {
+-        Self {
+-            offset_low: (handler & 0xFFFF) as u16,
++            offset_low: offset as u16,
+             selector,
+             ist: 0,
+-            flags,
+-            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+-            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+-            reserved: 0,
++            types_attr,
++            offset_mid: (offset >> 16) as u16,
++            offset_high: (offset >> 32) as u32,
++            zero: 0,
+         }
+     }
+ 
+-    /// Create an IDT entry with a specific IST index (1-7)
+-    fn new_with_ist(handler: u64, selector: u16, flags: u8, ist_index: u8) -> Self {
+-        Self {
+-            offset_low: (handler & 0xFFFF) as u16,
+-            selector,
+-            ist: ist_index & 0x7,
+-            flags,
+-            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+-            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+-            reserved: 0,
++    pub fn new_ist(offset: u64, selector: u16, types_attr: u8, ist: u8) -> Self {
++        let mut entry = Self::new(offset, selector, types_attr);
++        entry.ist = ist & 0x07;
++        entry
+         }
+     }
+-}
+-
+-#[repr(C, align(16))]
+-struct Idt {
+-    entries: [IdtEntry; 256],
+-}
+ 
+ #[repr(C, packed)]
+-struct IdtPointer {
++pub struct IdtPointer {
+     limit: u16,
+     base: u64,
+ }
+ 
+ static mut IDT: Idt = Idt {
+-    entries: [IdtEntry { offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0 }; 256]
++    entries: [IdtEntry {
++        offset_low: 0,
++        selector: 0,
++        ist: 0,
++        types_attr: 0,
++        offset_mid: 0,
++        offset_high: 0,
++        zero: 0,
++    }; 256],
+ };
+ 
++#[repr(C, align(16))]
++struct Idt {
++    entries: [IdtEntry; 256],
++}
++
+ pub fn init() {
+     unsafe {
+-        // Divide-by-Zero (INT0) - No Error Code
+-        let div_handler = divide_error_handler as u64;
+-        IDT.entries[0] = IdtEntry::new(div_handler, 0x08, 0x8E);
+-
+-        // Breakpoint (INT3) - No Error Code
+-        let bp_handler = breakpoint_handler as u64;
+-        IDT.entries[3] = IdtEntry::new(bp_handler, 0x08, 0x8E);
+-
+-        // Invalid Opcode (INT6) - No Error Code
+-        let ud_handler = invalid_opcode_handler as u64;
+-        IDT.entries[6] = IdtEntry::new(ud_handler, 0x08, 0x8E);
+-
+-        // Double Fault (INT8) - Has Error Code, uses IST1 for fault isolation
+-        let df_handler = double_fault_handler as u64;
+-        IDT.entries[8] = IdtEntry::new_with_ist(df_handler, 0x08, 0x8E, 1);
+-
+-        // General Protection Fault (INT13) - Has Error Code
+-        let gp_handler = gp_fault_handler as u64;
+-        IDT.entries[13] = IdtEntry::new(gp_handler, 0x08, 0x8E);
+-
+-        // Page Fault (INT14) - Has Error Code
+-        let pf_handler = page_fault_handler as u64;
+-        IDT.entries[14] = IdtEntry::new(pf_handler, 0x08, 0x8E);
+-        
+-        // IRQ0: Timer (32)
+-        let timer_handler = timer_handler_addr();
+-        IDT.entries[32] = IdtEntry::new(timer_handler, 0x08, 0x8E);
+-
+-        // IRQ1: Keyboard (32 + 1 = 33)
+-        let kb_handler = crate::drivers::keyboard::keyboard_handler_addr();
+-        IDT.entries[33] = IdtEntry::new(kb_handler, 0x08, 0x8E);
+-
+-        // IRQ12: Mouse (44)
+-        let mouse_handler = crate::drivers::mouse::mouse_handler_addr();
+-        IDT.entries[44] = IdtEntry::new(mouse_handler, 0x08, 0x8E);
+-
+-        // IRQ11: RTL8139 (32 + 11 = 43)
+-        let net_handler = rtl8139_handler_addr();
+-        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+-
+-        // IRQ11: RTL8139 (32 + 11 = 43)
+-        let net_handler = rtl8139_handler_addr();
+-        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+-
+-        // Fill ALL remaining IRQ vectors (32-47)
+-        let stub = irq_stub_handler_addr();
+-        for vec in 32..=47 {
+-            // Skip vectors with real handlers
+-            if vec == 32 || vec == 33 || vec == 43 || vec == 44 {
+-                continue;
+-            }
+-            IDT.entries[vec] = IdtEntry::new(stub, 0x08, 0x8E);
+-        }
++        // Exceptions (0-31)
++        IDT.entries[0] = IdtEntry::new(exc_divide_error as u64, 0x08, 0x8E);
++        IDT.entries[3] = IdtEntry::new(exc_breakpoint as u64, 0x08, 0x8E);
++        IDT.entries[6] = IdtEntry::new(exc_invalid_opcode as u64, 0x08, 0x8E);
++        IDT.entries[8] = IdtEntry::new_ist(exc_double_fault as u64, 0x08, 0x8E, 1);
++        IDT.entries[13] = IdtEntry::new(exc_gpf as u64, 0x08, 0x8E);
++        IDT.entries[14] = IdtEntry::new(exc_page_fault as u64, 0x08, 0x8E);
++
++        // IRQs (32-47)
++        IDT.entries[32] = IdtEntry::new(irq_timer as u64, 0x08, 0x8E);
++        IDT.entries[33] = IdtEntry::new(irq_keyboard as u64, 0x08, 0x8E);
++        IDT.entries[44] = IdtEntry::new(irq_mouse as u64, 0x08, 0x8E);
++        IDT.entries[43] = IdtEntry::new(irq_net as u64, 0x08, 0x8E);
++
++        // Stub remaining IRQs
++        for i in 34..43 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
++        for i in 45..48 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
+ 
+         let idt_ptr = IdtPointer {
+             limit: (size_of::<Idt>() - 1) as u16,
+@@ -126,216 +90,259 @@
+     }
+ }
+ 
+-// MACRO for Exception with Error Code
+-macro_rules! exception_err_handler {
++// =============================================================================
++// ASSEMBLY STUBS (Conditional swapgs + Register Save)
++// =============================================================================
++
++macro_rules! interrupt_stub {
+     ($name:ident, $rust_handler:ident) => {
+         #[unsafe(naked)]
+         extern "C" fn $name() {
++            unsafe {
+             naked_asm!(
+-                "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+-                "mov rdi, [rsp + 72]", // Error Code is at RSP + 9*8 = 72
+-                "mov rsi, [rsp + 80]", // RIP is at RSP + 72 + 8 = 80
++                    "push 0", // Dummy Error Code
++                    "push r15", "push r14", "push r13", "push r12",
++                    "push r11", "push r10", "push r9", "push r8",
++                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
++                    "push rbx",
++
++                    "mov rax, [rsp + 136]", // CS at [rsp + 17*8]
++                    "and rax, 3",
++                    "cmp rax, 3",
++                    "jne 2f",
++                    "swapgs",
++                    "2:",
++
++                    "mov rdi, rsp",
+                 "call {}",
+-                "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+-                "add rsp, 8", // Pop error code
++
++                    "mov rax, [rsp + 136]",
++                    "and rax, 3",
++                    "cmp rax, 3",
++                    "jne 3f",
++                    "swapgs",
++                    "3:",
++
++                    "pop rbx",
++                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
++                    "pop r8", "pop r9", "pop r10", "pop r11",
++                    "pop r12", "pop r13", "pop r14", "pop r15",
++                    "add rsp, 8", // Pop dummy error code
+                 "iretq",
+                 sym $rust_handler
+             );
+         }
+     }
++    };
+ }
+ 
++macro_rules! interrupt_stub_err {
++    ($name:ident, $rust_handler:ident) => {
+ #[unsafe(naked)]
+-extern "C" fn breakpoint_handler() {
++        extern "C" fn $name() {
++            unsafe {
+     naked_asm!(
+-        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+-        "call rust_breakpoint_handler",
+-        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+-        "iretq"
+-    );
+-}
++                    // Error code already pushed by CPU
++                    "push r15", "push r14", "push r13", "push r12",
++                    "push r11", "push r10", "push r9", "push r8",
++                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
++                    "push rbx",
++
++                    "mov rax, [rsp + 136]",
++                    "and rax, 3",
++                    "cmp rax, 3",
++                    "jne 2f",
++                    "swapgs",
++                    "2:",
+ 
+-// -- Exception Handlers (No Error Code) --
++                    "mov rdi, rsp",
++                    "call {}",
+ 
+-#[unsafe(naked)]
+-extern "C" fn divide_error_handler() {
+-    naked_asm!(
+-        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+-        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+-        "call rust_divide_error_handler",
+-        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+-        "iretq"
++                    "mov rax, [rsp + 136]",
++                    "and rax, 3",
++                    "cmp rax, 3",
++                    "jne 3f",
++                    "swapgs",
++                    "3:",
++
++                    "pop rbx",
++                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
++                    "pop r8", "pop r9", "pop r10", "pop r11",
++                    "pop r12", "pop r13", "pop r14", "pop r15",
++                    "add rsp, 8", // Pop real error code
++                    "iretq",
++                    sym $rust_handler
+     );
+ }
+-
+-#[unsafe(naked)]
+-extern "C" fn invalid_opcode_handler() {
+-    naked_asm!(
+-        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+-        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+-        "call rust_invalid_opcode_handler",
+-        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+-        "iretq"
+-    );
++        }
++    };
+ }
+ 
+-exception_err_handler!(double_fault_handler, rust_double_fault_handler);
+-exception_err_handler!(gp_fault_handler, rust_gp_fault_handler);
+-exception_err_handler!(page_fault_handler, rust_page_fault_handler);
++// Common structure for Rust exception handlers to receive
++#[repr(C)]
++pub struct InterruptFrame {
++    pub rbx: u64,
++    pub rax: u64, pub rcx: u64, pub rdx: u64, pub rsi: u64, pub rdi: u64, pub rbp: u64,
++    pub r8: u64,  pub r9: u64,  pub r10: u64, pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
++    pub err_code: u64,
++    pub rip: u64,
++    pub cs: u64,
++    pub rflags: u64,
++    pub rsp: u64,
++    pub ss: u64,
++}
++
++interrupt_stub!(exc_divide_error, rust_exc_divide_error);
++interrupt_stub!(exc_breakpoint, rust_exc_breakpoint);
++interrupt_stub!(exc_invalid_opcode, rust_exc_invalid_opcode);
++interrupt_stub_err!(exc_double_fault, rust_exc_double_fault);
++interrupt_stub_err!(exc_gpf, rust_exc_gpf);
++interrupt_stub_err!(exc_page_fault, rust_exc_page_fault);
++
++interrupt_stub!(irq_timer, rust_irq_timer);
++interrupt_stub!(irq_keyboard, rust_irq_keyboard);
++interrupt_stub!(irq_mouse, rust_irq_mouse);
++interrupt_stub!(irq_net, rust_irq_net);
++interrupt_stub!(irq_stub, rust_irq_stub);
++
++// =============================================================================
++// RUST HANDLERS
++// =============================================================================
+ 
+ #[no_mangle]
+-extern "C" fn rust_divide_error_handler(rip: u64) {
++extern "C" fn rust_exc_divide_error(frame: &InterruptFrame) {
+     unsafe {
+-        print_serial("DIVIDE BY ZERO at RIP: ");
+-        print_hex(rip);
+-        print_serial("\n");
++        print_serial("\n!!! EXCEPTION: DIVIDE BY ZERO !!!\n");
++        dump_frame(frame);
++        loop { asm!("hlt"); }
+     }
+-    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_invalid_opcode_handler(rip: u64) {
++extern "C" fn rust_exc_breakpoint(frame: &InterruptFrame) {
+     unsafe {
+-        print_serial("INVALID OPCODE at RIP: ");
+-        print_hex(rip);
++        print_serial("\n[Breakpoint] RIP: "); print_hex(frame.rip);
+         print_serial("\n");
+     }
+-    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_breakpoint_handler() {
+-    unsafe { print_serial("INT3\n"); }
++extern "C" fn rust_exc_invalid_opcode(frame: &InterruptFrame) {
++    unsafe {
++        print_serial("\n!!! EXCEPTION: INVALID OPCODE !!!\n");
++        dump_frame(frame);
++        loop { asm!("hlt"); }
++    }
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_double_fault_handler(_err: u64) {
+-    // Running on IST1 stack — safe even with corrupted kernel stack
++extern "C" fn rust_exc_double_fault(frame: &InterruptFrame) {
+     unsafe {
+-        print_serial("DOUBLE FAULT (IST1)\n");
++        print_serial("\n!!! EXCEPTION: DOUBLE FAULT (IST1) !!!\n");
++        dump_frame(frame);
++        
++        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
++        print_serial("  CR2: "); print_hex(cr2);
++        
++        let cr3: u64; asm!("mov {}, cr3", out(reg) cr3);
++        print_serial("  CR3: "); print_hex(cr3);
++        print_serial("\nCPU HALTED.\n");
++        loop { asm!("hlt"); }
+     }
+-    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_gp_fault_handler(err: u64, rip: u64) {
++extern "C" fn rust_exc_gpf(frame: &InterruptFrame) {
+     unsafe { 
+-        print_serial("GP FAULT at RIP: ");
+-        print_hex(rip);
+-        print_serial(" Error Code: ");
+-        print_hex(err);
+-        print_serial("\n");
++        print_serial("\n!!! EXCEPTION: GENERAL PROTECTION FAULT !!!\n");
++        dump_frame(frame);
++        loop { asm!("hlt"); }
+     }
+-    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_page_fault_handler(err: u64) {
+-    let cr2: u64;
++extern "C" fn rust_exc_page_fault(frame: &InterruptFrame) {
+     unsafe { 
+-        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); 
+-        print_serial("PAGE FAULT at CR2=");
+-        print_hex(cr2);
+-        print_serial(" Err=");
+-        print_hex(err);
+-        // Decode error code bits
+-        if err & 1 != 0 { print_serial(" [PRESENT]"); }
+-        if err & 2 != 0 { print_serial(" [WRITE]"); } else { print_serial(" [READ]"); }
+-        if err & 4 != 0 { print_serial(" [USER]"); } else { print_serial(" [KERNEL]"); }
+-        if err & 8 != 0 { print_serial(" [RSVD]"); }
+-        if err & 16 != 0 { print_serial(" [IFETCH]"); }
+-        print_serial("\n");
++        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
++        let gs_base: u64;
++        let low: u32; let high: u32;
++        asm!("rdmsr", in("rcx") 0xC0000101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
++        gs_base = ((high as u64) << 32) | (low as u64);
++
++        print_serial("\n!!! EXCEPTION: PAGE FAULT !!!\n");
++        print_serial("  CR2: "); print_hex(cr2);
++        print_serial("  GS_BASE: "); print_hex(gs_base);
++        dump_frame(frame);
++        loop { asm!("hlt"); }
+     }
+-    loop {}
+ }
+ 
+-pub unsafe fn print_hex(mut n: u64) {
+-    let hex = b"0123456789ABCDEF";
+-    let mut buf = [0u8; 18]; // 0x + 16 digits
+-    buf[0] = b'0';
+-    buf[1] = b'x';
+-    for i in 0..16 {
+-        buf[17 - i] = hex[(n & 0xF) as usize];
+-        n >>= 4;
+-    }
+-    for b in buf {
+-        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
++#[no_mangle]
++extern "C" fn rust_irq_timer(_frame: &InterruptFrame) {
++    unsafe {
++        crate::cpu::pic::notify_eoi(0);
++        crate::process::scheduler::tick();
+     }
+ }
+ 
+-#[unsafe(naked)]
+-extern "C" fn timer_handler_wrapper() {
+-    naked_asm!(
+-        "push rax", "push rbx", "push rcx", "push rdx",
+-        "push rsi", "push rdi", "push rbp",
+-        "push r8", "push r9", "push r10", "push r11",
+-        "push r12", "push r13", "push r14", "push r15",
+-        "call rust_timer_handler",
+-        "pop r15", "pop r14", "pop r13", "pop r12",
+-        "pop r11", "pop r10", "pop r9", "pop r8",
+-        "pop rbp", "pop rdi", "pop rsi",
+-        "pop rdx", "pop rcx", "pop rbx", "pop rax",
+-        "iretq"
+-    );
++#[no_mangle]
++extern "C" fn rust_irq_keyboard(_frame: &InterruptFrame) {
++    unsafe {
++        crate::drivers::keyboard::rust_keyboard_handler();
++        crate::cpu::pic::notify_eoi(1);
+ }
+-
+-fn timer_handler_addr() -> u64 {
+-    timer_handler_wrapper as u64
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_timer_handler() {
++extern "C" fn rust_irq_mouse(_frame: &InterruptFrame) {
+     unsafe {
+-        crate::cpu::pic::notify_eoi(0);
+-        crate::process::scheduler::tick();
++        crate::drivers::mouse::rust_mouse_handler();
++        crate::cpu::pic::notify_eoi(12);
+     }
+ }
+ 
+-unsafe fn print_serial(s: &str) {
+-     for b in s.bytes() {
+-        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
+-     }
++#[no_mangle]
++extern "C" fn rust_irq_net(_frame: &InterruptFrame) {
++    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
++    crate::net::dispatch_packets();
++    unsafe { crate::cpu::pic::notify_eoi(11); }
+ }
+ 
+-// Stub handler for unhandled IRQs — just sends EOI
+-#[unsafe(naked)]
+-extern "C" fn irq_stub_handler_wrapper() {
+-    naked_asm!(
+-        "push rax",
+-        "call rust_irq_stub_handler",
+-        "pop rax",
+-        "iretq"
+-    );
++#[no_mangle]
++extern "C" fn rust_irq_stub(_frame: &InterruptFrame) {
++    unsafe { crate::cpu::pic::notify_eoi(0); }
+ }
+ 
+-fn irq_stub_handler_addr() -> u64 {
+-    irq_stub_handler_wrapper as u64
++// =============================================================================
++// UTILITIES
++// =============================================================================
++
++unsafe fn dump_frame(f: &InterruptFrame) {
++    print_serial("  RIP: "); print_hex(f.rip);
++    print_serial("  CS: "); print_hex(f.cs);
++    print_serial("  ERR: "); print_hex(f.err_code);
++    print_serial("\n  RSP: "); print_hex(f.rsp);
++    print_serial("  SS: "); print_hex(f.ss);
++    print_serial("\n  RAX: "); print_hex(f.rax);
++    print_serial(" RBX: "); print_hex(f.rbx);
++    print_serial("\n");
+ }
+ 
+-#[unsafe(naked)]
+-extern "C" fn rtl8139_handler() {
+-    unsafe {
+-        naked_asm!(
+-            "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+-            "call rust_rtl8139_handler",
+-            "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+-            "iretq"
+-        );
++pub unsafe fn print_hex(mut n: u64) {
++    let hex = b"0123456789ABCDEF";
++    let mut buf = [0u8; 18];
++    buf[0] = b'0'; buf[1] = b'x';
++    for i in 0..16 {
++        buf[17 - i] = hex[(n & 0xF) as usize];
++        n >>= 4;
+     }
++    for b in buf {
++        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
+ }
+-
+-#[no_mangle]
+-extern "C" fn rust_rtl8139_handler() {
+-    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
+-    crate::net::dispatch_packets();
+-    unsafe { crate::cpu::pic::notify_eoi(11); } // IRQ11
+ }
+ 
+-pub fn rtl8139_handler_addr() -> u64 { rtl8139_handler as u64 }
+-
+-#[no_mangle]
+-extern "C" fn rust_irq_stub_handler() {
+-    unsafe {
+-        crate::cpu::pic::notify_eoi(0);
++pub unsafe fn print_serial(s: &str) {
++    for b in s.bytes() {
++        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
+     }
+ }
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/percpu.rs src/cpu/percpu.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/percpu.rs	2026-05-06 09:42:43.207924400 +0000
++++ src/cpu/percpu.rs	2026-05-04 18:14:20.077961800 +0000
+@@ -9,6 +9,8 @@
+     pub current_pid: usize,
+     pub stack_top: u64,
+     pub total_ticks: u64,
++    pub kernel_stack: u64,
++    pub temp_rsp: u64,
+ }
+ 
+ impl PRCB {
+@@ -20,11 +22,14 @@
+             current_pid: 0,
+             stack_top: 0,
+             total_ticks: 0,
++            kernel_stack: 0,
++            temp_rsp: 0,
+         }
+     }
+ 
+-    pub fn init(&mut self, addr: u64) {
++    pub fn init(&mut self, addr: u64, id: u32) {
+         self.self_ptr = addr;
++        self.cpu_id = id;
+     }
+ }
+ 
+@@ -50,6 +55,12 @@
+     id as usize
+ }
+ 
++pub fn set_kernel_stack(stack: u64) {
++    unsafe {
++        core::arch::asm!("mov gs:[40], {}", in(reg) stack, options(nostack, nomem, preserves_flags));
++    }
++}
++
+ /// Sets the GS_BASE MSR to point to this CPU's PRCB
+ pub unsafe fn write_gs_base(addr: u64) {
+     let low = (addr & 0xFFFFFFFF) as u32;
+@@ -63,3 +74,17 @@
+         options(nostack, preserves_flags)
+     );
+ }
++
++/// Sets the KERNEL_GS_BASE MSR
++pub unsafe fn write_kernel_gs_base(addr: u64) {
++    let low = (addr & 0xFFFFFFFF) as u32;
++    let high = (addr >> 32) as u32;
++    // MSR_KERNEL_GS_BASE = 0xC0000102
++    core::arch::asm!(
++        "wrmsr",
++        in("rcx") 0xC0000102u32,
++        in("rax") low,
++        in("rdx") high,
++        options(nostack, preserves_flags)
++    );
++}
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/smp.rs src/cpu/smp.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/smp.rs	2026-05-06 09:42:43.226904400 +0000
++++ src/cpu/smp.rs	2026-05-04 18:15:22.017971600 +0000
+@@ -83,24 +83,28 @@
+         );
+     }
+ 
++    // Initialize this AP's PRCB for per-cpu storage before GDT/IDT init
++    unsafe {
++        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
++        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr, cpu_num as u32);
++        crate::cpu::percpu::write_gs_base(prcb_addr);
++        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
++    }
++    
+     // Load the BSP's GDT (without touching TSS/LTR to avoid GP fault).
+     // The trampoline's GDT is in the 0x8000 page which may be overwritten
+     // when the next AP boots, so we must switch to the kernel's permanent GDT.
+-    crate::cpu::gdt::init_ap();
++    unsafe { crate::cpu::gdt::init_ap(cpu_num as usize); }
+ 
+     // Load the shared IDT so fault handlers work on this core.
+     crate::cpu::idt::init();
+ 
+-    // Initialize this AP's PRCB for per-cpu storage
+-    unsafe {
+-        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
+-        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr);
+-        crate::cpu::percpu::write_gs_base(prcb_addr);
+-    }
+-
+     // Signal that this AP is online.
+     AP_READY.store(true, Ordering::SeqCst);
+ 
++    // Start scheduling
++    crate::process::scheduler::schedule();
++    
+     loop {
+         unsafe { asm!("hlt", options(nomem, nostack)); }
+     }
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/syscall.rs src/cpu/syscall.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/syscall.rs	2026-05-06 09:42:43.236987600 +0000
++++ src/cpu/syscall.rs	2026-05-04 18:25:55.635949900 +0000
+@@ -8,25 +8,18 @@
+ const MSR_FMASK: u32 = 0xC0000084;
+ const EFER_SCE: u64 = 1;
+ 
+-static mut KERNEL_STACK_PTR: u64 = 0;
+-static mut USER_STACK_BACKUP: u64 = 0;
+-
+ pub unsafe fn init() {
+     let efer = rdmsr(MSR_EFER);
+     wrmsr(MSR_EFER, efer | EFER_SCE);
+ 
+     // Star: 63:48 User Base (0x10), 47:32 Kernel Base (0x08)
+-    // 0x10 Base => Sysret CS=0x20(User Code), SS=0x18(User Data)
++    // 0x10 Base => Sysret CS=0x20(User Code 64), SS=0x18(User Data 64)
+     let star = (0x0010u64 << 48) | (0x0008u64 << 32);
+     wrmsr(MSR_STAR, star);
+ 
+     wrmsr(MSR_LSTAR, syscall_handler as u64);
+-    wrmsr(MSR_FMASK, 0x200); // Disable IF
+-    
+-    // Set kernel stack for syscall (Temporary: use current RSP)
+-    let rsp: u64;
+-    asm!("mov {}, rsp", out(reg) rsp);
+-    KERNEL_STACK_PTR = rsp; // Use boot stack for now
++    // Mask: IF (0x200), DF (0x400), TF (0x100)
++    wrmsr(MSR_FMASK, 0x700); 
+ }
+ 
+ 
+@@ -57,51 +50,81 @@
+ #[unsafe(naked)]
+ extern "C" fn syscall_handler() {
+     naked_asm!(
+-        // Save User RSP
+-        "mov [rip + {USER_BACKUP}], rsp",
+-        
+-        // Load Kernel RSP
+-        "mov rsp, [rip + {KERNEL_BACKUP}]",
++        "swapgs",
++        // Save User RSP to PRCB.temp_rsp (offset 48)
++        "mov gs:[48], rsp",
++        "mov rsp, gs:[40]",
++        
++        // Debug Assert: Ensure we are now on a high-half stack
++        "bt rsp, 63",
++        "jc 1f",
++        "ud2", // Not high-half? Crash immediately.
++        "1:",
+         
+-        // Save scratch
++        // Save scratch registers that Syscall might clobber or Rust might use
+         "push rcx", // User RIP
+         "push r11", // User RFLAGS
+         "push rbp",
+-        
+-        // Call Handler(ID=RAX, Arg1=RDI, Arg2=RSI, Arg3=RDX, Arg4=R10, Arg5=R8)
+-        // Rust ABI (AMD64): RDI, RSI, RDX, RCX, R8, R9.
+-        // We map to these. Note: Syscall R10 becomes RCX for Rust.
+-        "push r9",
++        "push rdi",
++        "push rsi",
++        "push rdx",
+         "push r8",
+-        "mov r9, r8",   // Arg6 (R9) = R8 (Syscall Arg5)
+-        "mov r8, r10",  // Arg5 (R8) = R10 (Syscall Arg4)
+-        "mov rcx, rdx", // Arg4 (RCX) = RDX (Syscall Arg3)
+-        "mov rdx, rsi", // Arg3 (RDX) = RSI (Syscall Arg2)
+-        "mov rsi, rdi", // Arg2 (RSI) = RDI (Syscall Arg1)
+-        "mov rdi, rax", // Arg1 (RDI) = ID (RAX)
++        "push r9",
++        "push r10",
++        
++        // Map arguments to Rust ABI (RDI, RSI, RDX, RCX, R8, R9)
++        // Syscall ABI: RAX(ID), RDI(1), RSI(2), RDX(3), R10(4), R8(5), R9(6)
++        // Rust ABI: RDI(ID), RSI(1), RDX(2), RCX(3), R8(4), R9(5)
++        
++        "mov r9, r8",   // Arg5 (R8) -> Rust Arg6 (R9)
++        "mov r8, r10",  // Arg4 (R10) -> Rust Arg5 (R8)
++        "mov rcx, rdx", // Arg3 (RDX) -> Rust Arg4 (RCX)
++        "mov rdx, rsi", // Arg2 (RSI) -> Rust Arg3 (RDX)
++        "mov rsi, rdi", // Arg1 (RDI) -> Rust Arg2 (RSI)
++        "mov rdi, rax", // ID (RAX) -> Rust Arg1 (RDI)
+         
+-        "sub rsp, 32", // Shadow space for Win64-like calls or alignment
++        "sub rsp, 8",   // Align stack to 16 bytes (9 pushes = 72 bytes, +8 = 80)
+         "call rust_syscall_dispatch",
+-        "add rsp, 32",
++        "add rsp, 8",
+         
+-        "pop r8", // Pop back
++        // Restore scratch registers
++        "pop r10",
+         "pop r9",
++        "pop r8",
++        "pop rdx",
++        "pop rsi",
++        "pop rdi",
+         "pop rbp",
+         "pop r11",
+         "pop rcx",
+         
+-        // Restore User RSP
+-        "mov rsp, [rip + {USER_BACKUP}]",
++        // Restore User RSP from PRCB.temp_rsp (offset 48)
++        "mov rsp, gs:[48]",
+         
+-        "sysretq",
++        // Enforce Canonical RIP in RCX before sysretq (AMD64 rule)
++        "mov rax, rcx",
++        "sar rax, 47",
++        "inc rax",
++        "cmp rax, 2",
++        "jb 1f",
++        "ud2", // Non-canonical RIP would #GP on sysretq
++        "1:",
+         
+-        USER_BACKUP = sym USER_STACK_BACKUP,
+-        KERNEL_BACKUP = sym KERNEL_STACK_PTR,
++        "swapgs",
++        "sysretq"
+     );
+ }
+ 
++use core::fmt::Write;
++use crate::process::scheduler;
++
+ #[no_mangle]
+ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
++    {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "[Syscall] CPU={} PID={} ID={} A1={:#x} A2={:#x}\n", 
++            crate::cpu::percpu::get_current_cpu_id(), crate::process::scheduler::get_current_pid(), id, a1, a2);
++    }
+     // Increment Syscall Count (Maturity Metering)
+     {
+         let mut tasks = crate::process::scheduler::TASKS.lock();
+diff -ur -w Ainux/Ainux/custom_kernel/src/cpu/userspace.rs src/cpu/userspace.rs
+--- Ainux/Ainux/custom_kernel/src/cpu/userspace.rs	2026-05-06 09:42:43.243228500 +0000
++++ src/cpu/userspace.rs	2026-05-04 16:51:04.687524100 +0000
+@@ -1,19 +1,54 @@
+ use core::arch::asm;
+ use crate::cpu::gdt::{USER_CODE, USER_DATA};
+ 
+-// Enter Userspace (Ring 3)
+-// Arguments: function pointer (RIP), stack pointer (RSP)
+ pub unsafe fn enter_userspace(entry_point: u64, stack_ptr: u64) {
+-    // We must fake an interrupt stack frame to return "back" to Ring 3.
+-    // Frame: [SS, RSP, RFLAGS, CS, RIP]
++    // DIAGNOSTICS: Check mappings before transition
++    let cr3 = crate::mm::vmm::read_cr3();
++    let cpu_id = crate::cpu::percpu::get_current_cpu_id();
+     
+-    // Selectors must be ORed with 3 (RPL=3).
+-    // USER_DATA = 0x18 | 3 = 0x1B
+-    // USER_CODE = 0x20 | 3 = 0x23
++    unsafe {
++        crate::cpu::idt::print_serial("\n[Userspace] CPU ");
++        crate::cpu::idt::print_hex(cpu_id as u64);
++        crate::cpu::idt::print_serial(" entering user mode...\n");
++        crate::cpu::idt::print_serial("  RIP: "); crate::cpu::idt::print_hex(entry_point);
++        crate::cpu::idt::print_serial("  RSP: "); crate::cpu::idt::print_hex(stack_ptr);
++        crate::cpu::idt::print_serial("  CR3: "); crate::cpu::idt::print_hex(cr3);
++        crate::cpu::idt::print_serial("\n");
+     
+-    // RFLAGS: 0x202 (Interrupts Enabled, Reserved Bit 1 set)
++        // Validate Entry Point Mapping
++        if let Some(entry_pte) = crate::mm::vmm::get_mapping_info(cr3, entry_point) {
++            crate::cpu::idt::print_serial("  Entry PTE: "); crate::cpu::idt::print_hex(entry_pte);
++            if entry_pte & 0x4 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT USER]"); }
++            if entry_pte & 0x1 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT PRESENT]"); }
++        } else {
++            crate::cpu::idt::print_serial("  Entry PTE: [ERR: NOT MAPPED]");
++        }
++        crate::cpu::idt::print_serial("\n");
++
++        // Validate Stack Mapping (check top of stack)
++        if let Some(stack_pte) = crate::mm::vmm::get_mapping_info(cr3, stack_ptr - 8) {
++            crate::cpu::idt::print_serial("  Stack PTE: "); crate::cpu::idt::print_hex(stack_pte);
++            if stack_pte & 0x4 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT USER]"); }
++        } else {
++            crate::cpu::idt::print_serial("  Stack PTE: [ERR: NOT MAPPED]");
++        }
++        crate::cpu::idt::print_serial("\n");
+     
++        // Final IRETQ Frame Check
++        crate::cpu::idt::print_serial("  CS: "); crate::cpu::idt::print_hex(USER_CODE as u64);
++        crate::cpu::idt::print_serial(" SS: "); crate::cpu::idt::print_hex(USER_DATA as u64);
++        crate::cpu::idt::print_serial("\n");
++    }
++
++    // We must fake an interrupt stack frame to return "back" to Ring 3.
++    // Frame: [SS, RSP, RFLAGS, CS, RIP]
+     asm!(
++        "cli",
++        "mov ds, {ss:e}",
++        "mov es, {ss:e}",
++        "swapgs",
++        "mov fs, {zero:e}",
++        "mov gs, {zero:e}",
+         "push {ss}",
+         "push {rsp}",
+         "push {rflags}",
+@@ -22,9 +57,10 @@
+         "iretq",
+         ss = in(reg) USER_DATA as u64,
+         rsp = in(reg) stack_ptr,
+-        rflags = const 0x202,
++        rflags = const 0x3202,
+         cs = in(reg) USER_CODE as u64,
+         rip = in(reg) entry_point,
++        zero = in(reg) 0u64,
+         options(noreturn)
+     );
+ }
+diff -ur -w Ainux/Ainux/custom_kernel/src/drivers/keyboard.rs src/drivers/keyboard.rs
+--- Ainux/Ainux/custom_kernel/src/drivers/keyboard.rs	2026-05-06 09:42:43.308923900 +0000
++++ src/drivers/keyboard.rs	2026-05-06 09:25:48.609462900 +0000
+@@ -164,7 +164,7 @@
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_keyboard_handler() {
++pub extern "C" fn rust_keyboard_handler() {
+     unsafe {
+         let status = inb(0x64);
+         if (status & 1) == 0 {
+diff -ur -w Ainux/Ainux/custom_kernel/src/drivers/mouse.rs src/drivers/mouse.rs
+--- Ainux/Ainux/custom_kernel/src/drivers/mouse.rs	2026-05-06 09:42:43.343309900 +0000
++++ src/drivers/mouse.rs	2026-05-06 09:25:54.673192500 +0000
+@@ -166,7 +166,7 @@
+ static mut MOUSE_BYTE: [u8; 3] = [0; 3];
+ 
+ #[no_mangle]
+-extern "C" fn rust_mouse_handler() {
++pub extern "C" fn rust_mouse_handler() {
+     unsafe {
+         let byte = inb(0x60);
+         
+diff -ur -w Ainux/Ainux/custom_kernel/src/fs/ext4.rs src/fs/ext4.rs
+--- Ainux/Ainux/custom_kernel/src/fs/ext4.rs	2026-05-06 09:42:43.664758100 +0000
++++ src/fs/ext4.rs	2026-05-06 06:58:19.437449300 +0000
+@@ -683,6 +683,42 @@
+             }
+         }
+     }
++
++    fn parent(&self) -> VfsResult<vfs::ArcInode> {
++        if (self.disk_inode.mode & 0x4000) == 0 {
++            return Err(VfsError::NotADirectory);
++        }
++        
++        // Read block 0 to find ".."
++        let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
++        let block_id = self.disk_inode.block[0];
++        if block_id == 0 { return Err(VfsError::IOError); }
++        self.fs.read_block(block_id, &mut buf);
++        
++        // ".." is usually the second entry (offset 12 if "." is 12 bytes)
++        // Let's iterate just to be safe.
++        let mut offset = 0;
++        while offset < buf.len() {
++            let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
++            let entry = unsafe { *entry_ptr };
++            if entry.rec_len == 0 { break; }
++            
++            let header_size = core::mem::size_of::<DirEntry2>();
++            let name_slice = unsafe { core::slice::from_raw_parts(buf.as_ptr().add(offset + header_size), entry.name_len as usize) };
++            if let Ok(name) = core::str::from_utf8(name_slice) {
++                if name == ".." {
++                    let parent_inode = self.fs.read_inode(entry.inode)?;
++                    return Ok(Arc::new(Ext4Inode {
++                        fs: self.fs.clone(),
++                        inode_num: entry.inode,
++                        disk_inode: parent_inode,
++                    }));
++                }
++            }
++            offset += entry.rec_len as usize;
++        }
++        Err(VfsError::NotFound)
++    }
+ }
+ 
+ impl Ext4Inode {
+diff -ur -w Ainux/Ainux/custom_kernel/src/fs/procfs.rs src/fs/procfs.rs
+--- Ainux/Ainux/custom_kernel/src/fs/procfs.rs	2026-05-06 09:42:43.690611000 +0000
++++ src/fs/procfs.rs	2026-05-06 07:00:20.887182200 +0000
+@@ -115,6 +115,7 @@
+     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
++    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
+ }
+ 
+ impl Inode for ProcFileInode {
+@@ -168,6 +169,7 @@
+     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
++    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
+ }
+ 
+ #[derive(Debug)]
+diff -ur -w Ainux/Ainux/custom_kernel/src/fs/union.rs src/fs/union.rs
+--- Ainux/Ainux/custom_kernel/src/fs/union.rs	2026-05-06 09:42:43.708347100 +0000
++++ src/fs/union.rs	2026-05-06 07:00:43.520840200 +0000
+@@ -166,4 +166,13 @@
+             Err(VfsError::PermissionDenied)
+         }
+     }
++
++    fn parent(&self) -> VfsResult<ArcInode> {
++        // Step 7.2: Return parent of the primary layer (upper shadows lower)
++        if let Some(upper) = &self.upper {
++            upper.parent()
++        } else {
++            self.lower.parent()
++        }
++    }
+ }
+diff -ur -w Ainux/Ainux/custom_kernel/src/fs/vfs.rs src/fs/vfs.rs
+--- Ainux/Ainux/custom_kernel/src/fs/vfs.rs	2026-05-06 09:42:43.717416800 +0000
++++ src/fs/vfs.rs	2026-05-06 06:58:04.451499300 +0000
+@@ -67,6 +67,30 @@
+     fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
+     fn chmod(&self, mode: u16) -> VfsResult<()>;
+     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
++    fn parent(&self) -> VfsResult<ArcInode>; // Step 7.2: Upward traversal
++}
++
++pub fn is_descendant_of(root: ArcInode, target: ArcInode) -> bool {
++    let mut current = target.clone();
++    let root_id = root.id();
++    
++    loop {
++        if current.id() == root_id {
++            return true;
++        }
++        
++        // Try to go up
++        match current.parent() {
++            Ok(p) => {
++                if p.id() == current.id() {
++                    // Reached the real root of the FS
++                    return false;
++                }
++                current = p;
++            }
++            Err(_) => return false,
++        }
++    }
+ }
+ 
+ pub trait FileHandle: Send + Sync + core::fmt::Debug {
+diff -ur -w Ainux/Ainux/custom_kernel/src/main.rs src/main.rs
+--- Ainux/Ainux/custom_kernel/src/main.rs	2026-05-06 09:42:41.157474900 +0000
++++ src/main.rs	2026-05-06 09:55:51.249622600 +0000
+@@ -18,6 +18,7 @@
+ pub mod semantic;
+ pub mod manager;
+ pub mod net;
++pub mod wasm;
+ 
+ pub mod api;
+ pub mod shell;
+@@ -82,6 +83,7 @@
+ #[no_mangle]
+ pub extern "C" fn _start() -> ! {
+     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++    let _ = write!(serial, "D");
+     let _ = write!(serial, "\n");
+     let _ = write!(serial, "╔══════════════════════════════════════════════════╗\n");
+     let _ = write!(serial, "║         AINUX KERNEL v0.2 — GRUB/SMP            ║\n");
+@@ -102,17 +104,27 @@
+         let end_ptr = &mut __bss_end as *mut u8;
+         let size = end_ptr as usize - start_ptr as usize;
+ 
+-        // Verify BSS bounds (Basic sanity check to avoid massive overflows)
+-        if size < 0x10000000 { // 256MB sanity limit
++        let _ = write!(serial, "BSS: Start={:p}, End={:p}, Size={}\n", start_ptr, end_ptr, size);
++
++        if size > 0 && size < 0x10000000 {
++             let _ = write!(serial, "BSS: Zeroing...\n");
+              core::ptr::write_bytes(start_ptr, 0, size);
++             let _ = write!(serial, "BSS: Done.\n");
+         }
+ 
+         // Initialize GS_BASE for the BSP
+         let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
+-        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
++        let _ = write!(serial, "GS_BASE: PRCB[0] at {:p}\n", bsp_prcb_addr as *const u8);
++        
++        cpu::percpu::CPUS[0].init(bsp_prcb_addr, 0);
++        let _ = write!(serial, "GS_BASE: CPU State Init Done.\n");
++        
+         cpu::percpu::write_gs_base(bsp_prcb_addr);
++        let _ = write!(serial, "GS_BASE: Set.\n");
++        
++        cpu::percpu::write_kernel_gs_base(bsp_prcb_addr);
+     }
+-    let _ = write!(serial, "BSS zeroed and GS_BASE set to PRCB[0].\n");
++    let _ = write!(serial, "Kernel State Initialized.\n");
+     
+     // ─── Phase 1: Memory Subsystem (Multiboot) ───
+     let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
+@@ -139,13 +151,14 @@
+     // ─── Phase 2: Core CPU Structures ───
+     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
+     let _ = write!(serial, "Initializing GDT...\n");
+-    cpu::gdt::init();
++    unsafe { cpu::gdt::init(); }
+     let _ = write!(serial, "GDT Initialized.\n");
+ 
+     let _ = write!(serial, "Initializing IDT...\n");
+     cpu::idt::init();
+     let _ = write!(serial, "IDT Initialized.\n");
+ 
++
+     let _ = write!(serial, "Initializing PIC (legacy)...\n");
+     unsafe { cpu::pic::init(); }
+     let _ = write!(serial, "PIC Remapped.\n");
+@@ -183,6 +196,10 @@
+     drivers::mouse::init();
+     let _ = write!(serial, "Mouse Initialized (IRQ12 Unmasked).\n");
+     
++    // Initialize GUI Compositor
++    gui::compositor::Compositor::init();
++    let _ = write!(serial, "GUI Compositor Initialized.\n");
++    
+     drivers::video::init();
+     drivers::video::put_str("Ainux Kernel v0.1\n");
+     drivers::video::put_str("Initializing...\n");
+@@ -292,41 +309,13 @@
+                 let _ = write!(serial, "Config: Safety Mode (Defaults Loaded).\n");
+             }
+ 
+-            // Enable Interrupts (ONLY AT THE VERY END)
++            // Enable Interrupts
+             let _ = write!(serial, "DEBUG: Enabling Interrupts (STI)...\n");
+             unsafe { asm!("sti"); }
+             let _ = write!(serial, "DEBUG: Interrupts Enabled.\n");
+ 
+-            // Apply Config (Example: Network)
+-            {
+-                if let Some(sys_config) = config::CONFIG.lock().as_ref() {
+-                    let _ = write!(serial, "Config Applied: Hostname='{}' IP='{}'\n", sys_config.hostname, sys_config.ip_address);
+-                }
+-            }
+-            
+-            // TEST: Read hello.txt
+-            let root = fs::vfs::ROOT.lock();
+-            if let Some(root_inode) = root.as_ref() {
+-                 match root_inode.lookup("hello.txt") {
+-                     Ok(inode) => {
+-                         let _ = write!(serial, "VFS: Found hello.txt!\n");
+-                         if let Ok(handle) = inode.open(0) {
+-                             let mut buf = [0u8; 64];
+-                             if let Ok(n) = handle.read(&mut buf, 0) {
+-                                 let _ = write!(serial, "VFS: Read {} bytes: ", n);
+-                                 if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+-                                     let _ = write!(serial, "'{}'\n", s);
+-                                 } else {
+-                                      let _ = write!(serial, "<binary>\n");
+-                                 }
+-                             }
+-                         }
+-                     },
+-                     Err(e) => {
+-                          let _ = write!(serial, "VFS: hello.txt lookup failed: {:?}\n", e);
+-                     }
+-                 }
+-            }
++            // Proceed to manual boot menu/shell
++            let _ = write!(serial, "System ready for manual operation.\n");
+         },
+         Err(m) => {
+             let _ = write!(serial, "Ext4: Superblock NOT found! Magic: {:#x}\n", m);
+@@ -352,8 +341,9 @@
+     drivers::video::put_str("2. Network Diagnostics\n");
+     drivers::video::put_str("3. Reboot\n");
+     drivers::video::put_str("4. Shutdown\n");
+-    drivers::video::put_str("5. Load Default Config & Start Shell\n\n");
+-    drivers::video::put_str("Select option [1-5]: ");
++    drivers::video::put_str("5. Load Default Config & Start Shell\n");
++    drivers::video::put_str("6. Start Graphical Desktop (GUI)\n\n");
++    drivers::video::put_str("Select option [1-6]: ");
+ 
+     loop {
+         if let Some(c) = drivers::keyboard::pop_char() {
+@@ -393,6 +383,10 @@
+                     LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
+                     return;
+                 },
++                '6' => {
++                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
++                    start_gui_desktop();
++                },
+                 _ => {}
+             }
+         }
+@@ -431,9 +425,29 @@
+                         loop { core::arch::asm!("hlt"); }
+                     }
+                 },
++                '6' => {
++                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
++                    start_gui_desktop();
++                },
+                _ => {}
+             }
+         }
+-        unsafe { asm!("hlt"); }
++    }
++}
++
++fn start_gui_desktop() -> ! {
++    gui::compositor::Compositor::init();
++    crate::drivers::video::clear();
++    
++    // Add some sample windows
++    let mut wins = gui::compositor::WINDOWS.lock();
++    wins.push(gui::window::Window::new(1, 50, 50, 400, 300, "Kernel Shell"));
++    wins.push(gui::window::Window::new(2, 500, 100, 300, 200, "System Monitor"));
++    drop(wins);
++
++    loop {
++        gui::compositor::Compositor::render();
++        // Limit FPS to avoid pegging CPU (simplified)
++        for _ in 0..1000000 { unsafe { core::arch::asm!("nop"); } }
+     }
+ }
+diff -ur -w Ainux/Ainux/custom_kernel/src/mm/heap.rs src/mm/heap.rs
+--- Ainux/Ainux/custom_kernel/src/mm/heap.rs	2026-05-06 09:42:43.890027800 +0000
++++ src/mm/heap.rs	2026-05-04 14:38:37.185736000 +0000
+@@ -52,7 +52,7 @@
+ #[global_allocator]
+ static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
+ 
+-pub const HEAP_START: usize = 0x_4444_4444_0000;
++pub const HEAP_START: usize = 0xFFFF_9000_0000_0000;
+ 
+ pub fn init() {
+     init_custom(32 * 1024 * 1024);
+diff -ur -w Ainux/Ainux/custom_kernel/src/mm/pmm.rs src/mm/pmm.rs
+--- Ainux/Ainux/custom_kernel/src/mm/pmm.rs	2026-05-06 09:42:43.908122300 +0000
++++ src/mm/pmm.rs	2026-05-06 09:12:10.009113300 +0000
+@@ -72,7 +72,11 @@
+ /// HHDM offset. With our boot.asm identity mapping, physical addresses < 1GB
+ /// can be accessed directly (offset = 0). We keep this atomic for future
+ /// extension when we remap with a proper HHDM.
+-pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
++pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF800000000000);
++
++pub fn phys_to_virt(phys: u64) -> u64 {
++    phys + HHDM_OFFSET.load(Ordering::SeqCst)
++}
+ 
+ /// Total detected system memory in bytes
+ pub static TOTAL_MEMORY: AtomicU64 = AtomicU64::new(0);
+@@ -133,16 +137,20 @@
+             let fb_bpp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_bpp)) };
+             let fb_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_type)) };
+             
+-            let _ = write!(serial, "PMM: VESA Graphics Mode Detected!\n");
++            if fb_type == 1 {
++                let _ = write!(serial, "PMM: VESA Graphics Mode (RGB) Detected!\n");
+             let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
+             let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
+             
+             // Inject to Video Driver 
+-            *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = fb_addr;
++                *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = phys_to_virt(fb_addr);
+             *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
+             *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
+             *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
+             *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
++            } else {
++                let _ = write!(serial, "PMM: Multiboot reported Framebuffer Type {} (Text/Indexed). Falling back to Legacy VGA.\n", fb_type);
++            }
+             *crate::drivers::video::FRAMEBUFFER_TYPE.lock() = fb_type;
+         } else {
+             let _ = write!(serial, "PMM: No VESA Framebuffer provided by GRUB. Outputting to Legacy Text Mode.\n");
+@@ -256,9 +264,9 @@
+ 
+         let _ = write!(serial, "PMM: Bitmap at physical {:#x}\n", bitmap_phys);
+ 
+-        // With identity mapping, virtual == physical for < 1GB
+-        let hhdm_offset: u64 = 0;
+-        HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
++        // The boot.asm mapping PML4[256] points to physical [0-4GB]
++        let hhdm_offset: u64 = 0xFFFF800000000000;
++        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
+ 
+         let bitmap_virt = bitmap_phys + hhdm_offset;
+         let bitmap_ptr = bitmap_virt as *mut u64;
+@@ -330,7 +338,8 @@
+ 
+         // Place bitmap at 16MB
+         let bitmap_phys: u64 = 0x1000000;
+-        HHDM_OFFSET.store(0, Ordering::Relaxed);
++        let hhdm_offset = 0xFFFF800000000000;
++        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
+         TOTAL_MEMORY.store(total_bytes, Ordering::Relaxed);
+ 
+         let bitmap_ptr = bitmap_phys as *mut u64;
+@@ -346,7 +355,7 @@
+             usable_frames: total_frames,
+             allocated_frames: AtomicUsize::new(0),
+             last_idx: 0,
+-            hhdm_offset: 0,
++            hhdm_offset,
+         };
+ 
+         // Free everything above 2MB up to max
+diff -ur -w Ainux/Ainux/custom_kernel/src/mm/vmm.rs src/mm/vmm.rs
+--- Ainux/Ainux/custom_kernel/src/mm/vmm.rs	2026-05-06 09:42:43.935420700 +0000
++++ src/mm/vmm.rs	2026-05-04 16:38:30.856671600 +0000
+@@ -258,7 +258,50 @@
+     let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
+     let pt = slice::from_raw_parts_mut((pt_phys + hhdm_offset) as *mut u64, 512);
+ 
+-    pt[p1_idx] = paddr | flags | 1;
++    pt[p1_index(vaddr)] = paddr | flags | 1;
++}
++
++/// Returns the raw page table entry for a given virtual address in a specific PML4.
++/// Returns None if the mapping does not exist at any level.
++pub unsafe fn get_mapping_info(pml4_phys: u64, vaddr: u64) -> Option<u64> {
++    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
++    let pml4 = slice::from_raw_parts((pml4_phys + hhdm_offset) as *const u64, 512);
++
++    let p4_idx = p4_index(vaddr);
++    let p3_idx = p3_index(vaddr);
++    let p2_idx = p2_index(vaddr);
++    let p1_idx = p1_index(vaddr);
++
++    if pml4[p4_idx] & PRESENT == 0 { return None; }
++    
++    let pdpt_phys = pml4[p4_idx] & 0x000FFFFFFFFFF000;
++    let pdpt = slice::from_raw_parts((pdpt_phys + hhdm_offset) as *const u64, 512);
++    if pdpt[p3_idx] & PRESENT == 0 { return None; }
++
++    let pd_phys = pdpt[p3_idx] & 0x000FFFFFFFFFF000;
++    let pd = slice::from_raw_parts((pd_phys + hhdm_offset) as *const u64, 512);
++    if pd[p2_idx] & PRESENT == 0 { return None; }
++    
++    if pd[p2_idx] & HUGE_PAGE != 0 {
++        return Some(pd[p2_idx]);
++    }
++
++    let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
++    let pt = slice::from_raw_parts((pt_phys + hhdm_offset) as *const u64, 512);
++    if pt[p1_idx] & PRESENT == 0 { return None; }
++
++    Some(pt[p1_idx])
++}
++
++/// Maps a contiguous region of memory in a specific address space with user permissions.
++pub unsafe fn map_user_region(pml4_phys: u64, vaddr: u64, paddr: u64, size: usize, flags: u64) -> Result<(), &'static str> {
++    let pages = (size + 4095) / 4096;
++    for i in 0..pages {
++        let v = vaddr + (i as u64 * 4096);
++        let p = paddr + (i as u64 * 4096);
++        map_page_in_pml4(pml4_phys, v, p, flags | USER | PRESENT);
++    }
++    Ok(())
+ }
+ 
+ /// Creates a new address space (PML4) by copying kernel mappings from the active one.
+@@ -278,8 +321,6 @@
+                     pml4.entries[i] = active.entries[i];
+                 }
+                 
+-                // Also copy the first entry for identity mapping (TEMPORARY: until bootstrap finished)
+-                pml4.entries[0] = active.entries[0];
+             }
+             return pml4_phys;
+         }
+diff -ur -w Ainux/Ainux/custom_kernel/src/process/loader.rs src/process/loader.rs
+--- Ainux/Ainux/custom_kernel/src/process/loader.rs	2026-05-06 09:42:44.116307000 +0000
++++ src/process/loader.rs	2026-05-04 13:39:31.897054800 +0000
+@@ -1,5 +1,6 @@
+ use alloc::vec::Vec;
+ use crate::mm::vmm;
++use core::fmt::Write;
+ use crate::fs::vfs::{self, ArcInode, FileType};
+ 
+ #[repr(C)]
+@@ -74,7 +75,10 @@
+                          let to_copy = core::cmp::min(4096, ph.p_filesz - (p * 4096));
+                          let mut buf = alloc::vec![0u8; 4096];
+                          handle.read(&mut buf[..to_copy as usize], ph.p_offset + (p * 4096)).unwrap();
+-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
++                         
++                         // Use HHDM to copy data into the frame
++                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
++                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
+                      }
+                  }
+              }
+@@ -86,10 +90,22 @@
+ 
+ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
+     if let Ok(inode) = crate::shell::find_inode(path) {
++        unsafe {
++            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++            let _ = write!(serial, "[Loader] Found inode for {}\n", path);
++        }
+         let cr3 = crate::mm::vmm::create_address_space();
+         if cr3 == 0 { return Err(()); }
++        unsafe {
++            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++            let _ = write!(serial, "[Loader] Address space created: {:#x}\n", cr3);
++        }
+         
+         if let Ok(entry) = load_elf(inode, cr3) {
++            unsafe {
++                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++                let _ = write!(serial, "[Loader] ELF segments loaded. Entry: {:#x}\n", entry);
++            }
+             // Allocate a user stack (1MB)
+             let stack_top = 0x00007FFFFFFFF000;
+             let stack_pages = 256;
+@@ -97,9 +113,23 @@
+                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
+             }
++            unsafe {
++                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++                let _ = write!(serial, "[Loader] User stack allocated.\n");
++            }
+             
+             let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
+             return Ok(pid);
++        } else {
++            unsafe {
++                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++                let _ = write!(serial, "loader: load_elf failed for path: {}\n", path);
++            }
++        }
++    } else {
++        unsafe {
++            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++            let _ = write!(serial, "loader: find_inode failed for path: {}\n", path);
+         }
+     }
+     Err(())
+@@ -156,7 +186,10 @@
+                          let to_copy = core::cmp::min(4096, seg.size - (p * 4096));
+                          let mut buf = alloc::vec![0u8; 4096];
+                          handle.read(&mut buf[..to_copy as usize], seg.offset + (p * 4096)).unwrap();
+-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
++                         
++                         // Use HHDM to copy data into the frame
++                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
++                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
+                      }
+                  }
+              }
+diff -ur -w Ainux/Ainux/custom_kernel/src/process/scheduler.rs src/process/scheduler.rs
+--- Ainux/Ainux/custom_kernel/src/process/scheduler.rs	2026-05-06 09:42:44.148401600 +0000
++++ src/process/scheduler.rs	2026-05-06 07:18:56.964469600 +0000
+@@ -122,6 +122,15 @@
+     crate::cpu::smp::get_current_pid()
+ }
+ 
++pub fn update_current_task_fuel(consumed: u64) {
++    let pid = get_current_pid();
++    let mut tasks = TASKS.lock();
++    if let Some(task) = &mut tasks[pid] {
++        task.wasm_fuel = task.wasm_fuel.saturating_sub(consumed);
++        task.cpu_time_ticks += consumed / 1000;
++    }
++}
++
+ pub fn get_current_room() -> Option<alloc::sync::Arc<crate::process::room::RoomContext>> {
+     let pid = get_current_pid();
+     let tasks = TASKS.lock();
+@@ -244,7 +253,7 @@
+                 task.cr3 = cr3;
+                 task.userspace_stack_top = rsp;
+                 
+-                let kstack_top = task.stack.as_ptr() as u64 + 4096;
++                let kstack_top = task.stack.as_ptr() as u64 + 16384;
+                 let mut sp = kstack_top & !0xF;
+                 unsafe {
+                     sp -= 8;
+@@ -263,39 +272,38 @@
+     })
+ }
+ 
+-pub fn kernel_shim_entry() {
+-    let rip: u64;
+-    let rsp: u64;
+-    unsafe {
+-        crate::drivers::video::put_str("Shim Entry\n");
+-        core::arch::asm!("mov {}, r12", out(reg) rip);
+-        core::arch::asm!("mov {}, r13", out(reg) rsp);
++#[unsafe(naked)]
++pub unsafe extern "C" fn kernel_shim_entry() {
++    unsafe {
++        core::arch::naked_asm!(
++            "mov rdi, r12", // user rip
++            "mov rsi, r13", // user rsp
++            "call enter_userspace_rust",
++            "1: jmp 1b"
++        );
++    }
++}
+         
++#[no_mangle]
++pub unsafe extern "C" fn enter_userspace_rust(rip: u64, rsp: u64) {
+         crate::cpu::userspace::enter_userspace(rip, rsp);
+     }
+-}
+ 
+ pub fn schedule() {
+     crate::cpu::without_interrupts(|| {
+         let mut tasks = TASKS.lock();
+         let current_pid = crate::cpu::smp::get_current_pid();
+ 
+-        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
+-            next
+-        } else {
+-             // IDLE STRATEGY: Reduce host CPU load
+-             unsafe { core::arch::asm!("hlt"); }
+-             return;
+-        };
++        let next_pid = pick_next_task_internal(&mut tasks, current_pid);
+         
+-        if next_pid == current_pid {
++        if let Some(next) = next_pid {
++            if next == current_pid {
+             return;
+         }
+     
+     // Switch
+     let old_pid = current_pid;
+-    crate::cpu::smp::set_current_pid(next_pid);
+-
++            crate::cpu::smp::set_current_pid(next);
+     let current_tsc = crate::cpu::cpuid::rdtsc();
+     
+     // Safety: we know old_pid != next_pid.
+@@ -313,10 +321,10 @@
+     }
+     old_task.last_tsc = 0; // Clear on deschedule
+ 
+-    let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap() };
++            let next_task = unsafe { (*tasks_ptr.add(next)).as_mut().unwrap() };
+     next_task.state = TaskState::Running;
+     next_task.last_tsc = current_tsc; // Mark start on reschedule
+-    clear_ready(next_pid);
++            clear_ready(next);
+ 
+     if old_task.state == TaskState::Running {
+         old_task.state = TaskState::Ready;
+@@ -331,10 +339,18 @@
+         }
+     }
+     
+-    // Update TSS RSP0
++            // Update TSS RSP0 and per-cpu PRCB
+     let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
++            
++            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++            use core::fmt::Write;
++            if next == 2 { // Only log for the user task to reduce spam
++                let _ = write!(serial, "[Sched] Switching to Task {} (KStack: {:#x})\n", next, kstack_top);
++            }
++
+     unsafe {
+         crate::cpu::gdt::set_kernel_stack(kstack_top);
++                crate::cpu::percpu::set_kernel_stack(kstack_top);
+     }
+     
+     // Maturation: Final pointers for switch
+@@ -346,6 +362,14 @@
+     unsafe {
+         __switch(old_task_ptr, next_task_ptr);
+     }
++        } else {
++            // IDLE: Drop lock then halt
++            drop(tasks);
++            unsafe {
++                core::arch::asm!("sti; hlt");
++            }
++            return;
++        }
+     });
+ }
+ 
+diff -ur -w Ainux/Ainux/custom_kernel/src/process/task.rs src/process/task.rs
+--- Ainux/Ainux/custom_kernel/src/process/task.rs	2026-05-06 09:42:44.175786900 +0000
++++ src/process/task.rs	2026-05-06 06:58:47.432603200 +0000
+@@ -58,6 +58,10 @@
+     pub canary: u64,
+     pub room: Arc<crate::process::room::RoomContext>,
+     pub handle_table: Mutex<HandleTable>,
++    
++    // --- Phase 7: Wasm Orchestration ---
++    pub wasm_fuel: u64,
++    pub wasm_state: Option<alloc::sync::Arc<Mutex<crate::wasm::WasmProcessState>>>,
+ }
+ 
+ impl KernelObject for Task {
+@@ -126,6 +130,8 @@
+             canary: STACK_CANARY_MAGIC,
+             room,
+             handle_table: Mutex::new(HandleTable::new()),
++            wasm_fuel: 0,
++            wasm_state: None,
+         }
+     }
+ }
+diff -ur -w Ainux/Ainux/custom_kernel/src/shell.rs src/shell.rs
+--- Ainux/Ainux/custom_kernel/src/shell.rs	2026-05-06 09:42:41.169215200 +0000
++++ src/shell.rs	2026-05-04 13:41:35.627310200 +0000
+@@ -116,8 +116,20 @@
+ 
+ /// Resolves a path to an Inode by walking the VFS tree.
+ pub fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
++    unsafe {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "[Shell] find_inode for path: {}\n", path);
++    }
+     let resolved = resolve_path(path);
++    unsafe {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "[Shell] resolved path: {}\n", resolved);
++    }
+     let mut current = vfs::root();
++    unsafe {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "[Shell] vfs::root() acquired.\n");
++    }
+     
+     if resolved == "/" {
+         return Ok(current);
+Only in src: wasm

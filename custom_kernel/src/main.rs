@@ -18,6 +18,7 @@ pub mod object;
 pub mod semantic;
 pub mod manager;
 pub mod net;
+pub mod wasm;
 
 pub mod api;
 pub mod shell;
@@ -82,6 +83,7 @@ fn panic(_info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    let _ = write!(serial, "D");
     let _ = write!(serial, "\n");
     let _ = write!(serial, "╔══════════════════════════════════════════════════╗\n");
     let _ = write!(serial, "║         AINUX KERNEL v0.2 — GRUB/SMP            ║\n");
@@ -102,17 +104,27 @@ pub extern "C" fn _start() -> ! {
         let end_ptr = &mut __bss_end as *mut u8;
         let size = end_ptr as usize - start_ptr as usize;
 
-        // Verify BSS bounds (Basic sanity check to avoid massive overflows)
-        if size < 0x10000000 { // 256MB sanity limit
+        let _ = write!(serial, "BSS: Start={:p}, End={:p}, Size={}\n", start_ptr, end_ptr, size);
+
+        if size > 0 && size < 0x10000000 {
+             let _ = write!(serial, "BSS: Zeroing...\n");
              core::ptr::write_bytes(start_ptr, 0, size);
+             let _ = write!(serial, "BSS: Done.\n");
         }
 
         // Initialize GS_BASE for the BSP
         let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
-        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
+        let _ = write!(serial, "GS_BASE: PRCB[0] at {:p}\n", bsp_prcb_addr as *const u8);
+        
+        cpu::percpu::CPUS[0].init(bsp_prcb_addr, 0);
+        let _ = write!(serial, "GS_BASE: CPU State Init Done.\n");
+        
         cpu::percpu::write_gs_base(bsp_prcb_addr);
+        let _ = write!(serial, "GS_BASE: Set.\n");
+        
+        cpu::percpu::write_kernel_gs_base(bsp_prcb_addr);
     }
-    let _ = write!(serial, "BSS zeroed and GS_BASE set to PRCB[0].\n");
+    let _ = write!(serial, "Kernel State Initialized.\n");
     
     // ─── Phase 1: Memory Subsystem (Multiboot) ───
     let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
@@ -139,12 +151,13 @@ pub extern "C" fn _start() -> ! {
     // ─── Phase 2: Core CPU Structures ───
     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
     let _ = write!(serial, "Initializing GDT...\n");
-    cpu::gdt::init();
+    unsafe { cpu::gdt::init(); }
     let _ = write!(serial, "GDT Initialized.\n");
 
     let _ = write!(serial, "Initializing IDT...\n");
     cpu::idt::init();
     let _ = write!(serial, "IDT Initialized.\n");
+
 
     let _ = write!(serial, "Initializing PIC (legacy)...\n");
     unsafe { cpu::pic::init(); }
@@ -182,6 +195,10 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Keyboard Initialized (IRQ1 Unmasked).\n");
     drivers::mouse::init();
     let _ = write!(serial, "Mouse Initialized (IRQ12 Unmasked).\n");
+    
+    // Initialize GUI Compositor
+    gui::compositor::Compositor::init();
+    let _ = write!(serial, "GUI Compositor Initialized.\n");
     
     drivers::video::init();
     drivers::video::put_str("Ainux Kernel v0.1\n");
@@ -292,41 +309,13 @@ pub extern "C" fn _start() -> ! {
                 let _ = write!(serial, "Config: Safety Mode (Defaults Loaded).\n");
             }
 
-            // Enable Interrupts (ONLY AT THE VERY END)
+            // Enable Interrupts
             let _ = write!(serial, "DEBUG: Enabling Interrupts (STI)...\n");
             unsafe { asm!("sti"); }
             let _ = write!(serial, "DEBUG: Interrupts Enabled.\n");
 
-            // Apply Config (Example: Network)
-            {
-                if let Some(sys_config) = config::CONFIG.lock().as_ref() {
-                    let _ = write!(serial, "Config Applied: Hostname='{}' IP='{}'\n", sys_config.hostname, sys_config.ip_address);
-                }
-            }
-            
-            // TEST: Read hello.txt
-            let root = fs::vfs::ROOT.lock();
-            if let Some(root_inode) = root.as_ref() {
-                 match root_inode.lookup("hello.txt") {
-                     Ok(inode) => {
-                         let _ = write!(serial, "VFS: Found hello.txt!\n");
-                         if let Ok(handle) = inode.open(0) {
-                             let mut buf = [0u8; 64];
-                             if let Ok(n) = handle.read(&mut buf, 0) {
-                                 let _ = write!(serial, "VFS: Read {} bytes: ", n);
-                                 if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
-                                     let _ = write!(serial, "'{}'\n", s);
-                                 } else {
-                                      let _ = write!(serial, "<binary>\n");
-                                 }
-                             }
-                         }
-                     },
-                     Err(e) => {
-                          let _ = write!(serial, "VFS: hello.txt lookup failed: {:?}\n", e);
-                     }
-                 }
-            }
+            // Proceed to manual boot menu/shell
+            let _ = write!(serial, "System ready for manual operation.\n");
         },
         Err(m) => {
             let _ = write!(serial, "Ext4: Superblock NOT found! Magic: {:#x}\n", m);
@@ -352,8 +341,9 @@ fn boot_menu() {
     drivers::video::put_str("2. Network Diagnostics\n");
     drivers::video::put_str("3. Reboot\n");
     drivers::video::put_str("4. Shutdown\n");
-    drivers::video::put_str("5. Load Default Config & Start Shell\n\n");
-    drivers::video::put_str("Select option [1-5]: ");
+    drivers::video::put_str("5. Load Default Config & Start Shell\n");
+    drivers::video::put_str("6. Start Graphical Desktop (GUI)\n\n");
+    drivers::video::put_str("Select option [1-6]: ");
 
     loop {
         if let Some(c) = drivers::keyboard::pop_char() {
@@ -393,6 +383,10 @@ fn boot_menu() {
                     LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
                     return;
                 },
+                '6' => {
+                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
+                    crate::apps::awm::cmd_awm(&[]);
+                },
                 _ => {}
             }
         }
@@ -431,9 +425,14 @@ fn boot_menu() {
                         loop { core::arch::asm!("hlt"); }
                     }
                 },
+                '6' => {
+                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
+                    crate::apps::awm::cmd_awm(&[]);
+                },
                _ => {}
             }
         }
-        unsafe { asm!("hlt"); }
     }
 }
+
+
