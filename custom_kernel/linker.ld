@@ -10,9 +10,9 @@ SECTIONS
         src/asm/boot.o(.text .data .rodata)
     }
 
-    /* 2. Page tables and boot stack (Low Memory, excluded from Rust BSS) */
+    /* 2. Page tables (Low Memory) */
     .boot_bss ALIGN(4K) : {
-        src/asm/boot.o(.bss COMMON)
+        src/asm/boot.o(.boot_bss)
     }
 
     . = ALIGN(4K);
@@ -31,11 +31,17 @@ SECTIONS
         *(.data .data.*)
     }
 
+    /* Standard BSS (High Half) */
     .bss ALIGN(4K) (NOLOAD) : AT(ADDR(.bss) - 0xFFFFFFFF80000000) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
+    }
+
+    /* Dedicated Stack Section (High Half) - DO NOT ZERO THIS */
+    .stack ALIGN(4K) (NOLOAD) : AT(ADDR(.stack) - 0xFFFFFFFF80000000) {
+        *(.stack)
     }
 
     .got ALIGN(4K) : AT(ADDR(.got) - 0xFFFFFFFF80000000) {
@@ -48,4 +54,3 @@ SECTIONS
         *(.comment)
     }
 }
-

@@ -166,7 +166,7 @@ static mut MOUSE_CYCLE: u8 = 0;
 static mut MOUSE_BYTE: [u8; 3] = [0; 3];
 
 #[no_mangle]
-extern "C" fn rust_mouse_handler() {
+pub extern "C" fn rust_mouse_handler() {
     unsafe {
         let byte = inb(0x60);
         
@@ -193,7 +193,5 @@ extern "C" fn rust_mouse_handler() {
             }
             _ => MOUSE_CYCLE = 0,
         }
-
-        notify_eoi(12);
     }
 }

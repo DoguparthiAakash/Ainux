@@ -52,7 +52,7 @@ impl HybridAllocator {
 #[global_allocator]
 static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 
-pub const HEAP_START: usize = 0x_4444_4444_0000;
+pub const HEAP_START: usize = 0xFFFF_9000_0000_0000;
 
 pub fn init() {
     init_custom(32 * 1024 * 1024);

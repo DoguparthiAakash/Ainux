@@ -72,7 +72,11 @@ pub const PAGE_SIZE: usize = 4096;
 /// HHDM offset. With our boot.asm identity mapping, physical addresses < 1GB
 /// can be accessed directly (offset = 0). We keep this atomic for future
 /// extension when we remap with a proper HHDM.
-pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF800000000000);
+
+pub fn phys_to_virt(phys: u64) -> u64 {
+    phys + HHDM_OFFSET.load(Ordering::SeqCst)
+}
 
 /// Total detected system memory in bytes
 pub static TOTAL_MEMORY: AtomicU64 = AtomicU64::new(0);
@@ -133,16 +137,20 @@ impl BitmapPmm {
             let fb_bpp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_bpp)) };
             let fb_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_type)) };
             
-            let _ = write!(serial, "PMM: VESA Graphics Mode Detected!\n");
-            let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
-            let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
-            
-            // Inject to Video Driver 
-            *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = fb_addr;
-            *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
-            *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
-            *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
-            *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
+            if fb_type == 1 {
+                let _ = write!(serial, "PMM: VESA Graphics Mode (RGB) Detected!\n");
+                let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
+                let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
+                
+                // Inject to Video Driver 
+                *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = phys_to_virt(fb_addr);
+                *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
+                *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
+                *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
+                *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
+            } else {
+                let _ = write!(serial, "PMM: Multiboot reported Framebuffer Type {} (Text/Indexed). Falling back to Legacy VGA.\n", fb_type);
+            }
             *crate::drivers::video::FRAMEBUFFER_TYPE.lock() = fb_type;
         } else {
             let _ = write!(serial, "PMM: No VESA Framebuffer provided by GRUB. Outputting to Legacy Text Mode.\n");
@@ -256,9 +264,9 @@ impl BitmapPmm {
 
         let _ = write!(serial, "PMM: Bitmap at physical {:#x}\n", bitmap_phys);
 
-        // With identity mapping, virtual == physical for < 1GB
-        let hhdm_offset: u64 = 0;
-        HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
+        // The boot.asm mapping PML4[256] points to physical [0-4GB]
+        let hhdm_offset: u64 = 0xFFFF800000000000;
+        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
 
         let bitmap_virt = bitmap_phys + hhdm_offset;
         let bitmap_ptr = bitmap_virt as *mut u64;
@@ -330,7 +338,8 @@ impl BitmapPmm {
 
         // Place bitmap at 16MB
         let bitmap_phys: u64 = 0x1000000;
-        HHDM_OFFSET.store(0, Ordering::Relaxed);
+        let hhdm_offset = 0xFFFF800000000000;
+        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
         TOTAL_MEMORY.store(total_bytes, Ordering::Relaxed);
 
         let bitmap_ptr = bitmap_phys as *mut u64;
@@ -346,7 +355,7 @@ impl BitmapPmm {
             usable_frames: total_frames,
             allocated_frames: AtomicUsize::new(0),
             last_idx: 0,
-            hhdm_offset: 0,
+            hhdm_offset,
         };
 
         // Free everything above 2MB up to max

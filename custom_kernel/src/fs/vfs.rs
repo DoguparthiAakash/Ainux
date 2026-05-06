@@ -67,6 +67,30 @@ pub trait Inode: Send + Sync + crate::object::KernelObject {
     fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
     fn chmod(&self, mode: u16) -> VfsResult<()>;
     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
+    fn parent(&self) -> VfsResult<ArcInode>; // Step 7.2: Upward traversal
+}
+
+pub fn is_descendant_of(root: ArcInode, target: ArcInode) -> bool {
+    let mut current = target.clone();
+    let root_id = root.id();
+    
+    loop {
+        if current.id() == root_id {
+            return true;
+        }
+        
+        // Try to go up
+        match current.parent() {
+            Ok(p) => {
+                if p.id() == current.id() {
+                    // Reached the real root of the FS
+                    return false;
+                }
+                current = p;
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 pub trait FileHandle: Send + Sync + core::fmt::Debug {

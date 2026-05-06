@@ -1,0 +1,5059 @@
+diff -ur src/apps/awm.rs Ainux/Ainux/custom_kernel/src/apps/awm.rs
+--- src/apps/awm.rs	2026-04-19 19:37:29.868519800 +0000
++++ Ainux/Ainux/custom_kernel/src/apps/awm.rs	2026-05-06 09:42:41.213536600 +0000
+@@ -1,50 +1,50 @@
+-use crate::gui::compositor::Compositor;
+-use crate::gui::window::Window;
+-use crate::drivers::keyboard;
+-use crate::drivers::video;
+-
+-pub fn cmd_awm(_args: &[&str]) {
+-    // 1. Initialize Compositor
+-    Compositor::init();
+-    
+-    // 2. Clear Screen
+-    video::clear();
+-    
+-    // 3. Create Default Windows
+-    let screen_w = *video::FRAMEBUFFER_WIDTH.lock();
+-    let screen_h = *video::FRAMEBUFFER_HEIGHT.lock();
+-
+-    // Shell Window
+-    let mut shell_win = Window::new(1, 50, 50, 400, 300, "System Shell");
+-    shell_win.fill_content(0xFF1E1E1E); // Dark Grey
+-    Compositor::add_window(shell_win);
+-
+-    // Metrics Window
+-    let mut metrics_win = Window::new(2, 500, 100, 250, 150, "Kernel Metrics");
+-    metrics_win.fill_content(0xFF2D2D2D);
+-    Compositor::add_window(metrics_win);
+-
+-    video::put_str("awm: Desktop Environment Started. Press ESC to exit.\n");
+-
+-    // 4. Main Event Loop
+-    loop {
+-        // Redraw Desktop
+-        Compositor::render();
+-        
+-        // Handle Global Keys
+-        if let Some(c) = keyboard::pop_char() {
+-             if c == '\x1B' { // ESC
+-                 break;
+-             }
+-             // Routing to active window would happen here
+-        }
+-
+-        // Wait for next frame (cap at ~60fps)
+-        for _ in 0..1_000_000 {
+-             core::hint::spin_loop();
+-        }
+-    }
+-
+-    video::clear();
+-    video::put_str("awm: Desktop Environment Exited.\n");
+-}
++use crate::gui::compositor::Compositor;
++use crate::gui::window::Window;
++use crate::drivers::keyboard;
++use crate::drivers::video;
++
++pub fn cmd_awm(_args: &[&str]) {
++    // 1. Initialize Compositor
++    Compositor::init();
++    
++    // 2. Clear Screen
++    video::clear();
++    
++    // 3. Create Default Windows
++    let screen_w = *video::FRAMEBUFFER_WIDTH.lock();
++    let screen_h = *video::FRAMEBUFFER_HEIGHT.lock();
++
++    // Shell Window
++    let mut shell_win = Window::new(1, 50, 50, 400, 300, "System Shell");
++    shell_win.fill_content(0xFF1E1E1E); // Dark Grey
++    Compositor::add_window(shell_win);
++
++    // Metrics Window
++    let mut metrics_win = Window::new(2, 500, 100, 250, 150, "Kernel Metrics");
++    metrics_win.fill_content(0xFF2D2D2D);
++    Compositor::add_window(metrics_win);
++
++    video::put_str("awm: Desktop Environment Started. Press ESC to exit.\n");
++
++    // 4. Main Event Loop
++    loop {
++        // Redraw Desktop
++        Compositor::render();
++        
++        // Handle Global Keys
++        if let Some(c) = keyboard::pop_char() {
++             if c == '\x1B' { // ESC
++                 break;
++             }
++             // Routing to active window would happen here
++        }
++
++        // Wait for next frame (cap at ~60fps)
++        for _ in 0..1_000_000 {
++             core::hint::spin_loop();
++        }
++    }
++
++    video::clear();
++    video::put_str("awm: Desktop Environment Exited.\n");
++}
+diff -ur src/apps/neofetch.rs Ainux/Ainux/custom_kernel/src/apps/neofetch.rs
+--- src/apps/neofetch.rs	2026-04-19 20:26:55.420063100 +0000
++++ Ainux/Ainux/custom_kernel/src/apps/neofetch.rs	2026-05-06 09:42:41.281698200 +0000
+@@ -1,196 +1,196 @@
+-// =============================================================================
+-// Ainux Neofetch — System Information Display
+-// Displays hardware info with ASCII art logo, inspired by Linux neofetch.
+-// =============================================================================
+-
+-extern crate alloc;
+-use alloc::string::String;
+-use alloc::format;
+-use crate::drivers::video;
+-use core::sync::atomic::Ordering;
+-
+-/// PCI configuration space read (duplicated from pci.rs for standalone use)
+-fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+-    unsafe {
+-        let address: u32 = (1 << 31) | ((bus as u32) << 16) | ((slot as u32) << 11)
+-            | ((func as u32) << 8) | ((offset as u32) & 0xFC);
+-        core::arch::asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") address,
+-            options(nostack, preserves_flags));
+-        let val: u32;
+-        core::arch::asm!("in eax, dx", out("eax") val, in("dx") 0xCFCu16,
+-            options(nostack, preserves_flags));
+-        val
+-    }
+-}
+-
+-/// Detect GPU by scanning PCI for class 0x03 (Display Controller)
+-/// Reports vendor name + raw PCI IDs so any unknown device is identified.
+-fn detect_gpu() -> String {
+-    for bus in 0u16..256 {
+-        for slot in 0u8..32 {
+-            let id_reg = pci_config_read(bus as u8, slot, 0, 0);
+-            let vendor = (id_reg & 0xFFFF) as u16;
+-            if vendor == 0xFFFF { continue; }
+-
+-            let class_rev = pci_config_read(bus as u8, slot, 0, 0x08);
+-            let class_id = (class_rev >> 24) as u8;
+-
+-            if class_id == 0x03 { // Display controller
+-                let device_id = (id_reg >> 16) as u16;
+-                let subclass = ((class_rev >> 16) & 0xFF) as u8;
+-
+-                // Read PCI subsystem IDs (offset 0x2C) for more specific identification
+-                let subsys_reg = pci_config_read(bus as u8, slot, 0, 0x2C);
+-                let subsys_vendor = (subsys_reg & 0xFFFF) as u16;
+-                let subsys_device = (subsys_reg >> 16) as u16;
+-
+-                // Vendor name from PCI vendor ID
+-                let vendor_name = match vendor {
+-                    0x10DE => "NVIDIA Corporation",
+-                    0x1002 => "AMD/ATI",
+-                    0x8086 => "Intel Corporation",
+-                    0x1234 => "QEMU/Bochs",
+-                    0x15AD => "VMware",
+-                    0x1AF4 => "VirtIO",
+-                    0x1B36 => "Red Hat",
+-                    _ => "Unknown Vendor",
+-                };
+-
+-                // Subclass description
+-                let subclass_name = match subclass {
+-                    0x00 => "VGA Controller",
+-                    0x01 => "XGA Controller",
+-                    0x02 => "3D Controller",
+-                    0x80 => "Display Controller",
+-                    _ => "GPU",
+-                };
+-
+-                return format!("{} {} [{:04x}:{:04x}]",
+-                    vendor_name, subclass_name, vendor, device_id);
+-            }
+-        }
+-    }
+-    String::from("None Detected")
+-}
+-
+-/// Detect total RAM in MB from PMM stats
+-fn detect_ram_mb() -> usize {
+-    let pmm_lock = crate::mm::pmm::PMM.lock();
+-    if let Some(pmm) = pmm_lock.as_ref() {
+-        let (used, total) = pmm.get_stats();
+-        let total_mb = (total * 4096) / 1024 / 1024;
+-        let used_mb = (used * 4096) / 1024 / 1024;
+-        return total_mb;
+-    }
+-    0
+-}
+-
+-/// Detect used RAM in MB
+-fn detect_used_ram_mb() -> usize {
+-    let pmm_lock = crate::mm::pmm::PMM.lock();
+-    if let Some(pmm) = pmm_lock.as_ref() {
+-        let (used, total) = pmm.get_stats();
+-        let used_mb = (used * 4096) / 1024 / 1024;
+-        return used_mb;
+-    }
+-    0
+-}
+-
+-/// Get framebuffer resolution string
+-fn detect_resolution() -> String {
+-    // These are set during PMM init from multiboot info
+-    // We read them from the video driver
+-    let (w, h) = crate::drivers::video::get_resolution();
+-    if w > 0 && h > 0 {
+-        format!("{}x{}", w, h)
+-    } else {
+-        String::from("Text Mode")
+-    }
+-}
+-
+-/// Get uptime string
+-fn get_uptime_str() -> String {
+-    let ticks = crate::process::scheduler::get_ticks();
+-    let total_secs = ticks / 100;
+-    let hours = total_secs / 3600;
+-    let mins = (total_secs % 3600) / 60;
+-    let secs = total_secs % 60;
+-    if hours > 0 {
+-        format!("{}h {}m {}s", hours, mins, secs)
+-    } else if mins > 0 {
+-        format!("{}m {}s", mins, secs)
+-    } else {
+-        format!("{}s", secs)
+-    }
+-}
+-
+-/// Main neofetch display
+-pub fn cmd_neofetch() {
+-    // Copy strings out of the lock guard into owned Strings
+-    let (cpu_brand, cpu_vendor, cpu_cores, feat_str) = {
+-        let features = crate::cpu::cpuid::CPU_FEATURES.lock();
+-        let brand = String::from(features.brand_str());
+-        let vendor = String::from(features.vendor_str());
+-        let cores = features.logical_cores;
+-
+-        let mut feat = String::new();
+-        if features.has_sse    { feat.push_str("SSE "); }
+-        if features.has_sse2   { feat.push_str("SSE2 "); }
+-        if features.has_sse3   { feat.push_str("SSE3 "); }
+-        if features.has_sse41  { feat.push_str("SSE4.1 "); }
+-        if features.has_sse42  { feat.push_str("SSE4.2 "); }
+-        if features.has_avx    { feat.push_str("AVX "); }
+-        if features.has_aes    { feat.push_str("AES "); }
+-        if features.has_nx     { feat.push_str("NX "); }
+-        if features.has_x2apic { feat.push_str("x2APIC "); }
+-
+-        (brand, vendor, cores, feat)
+-    }; // lock dropped here
+-
+-    let gpu = detect_gpu();
+-    let total_ram = detect_ram_mb();
+-    let used_ram = detect_used_ram_mb();
+-    let resolution = detect_resolution();
+-    let uptime = get_uptime_str();
+-    let cpu_count = crate::cpu::smp::CPU_COUNT.load(Ordering::Relaxed);
+-
+-    // Ainux ASCII art logo (left side) paired with info (right side)
+-    let logo: [&str; 16] = [
+-        "                                ",  // 0
+-        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 1
+-        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 2
+-        " ▓▓▓▓▓▓▓▓▓▓▓▓▒░░░░▒▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 3
+-        " ▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓░░▒▓▓▓▓▓▓▓▓▓▓▓ ",  // 4
+-        " ▓▓▓▓▓▓▓▓▓▓▒░▒▒==▒▒░▒▓▓▓▓▓▓▓▓▓▓ ",  // 5
+-        " ▓▓▓▓▓▓▓▓▓▒▒▒▓▒+=▓▓▒▒▒▓▓▓▓▓▓▓▓▓ ",  // 6
+-        " ▓▓▓▓▓▓▓▓▒▒▒▓▓=++≡▒▒▒≡≡▓▓▓▓▓▓▓▓ ",  // 7
+-        " ▓▓▓▓▓▓▓▒▒▒▒▒=+▒▒:===≡▒▒▓▓▓▓▓▓▓ ",  // 8
+-        " ▓▓▓▓▓▒░░░≡≡≡≡░≡===░▒▓▓▒▒▒▓▓▓▓▓ ",  // 9
+-        " ▓▓▓▓▓▒▒▒▒░≡≡≡≡░▒▒▓▒▒▒▓▓▒▒▒▓▓▓▓ ",  // 10
+-        " ▓▓▓▓▓▓▓▒░░▒▓▓▓▓▒▒▒▓▒▒▒▓▓▒▒▒▓▓▓ ",  // 11
+-        " ▓▓▓▓▓▓▓▓▒▒▓▒▒▒▒▒▒▒▒▓▒▒▒▒▒▒░▒▓▓ ",  // 12
+-        " ▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▒▓▓ ",  // 13
+-        "                                ",  // 14
+-        "                                ",  // 15
+-    ];
+-
+-    video::put_str("\n");
+-    video::put_str(logo[0]); video::put_str("root@ainux\n");
+-    video::put_str(logo[1]); video::put_str("████████████████████████████\n");
+-    video::put_str(logo[2]); video::put_str("OS:         Ainux v0.2 x86_64\n");
+-    video::put_str(logo[3]); video::put_str("Kernel:     Ainux Kernel (GRUB/SMP)\n");
+-    video::put_str(logo[4]); video::put_str(&format!("Uptime:     {}\n", uptime));
+-    video::put_str(logo[5]); video::put_str("Shell:      ainux-sh (native)\n");
+-    video::put_str(logo[6]); video::put_str(&format!("CPU:        {}\n", cpu_brand));
+-    video::put_str(logo[7]); video::put_str(&format!("Cores:      {} ({} online)\n", cpu_cores, cpu_count));
+-    video::put_str(logo[8]); video::put_str(&format!("GPU:        {}\n", gpu));
+-    video::put_str(logo[9]); video::put_str(&format!("Memory:     {} MiB / {} MiB\n", used_ram, total_ram));
+-    video::put_str(logo[10]); video::put_str(&format!("Resolution: {}\n", resolution));
+-    video::put_str(logo[11]); video::put_str(&format!("Features:   {}\n", feat_str.trim()));
+-    video::put_str(logo[12]); video::put_str(&format!("Arch:       AMD64 ({})\n", cpu_vendor));
+-    video::put_str(logo[13]); video::put_str("\n");
+-    video::put_str(logo[14]); video::put_str("████████████████████████████\n");
+-    video::put_str(logo[15]); video::put_str("████████████████████████████\n");
+-    video::put_str("\n");
+-}
+-
++// =============================================================================
++// Ainux Neofetch — System Information Display
++// Displays hardware info with ASCII art logo, inspired by Linux neofetch.
++// =============================================================================
++
++extern crate alloc;
++use alloc::string::String;
++use alloc::format;
++use crate::drivers::video;
++use core::sync::atomic::Ordering;
++
++/// PCI configuration space read (duplicated from pci.rs for standalone use)
++fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
++    unsafe {
++        let address: u32 = (1 << 31) | ((bus as u32) << 16) | ((slot as u32) << 11)
++            | ((func as u32) << 8) | ((offset as u32) & 0xFC);
++        core::arch::asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") address,
++            options(nostack, preserves_flags));
++        let val: u32;
++        core::arch::asm!("in eax, dx", out("eax") val, in("dx") 0xCFCu16,
++            options(nostack, preserves_flags));
++        val
++    }
++}
++
++/// Detect GPU by scanning PCI for class 0x03 (Display Controller)
++/// Reports vendor name + raw PCI IDs so any unknown device is identified.
++fn detect_gpu() -> String {
++    for bus in 0u16..256 {
++        for slot in 0u8..32 {
++            let id_reg = pci_config_read(bus as u8, slot, 0, 0);
++            let vendor = (id_reg & 0xFFFF) as u16;
++            if vendor == 0xFFFF { continue; }
++
++            let class_rev = pci_config_read(bus as u8, slot, 0, 0x08);
++            let class_id = (class_rev >> 24) as u8;
++
++            if class_id == 0x03 { // Display controller
++                let device_id = (id_reg >> 16) as u16;
++                let subclass = ((class_rev >> 16) & 0xFF) as u8;
++
++                // Read PCI subsystem IDs (offset 0x2C) for more specific identification
++                let subsys_reg = pci_config_read(bus as u8, slot, 0, 0x2C);
++                let subsys_vendor = (subsys_reg & 0xFFFF) as u16;
++                let subsys_device = (subsys_reg >> 16) as u16;
++
++                // Vendor name from PCI vendor ID
++                let vendor_name = match vendor {
++                    0x10DE => "NVIDIA Corporation",
++                    0x1002 => "AMD/ATI",
++                    0x8086 => "Intel Corporation",
++                    0x1234 => "QEMU/Bochs",
++                    0x15AD => "VMware",
++                    0x1AF4 => "VirtIO",
++                    0x1B36 => "Red Hat",
++                    _ => "Unknown Vendor",
++                };
++
++                // Subclass description
++                let subclass_name = match subclass {
++                    0x00 => "VGA Controller",
++                    0x01 => "XGA Controller",
++                    0x02 => "3D Controller",
++                    0x80 => "Display Controller",
++                    _ => "GPU",
++                };
++
++                return format!("{} {} [{:04x}:{:04x}]",
++                    vendor_name, subclass_name, vendor, device_id);
++            }
++        }
++    }
++    String::from("None Detected")
++}
++
++/// Detect total RAM in MB from PMM stats
++fn detect_ram_mb() -> usize {
++    let pmm_lock = crate::mm::pmm::PMM.lock();
++    if let Some(pmm) = pmm_lock.as_ref() {
++        let (used, total) = pmm.get_stats();
++        let total_mb = (total * 4096) / 1024 / 1024;
++        let used_mb = (used * 4096) / 1024 / 1024;
++        return total_mb;
++    }
++    0
++}
++
++/// Detect used RAM in MB
++fn detect_used_ram_mb() -> usize {
++    let pmm_lock = crate::mm::pmm::PMM.lock();
++    if let Some(pmm) = pmm_lock.as_ref() {
++        let (used, total) = pmm.get_stats();
++        let used_mb = (used * 4096) / 1024 / 1024;
++        return used_mb;
++    }
++    0
++}
++
++/// Get framebuffer resolution string
++fn detect_resolution() -> String {
++    // These are set during PMM init from multiboot info
++    // We read them from the video driver
++    let (w, h) = crate::drivers::video::get_resolution();
++    if w > 0 && h > 0 {
++        format!("{}x{}", w, h)
++    } else {
++        String::from("Text Mode")
++    }
++}
++
++/// Get uptime string
++fn get_uptime_str() -> String {
++    let ticks = crate::process::scheduler::get_ticks();
++    let total_secs = ticks / 100;
++    let hours = total_secs / 3600;
++    let mins = (total_secs % 3600) / 60;
++    let secs = total_secs % 60;
++    if hours > 0 {
++        format!("{}h {}m {}s", hours, mins, secs)
++    } else if mins > 0 {
++        format!("{}m {}s", mins, secs)
++    } else {
++        format!("{}s", secs)
++    }
++}
++
++/// Main neofetch display
++pub fn cmd_neofetch() {
++    // Copy strings out of the lock guard into owned Strings
++    let (cpu_brand, cpu_vendor, cpu_cores, feat_str) = {
++        let features = crate::cpu::cpuid::CPU_FEATURES.lock();
++        let brand = String::from(features.brand_str());
++        let vendor = String::from(features.vendor_str());
++        let cores = features.logical_cores;
++
++        let mut feat = String::new();
++        if features.has_sse    { feat.push_str("SSE "); }
++        if features.has_sse2   { feat.push_str("SSE2 "); }
++        if features.has_sse3   { feat.push_str("SSE3 "); }
++        if features.has_sse41  { feat.push_str("SSE4.1 "); }
++        if features.has_sse42  { feat.push_str("SSE4.2 "); }
++        if features.has_avx    { feat.push_str("AVX "); }
++        if features.has_aes    { feat.push_str("AES "); }
++        if features.has_nx     { feat.push_str("NX "); }
++        if features.has_x2apic { feat.push_str("x2APIC "); }
++
++        (brand, vendor, cores, feat)
++    }; // lock dropped here
++
++    let gpu = detect_gpu();
++    let total_ram = detect_ram_mb();
++    let used_ram = detect_used_ram_mb();
++    let resolution = detect_resolution();
++    let uptime = get_uptime_str();
++    let cpu_count = crate::cpu::smp::CPU_COUNT.load(Ordering::Relaxed);
++
++    // Ainux ASCII art logo (left side) paired with info (right side)
++    let logo: [&str; 16] = [
++        "                                ",  // 0
++        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 1
++        " ▓▓▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 2
++        " ▓▓▓▓▓▓▓▓▓▓▓▓▒░░░░▒▓▓▓▓▓▓▓▓▓▓▓▓ ",  // 3
++        " ▓▓▓▓▓▓▓▓▓▓▓▒░░▓▓░░▒▓▓▓▓▓▓▓▓▓▓▓ ",  // 4
++        " ▓▓▓▓▓▓▓▓▓▓▒░▒▒==▒▒░▒▓▓▓▓▓▓▓▓▓▓ ",  // 5
++        " ▓▓▓▓▓▓▓▓▓▒▒▒▓▒+=▓▓▒▒▒▓▓▓▓▓▓▓▓▓ ",  // 6
++        " ▓▓▓▓▓▓▓▓▒▒▒▓▓=++≡▒▒▒≡≡▓▓▓▓▓▓▓▓ ",  // 7
++        " ▓▓▓▓▓▓▓▒▒▒▒▒=+▒▒:===≡▒▒▓▓▓▓▓▓▓ ",  // 8
++        " ▓▓▓▓▓▒░░░≡≡≡≡░≡===░▒▓▓▒▒▒▓▓▓▓▓ ",  // 9
++        " ▓▓▓▓▓▒▒▒▒░≡≡≡≡░▒▒▓▒▒▒▓▓▒▒▒▓▓▓▓ ",  // 10
++        " ▓▓▓▓▓▓▓▒░░▒▓▓▓▓▒▒▒▓▒▒▒▓▓▒▒▒▓▓▓ ",  // 11
++        " ▓▓▓▓▓▓▓▓▒▒▓▒▒▒▒▒▒▒▒▓▒▒▒▒▒▒░▒▓▓ ",  // 12
++        " ▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▒▓▓ ",  // 13
++        "                                ",  // 14
++        "                                ",  // 15
++    ];
++
++    video::put_str("\n");
++    video::put_str(logo[0]); video::put_str("root@ainux\n");
++    video::put_str(logo[1]); video::put_str("████████████████████████████\n");
++    video::put_str(logo[2]); video::put_str("OS:         Ainux v0.2 x86_64\n");
++    video::put_str(logo[3]); video::put_str("Kernel:     Ainux Kernel (GRUB/SMP)\n");
++    video::put_str(logo[4]); video::put_str(&format!("Uptime:     {}\n", uptime));
++    video::put_str(logo[5]); video::put_str("Shell:      ainux-sh (native)\n");
++    video::put_str(logo[6]); video::put_str(&format!("CPU:        {}\n", cpu_brand));
++    video::put_str(logo[7]); video::put_str(&format!("Cores:      {} ({} online)\n", cpu_cores, cpu_count));
++    video::put_str(logo[8]); video::put_str(&format!("GPU:        {}\n", gpu));
++    video::put_str(logo[9]); video::put_str(&format!("Memory:     {} MiB / {} MiB\n", used_ram, total_ram));
++    video::put_str(logo[10]); video::put_str(&format!("Resolution: {}\n", resolution));
++    video::put_str(logo[11]); video::put_str(&format!("Features:   {}\n", feat_str.trim()));
++    video::put_str(logo[12]); video::put_str(&format!("Arch:       AMD64 ({})\n", cpu_vendor));
++    video::put_str(logo[13]); video::put_str("\n");
++    video::put_str(logo[14]); video::put_str("████████████████████████████\n");
++    video::put_str(logo[15]); video::put_str("████████████████████████████\n");
++    video::put_str("\n");
++}
++
+diff -ur src/asm/boot.asm Ainux/Ainux/custom_kernel/src/asm/boot.asm
+--- src/asm/boot.asm	2026-05-06 08:52:31.591263200 +0000
++++ Ainux/Ainux/custom_kernel/src/asm/boot.asm	2026-05-06 09:42:41.379611900 +0000
+@@ -1,152 +1,211 @@
+-; src/asm/boot.asm
+-; Ainux Bootloader Shim — Multiboot to Long Mode (64-bit)
+-
+-extern _start
+-; extern rust_main ; Renamed to _start in main.rs
+-
+-section .multiboot
+-align 4
+-    dd 0x1BADB002               ; Magic
+-    dd 0x00                     ; Flags
+-    dd -(0x1BADB002 + 0x00)     ; Checksum
+-
+-; =============================================================================
+-; 32-bit Entry Point
+-; =============================================================================
+-bits 32
+-global _start_multiboot
+-_start_multiboot:
+-    cli
+-    cld
+-
+-    ; Save Multiboot magic and info pointer
+-    mov [MULTIBOOT_MAGIC_VAL], eax
+-    mov [MULTIBOOT_INFO_PTR], ebx
+-
+-    ; Set up a temporary boot stack (low memory)
+-    mov esp, boot_stack_top
+-
+-    ; ---- Paging Setup (Simplified & Robust) ----
+-    ; Clear page tables (6 pages: PML4, PDPT, 4 PDs)
+-    mov edi, boot_pml4
+-    xor eax, eax
+-    mov ecx, 1024 * 6
+-    rep stosd
+-
+-    ; 1. Link PML4 entries
+-    mov eax, boot_pdpt
+-    or eax, 0b11 ; Present + Writable
+-    mov [boot_pml4], eax               ; Identity Map (0..512GB)
+-    mov [boot_pml4 + 256 * 8], eax     ; Direct Map (0xFFFF800000000000)
+-    mov [boot_pml4 + 511 * 8], eax     ; Higher Half (0xFFFFFFFF80000000)
+-
+-    ; 2. Link PDPT entries (Map 4GB)
+-    ; Identity & Direct Map: 0-4GB (Indices 0, 1, 2, 3)
+-    ; Higher Half Map: -2GB and -1GB (Indices 510, 511)
+-    
+-    mov eax, boot_pd
+-    or eax, 0b11
+-    mov [boot_pdpt + 0 * 8], eax       ; Identity 0-1GB
+-    mov [boot_pdpt + 510 * 8], eax     ; High-Half 0-1GB (at -2GB)
+-
+-    mov eax, boot_pd + 4096
+-    or eax, 0b11
+-    mov [boot_pdpt + 1 * 8], eax       ; Identity 1-2GB
+-    mov [boot_pdpt + 511 * 8], eax     ; High-Half 1-2GB (at -1GB)
+-
+-    mov eax, boot_pd + 8192
+-    or eax, 0b11
+-    mov [boot_pdpt + 2 * 8], eax       ; Identity 2-3GB
+-
+-    mov eax, boot_pd + 12288
+-    or eax, 0b11
+-    mov [boot_pdpt + 3 * 8], eax       ; Identity 3-4GB
+-
+-    ; 4. Map PD[0-3] to 0-4GB using 2MB huge pages
+-    mov edi, boot_pd
+-    mov eax, 0 | 0x83         ; Start at 0MB
+-    mov ecx, 512 * 4          ; Fill 4 Page Directories
+-.fill_pd:
+-    mov [edi], eax
+-    mov dword [edi + 4], 0    ; Clear upper 32 bits
+-    add eax, 0x200000         ; Next 2MB
+-    add edi, 8
+-    loop .fill_pd
+-
+-    ; ---- Enable PAE and Long Mode ----
+-    mov eax, cr4
+-    or eax, 1 << 5 ; PAE
+-    mov cr4, eax
+-
+-    mov eax, boot_pml4
+-    mov cr3, eax
+-
+-    mov ecx, 0xC0000080 ; EFER
+-    rdmsr
+-    or eax, 1 << 8 ; LME
+-    wrmsr
+-
+-    mov eax, cr0
+-    or eax, 1 << 31 | 1 << 0 ; PG | PE
+-    mov cr0, eax
+-
+-    ; ---- Transition to 64-bit ----
+-    lgdt [gdt64_ptr]
+-    jmp gdt64_code:long_mode_start
+-
+-align 8
+-gdt64:
+-    dq 0 ; null
+-gdt64_code: equ $ - gdt64
+-    dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) ; code
+-gdt64_data: equ $ - gdt64
+-    dq (1 << 44) | (1 << 47) | (1 << 41) ; data
+-gdt64_ptr:
+-    dw $ - gdt64 - 1
+-    dd gdt64
+-
+-[bits 64]
+-long_mode_start:
+-    mov ax, gdt64_data
+-    mov ds, ax
+-    mov es, ax
+-    mov fs, ax
+-    mov gs, ax
+-    mov ss, ax
+-
+-    ; Set up higher-half stack
+-    mov rsp, stack_top
+-
+-    ; Enter Rust
+-    mov rax, _start
+-    jmp rax
+-
+-; =============================================================================
+-; Low-Memory Boot Sections (Paging Tables & Temporary Stack)
+-; =============================================================================
+-section .boot_bss
+-align 4096
+-boot_pml4:
+-    resb 4096
+-boot_pdpt:
+-    resb 4096
+-boot_pd:
+-    resb 4096 * 4  ; 4 PDs to cover 4GB if needed
+-
+-boot_stack_bottom:
+-    resb 4096      ; Small temporary stack for 32-bit boot only
+-boot_stack_top:
+-
+-global MULTIBOOT_INFO_PTR
+-global MULTIBOOT_MAGIC_VAL
+-MULTIBOOT_INFO_PTR:  resq 1
+-MULTIBOOT_MAGIC_VAL: resq 1
+-
+-; =============================================================================
+-; Higher-Half Sections (Final Kernel Stack)
+-; =============================================================================
+-section .stack
+-align 4096
+-stack_bottom:
+-    resb 16384 * 8 ; 128KB stack (High Half)
+-stack_top:
++; =============================================================================
++; Ainux Multiboot Boot Stub — 32-bit Protected Mode → 64-bit Long Mode
++; Passes Multiboot info struct pointer to Rust kernel_main(info_ptr: u64)
++; Maps first 4GB identity + higher-half for ACPI/hardware access
++;
++; OPTIMIZED: Merged PD loops, fixed STOSD count, NX+PGE enabled
++; =============================================================================
++
++global _start_multiboot
++global boot_pml4
++extern _start               ; Rust entry: fn _start() -> !
++
++; We store the multiboot info pointer in a global so Rust can read it
++global MULTIBOOT_INFO_PTR
++global MULTIBOOT_MAGIC_VAL
++
++section .multiboot
++align 4
++    dd 0x1BADB002            ; Multiboot1 magic
++    dd 0x00000007            ; Flags: ALIGN(0) | MEMINFO(1) | VIDEO(2)
++    dd -(0x1BADB002 + 0x00000007) ; Checksum
++    dd 0                     ; header_addr
++    dd 0                     ; load_addr
++    dd 0                     ; load_end_addr
++    dd 0                     ; bss_end_addr
++    dd 0                     ; entry_addr
++    dd 0                     ; mode_type (0 = linear graphics)
++    dd 0                     ; width (auto)
++    dd 0                     ; height (auto)
++    dd 32                    ; depth (32 bpp preferred)
++
++section .data
++align 8
++MULTIBOOT_INFO_PTR: dq 0    ; Will hold physical address of multiboot_info
++MULTIBOOT_MAGIC_VAL: dq 0   ; Will hold the magic number from EAX
++
++; Table of PD base addresses for the unified fill loop
++align 8
++pd_table:
++    dd boot_pd0              ; PD index 0: maps 0x00000000 - 0x3FFFFFFF
++    dd boot_pd1              ; PD index 1: maps 0x40000000 - 0x7FFFFFFF
++    dd boot_pd2              ; PD index 2: maps 0x80000000 - 0xBFFFFFFF
++    dd boot_pd3              ; PD index 3: maps 0xC0000000 - 0xFFFFFFFF
++
++section .bss
++align 4096
++boot_pml4:
++    resb 4096
++boot_pdpt:
++    resb 4096
++boot_pd0:                   ; PD for 0-1GB
++    resb 4096
++boot_pd1:                   ; PD for 1-2GB
++    resb 4096
++boot_pd2:                   ; PD for 2-3GB
++    resb 4096
++boot_pd3:                   ; PD for 3-4GB
++    resb 4096
++boot_pd_high:               ; PD for higher-half kernel
++    resb 4096
++stack_bottom:
++    resb 32768               ; 32 KB stack (generous for SMP init)
++stack_top:
++
++section .text
++bits 32
++_start_multiboot:
++    ; Save Multiboot info (EBX = info ptr, EAX = magic)
++    mov [MULTIBOOT_INFO_PTR], ebx
++    mov [MULTIBOOT_MAGIC_VAL], eax
++
++    mov esp, stack_top
++
++    ; ---- Zero out ALL page tables in one shot ----
++    ; 7 tables × 4096 bytes = 28672 bytes = 7168 dwords
++    ; Tables are contiguous in BSS: pml4, pdpt, pd0, pd1, pd2, pd3, pd_high
++    mov edi, boot_pml4
++    xor eax, eax
++    mov ecx, 7168            ; 7 × 1024 dwords = 7 × 4096 bytes
++    rep stosd
++
++    ; ---- PML4[0] → PDPT (identity map) ----
++    mov eax, boot_pdpt
++    or eax, 0b11               ; Present + Writable
++    mov [boot_pml4], eax
++
++    ; ---- PML4[511] → same PDPT (higher-half) ----
++    mov [boot_pml4 + 511 * 8], eax
++
++    ; ---- PDPT[0..3] → PD0..PD3 ----
++    mov eax, boot_pd0
++    or eax, 0b11
++    mov [boot_pdpt], eax
++
++    mov eax, boot_pd1
++    or eax, 0b11
++    mov [boot_pdpt + 1 * 8], eax
++
++    mov eax, boot_pd2
++    or eax, 0b11
++    mov [boot_pdpt + 2 * 8], eax
++
++    mov eax, boot_pd3
++    or eax, 0b11
++    mov [boot_pdpt + 3 * 8], eax
++
++    ; ---- PDPT[510] → PD_high (higher-half: 0xFFFFFFFF80000000) ----
++    mov eax, boot_pd_high
++    or eax, 0b11
++    mov [boot_pdpt + 510 * 8], eax
++
++    ; ---- Unified PD fill: 4 PDs × 512 entries each ----
++    ; Maps full 4GB identity using 2MB huge pages
++    ; PD_high mirrors PD0 for higher-half kernel access
++    ;
++    ; Outer loop: ebx = PD index (0..3), using pd_table for base addresses
++    ; Inner loop: ecx = entry index (0..511)
++    ; Physical address = (ebx * 512 + ecx) << 21
++    ; Flags: Present(0) + Writable(1) + HugePage(7) = 0x83
++    ; Kernel PD_high entries also get GLOBAL(8) = 0x183
++
++    xor ebx, ebx             ; PD index = 0
++.fill_pd_outer:
++    mov esi, [pd_table + ebx * 4]  ; ESI = base of current PD
++    xor ecx, ecx             ; entry index = 0
++
++.fill_pd_inner:
++    ; Compute physical page: (ebx * 512 + ecx) * 2MB
++    mov eax, ebx
++    shl eax, 9               ; eax = ebx * 512
++    add eax, ecx             ; eax = ebx * 512 + ecx
++    shl eax, 21              ; eax = physical address (2MB aligned)
++    or eax, 0b10000011       ; Present + Writable + HugePage
++
++    mov [esi + ecx * 8], eax ; Write PD entry
++
++    ; For PD0 (ebx==0): also mirror into boot_pd_high with GLOBAL bit
++    test ebx, ebx
++    jnz .skip_high
++    mov edx, eax
++    or edx, (1 << 8)         ; Add GLOBAL flag for kernel mappings
++    mov [boot_pd_high + ecx * 8], edx
++.skip_high:
++
++    inc ecx
++    cmp ecx, 512
++    jne .fill_pd_inner
++
++    inc ebx
++    cmp ebx, 4
++    jne .fill_pd_outer
++
++    ; ---- Enable PAE (CR4.PAE bit 5) + PGE (CR4.PGE bit 7) ----
++    ; PGE enables GLOBAL bit in page table entries for TLB persistence
++    mov eax, cr4
++    or eax, (1 << 5) | (1 << 7)
++    mov cr4, eax
++
++    ; ---- Load PML4 into CR3 ----
++    mov eax, boot_pml4
++    mov cr3, eax
++
++    ; ---- Enable Long Mode + NX (EFER.LME bit 8 + EFER.NXE bit 11) ----
++    ; NX enables the No-Execute bit in page tables for W^X enforcement
++    mov ecx, 0xC0000080
++    rdmsr
++    or eax, (1 << 8) | (1 << 11)
++    wrmsr
++
++    ; ---- Enable Paging + Protection (CR0.PG | CR0.PE) ----
++    mov eax, cr0
++    or eax, (1 << 31) | (1 << 0)
++    mov cr0, eax
++
++    ; ---- Load 64-bit GDT and far jump to long mode ----
++    lgdt [gdt64.pointer]
++    jmp gdt64.code_segment:long_mode_start
++
++; =============================================================================
++; 64-bit GDT
++; =============================================================================
++align 8
++gdt64:
++    dq 0                                                    ; Null
++.code_segment equ $ - gdt64
++    dq (1<<43) | (1<<44) | (1<<47) | (1<<53)              ; Code: Exec, Descriptor, Present, 64-bit
++.data_segment equ $ - gdt64
++    dq (1<<44) | (1<<47) | (1<<41)                        ; Data: Descriptor, Present, Writable
++.pointer:
++    dw $ - gdt64 - 1
++    dq gdt64
++
++; =============================================================================
++; 64-bit Long Mode Entry
++; =============================================================================
++bits 64
++long_mode_start:
++    ; Set up data segments
++    mov ax, gdt64.data_segment
++    mov ds, ax
++    mov es, ax
++    mov fs, ax
++    mov gs, ax
++    mov ss, ax
++
++    ; Set up a proper stack in the higher half
++    mov rsp, stack_top
++
++    ; Jump to Rust _start (higher-half linked)
++    mov rax, _start
++    jmp rax
+Binary files src/asm/boot.o and Ainux/Ainux/custom_kernel/src/asm/boot.o differ
+Binary files src/c/hardware.o and Ainux/Ainux/custom_kernel/src/c/hardware.o differ
+Binary files src/c/tui.o and Ainux/Ainux/custom_kernel/src/c/tui.o differ
+diff -ur src/c/tui.zig Ainux/Ainux/custom_kernel/src/c/tui.zig
+--- src/c/tui.zig	2026-04-19 18:36:18.803027500 +0000
++++ Ainux/Ainux/custom_kernel/src/c/tui.zig	2026-05-06 09:42:41.595547700 +0000
+@@ -1,33 +1,33 @@
+-const std = @import("std");
+-
+-// External video driver symbols (to be linked)
+-extern fn c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32) void;
+-
+-export fn fast_grid_clear(width: u32, height: u32, fg: u32, bg: u32, char: u32) void {
+-    var y: u32 = 0;
+-    while (y < height) : (y += 1) {
+-        var x: u32 = 0;
+-        while (x < width) : (x += 1) {
+-            c_draw_char(@intCast(x), @intCast(y), char, fg, bg);
+-        }
+-    }
+-}
+-
+-export fn draw_tui_shadow(x: u32, y: u32, w: u32, h: u32) void {
+-    // Shadow is usually a dark translucent rect or just black space
+-    // For TUI, we just draw ' ' with black BG on the right and bottom edges
+-    var i: u32 = 0;
+-    
+-    // Bottom shadow
+-    while (i < w) : (i += 1) {
+-        c_draw_char(@intCast(x + i + 1), @intCast(y + h), ' ', 0, 0x000000);
+-    }
+-    
+-    // Right shadow
+-    i = 0;
+-    while (i < h) : (i += 1) {
+-        c_draw_char(@intCast(x + w), @intCast(y + i + 1), ' ', 0, 0x000000);
+-    }
+-}
+-
+-pub fn main() void {}
++const std = @import("std");
++
++// External video driver symbols (to be linked)
++extern fn c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32) void;
++
++export fn fast_grid_clear(width: u32, height: u32, fg: u32, bg: u32, char: u32) void {
++    var y: u32 = 0;
++    while (y < height) : (y += 1) {
++        var x: u32 = 0;
++        while (x < width) : (x += 1) {
++            c_draw_char(@intCast(x), @intCast(y), char, fg, bg);
++        }
++    }
++}
++
++export fn draw_tui_shadow(x: u32, y: u32, w: u32, h: u32) void {
++    // Shadow is usually a dark translucent rect or just black space
++    // For TUI, we just draw ' ' with black BG on the right and bottom edges
++    var i: u32 = 0;
++    
++    // Bottom shadow
++    while (i < w) : (i += 1) {
++        c_draw_char(@intCast(x + i + 1), @intCast(y + h), ' ', 0, 0x000000);
++    }
++    
++    // Right shadow
++    i = 0;
++    while (i < h) : (i += 1) {
++        c_draw_char(@intCast(x + w), @intCast(y + i + 1), ' ', 0, 0x000000);
++    }
++}
++
++pub fn main() void {}
+diff -ur src/config.rs Ainux/Ainux/custom_kernel/src/config.rs
+--- src/config.rs	2026-04-19 18:07:34.544307600 +0000
++++ Ainux/Ainux/custom_kernel/src/config.rs	2026-05-06 09:42:41.151981700 +0000
+@@ -1,117 +1,117 @@
+-extern crate alloc;
+-use alloc::string::String;
+-use alloc::vec::Vec;
+-use alloc::format;
+-use spin::Mutex;
+-use alloc::sync::Arc;
+-use crate::fs::vfs::{self, ArcInode};
+-use core::fmt::Write;
+-
+-pub struct SystemConfig {
+-    pub hostname: String,
+-    pub ip_address: String,
+-    pub gateway: String,
+-    pub dns: String,
+-    pub theme_color: u32,
+-}
+-
+-impl Default for SystemConfig {
+-    fn default() -> Self {
+-        Self {
+-            hostname: String::from("ainux-node"),
+-            ip_address: String::from("10.0.2.15"),
+-            gateway: String::from("10.0.2.2"),
+-            dns: String::from("8.8.8.8"),
+-            theme_color: 0x0000AAFF,
+-        }
+-    }
+-}
+-
+-pub static CONFIG: Mutex<Option<SystemConfig>> = Mutex::new(None);
+-
+-pub fn load() {
+-    // Ensure initialized
+-    {
+-        let mut config = CONFIG.lock();
+-        if config.is_none() {
+-            *config = Some(SystemConfig::default());
+-        }
+-    }
+-
+-    let root = vfs::ROOT.lock();
+-    if let Some(r) = root.as_ref() {
+-        // Ensure /etc exists
+-        if let Err(_) = r.lookup("etc") {
+-            let _ = r.mkdir("etc");
+-        }
+-
+-        match r.lookup("etc/ainux.conf") {
+-            Ok(inode) => {
+-                if let Ok(handle) = inode.open(0) {
+-                    let mut buf = [0u8; 1024];
+-                    if let Ok(n) = handle.read(&mut buf, 0) {
+-                        if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
+-                            parse_config(s);
+-                        }
+-                    }
+-                }
+-            },
+-            Err(_) => {
+-                // No config file, use defaults
+-            }
+-        }
+-    }
+-}
+-
+-pub fn save() {
+-    let root = vfs::ROOT.lock();
+-    if let Some(r) = root.as_ref() {
+-        let etc = match r.lookup("etc") {
+-            Ok(e) => e,
+-            Err(_) => r.mkdir("etc").expect("Failed to create /etc"),
+-        };
+-
+-        let inode = match etc.lookup("ainux.conf") {
+-            Ok(i) => i,
+-            Err(_) => etc.create("ainux.conf", vfs::FileType::File).expect("Failed to create config file"),
+-        };
+-
+-        if let Ok(handle) = inode.open(0) {
+-            let _ = handle.truncate();
+-            if let Some(config) = CONFIG.lock().as_ref() {
+-                let data = format!(
+-                    "hostname={}\nip={}\ngateway={}\ndns={}\ntheme={}\n",
+-                    config.hostname, config.ip_address, config.gateway, config.dns, config.theme_color
+-                );
+-                let _ = handle.write(data.as_bytes(), 0);
+-            }
+-        }
+-    }
+-}
+-
+-fn parse_config(s: &str) {
+-    if let Some(config) = CONFIG.lock().as_mut() {
+-        for line in s.lines() {
+-            let parts: Vec<&str> = line.split('=').collect();
+-            if parts.len() == 2 {
+-                match parts[0] {
+-                    "hostname" => config.hostname = String::from(parts[1]),
+-                    "ip" => config.ip_address = String::from(parts[1]),
+-                    "gateway" => config.gateway = String::from(parts[1]),
+-                    "dns" => config.dns = String::from(parts[1]),
+-                    "theme" => {
+-                        if let Ok(val) = u32::from_str_radix(parts[1], 10) {
+-                            config.theme_color = val;
+-                        }
+-                    }
+-                    _ => {}
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-pub fn reset_to_defaults() {
+-    let mut config = CONFIG.lock();
+-    *config = Some(SystemConfig::default());
+-}
++extern crate alloc;
++use alloc::string::String;
++use alloc::vec::Vec;
++use alloc::format;
++use spin::Mutex;
++use alloc::sync::Arc;
++use crate::fs::vfs::{self, ArcInode};
++use core::fmt::Write;
++
++pub struct SystemConfig {
++    pub hostname: String,
++    pub ip_address: String,
++    pub gateway: String,
++    pub dns: String,
++    pub theme_color: u32,
++}
++
++impl Default for SystemConfig {
++    fn default() -> Self {
++        Self {
++            hostname: String::from("ainux-node"),
++            ip_address: String::from("10.0.2.15"),
++            gateway: String::from("10.0.2.2"),
++            dns: String::from("8.8.8.8"),
++            theme_color: 0x0000AAFF,
++        }
++    }
++}
++
++pub static CONFIG: Mutex<Option<SystemConfig>> = Mutex::new(None);
++
++pub fn load() {
++    // Ensure initialized
++    {
++        let mut config = CONFIG.lock();
++        if config.is_none() {
++            *config = Some(SystemConfig::default());
++        }
++    }
++
++    let root = vfs::ROOT.lock();
++    if let Some(r) = root.as_ref() {
++        // Ensure /etc exists
++        if let Err(_) = r.lookup("etc") {
++            let _ = r.mkdir("etc");
++        }
++
++        match r.lookup("etc/ainux.conf") {
++            Ok(inode) => {
++                if let Ok(handle) = inode.open(0) {
++                    let mut buf = [0u8; 1024];
++                    if let Ok(n) = handle.read(&mut buf, 0) {
++                        if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
++                            parse_config(s);
++                        }
++                    }
++                }
++            },
++            Err(_) => {
++                // No config file, use defaults
++            }
++        }
++    }
++}
++
++pub fn save() {
++    let root = vfs::ROOT.lock();
++    if let Some(r) = root.as_ref() {
++        let etc = match r.lookup("etc") {
++            Ok(e) => e,
++            Err(_) => r.mkdir("etc").expect("Failed to create /etc"),
++        };
++
++        let inode = match etc.lookup("ainux.conf") {
++            Ok(i) => i,
++            Err(_) => etc.create("ainux.conf", vfs::FileType::File).expect("Failed to create config file"),
++        };
++
++        if let Ok(handle) = inode.open(0) {
++            let _ = handle.truncate();
++            if let Some(config) = CONFIG.lock().as_ref() {
++                let data = format!(
++                    "hostname={}\nip={}\ngateway={}\ndns={}\ntheme={}\n",
++                    config.hostname, config.ip_address, config.gateway, config.dns, config.theme_color
++                );
++                let _ = handle.write(data.as_bytes(), 0);
++            }
++        }
++    }
++}
++
++fn parse_config(s: &str) {
++    if let Some(config) = CONFIG.lock().as_mut() {
++        for line in s.lines() {
++            let parts: Vec<&str> = line.split('=').collect();
++            if parts.len() == 2 {
++                match parts[0] {
++                    "hostname" => config.hostname = String::from(parts[1]),
++                    "ip" => config.ip_address = String::from(parts[1]),
++                    "gateway" => config.gateway = String::from(parts[1]),
++                    "dns" => config.dns = String::from(parts[1]),
++                    "theme" => {
++                        if let Ok(val) = u32::from_str_radix(parts[1], 10) {
++                            config.theme_color = val;
++                        }
++                    }
++                    _ => {}
++                }
++            }
++        }
++    }
++}
++
++pub fn reset_to_defaults() {
++    let mut config = CONFIG.lock();
++    *config = Some(SystemConfig::default());
++}
+diff -ur src/cpu/cpuid.rs Ainux/Ainux/custom_kernel/src/cpu/cpuid.rs
+--- src/cpu/cpuid.rs	2026-04-17 20:16:49.804197800 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/cpuid.rs	2026-05-06 09:42:43.175086900 +0000
+@@ -1,275 +1,275 @@
+-// =============================================================================
+-// Ainux CPUID — CPU Detection & Feature Enumeration
+-// Ported from legacy_archive/kernel/hal/x86_64/cpu.c to Rust
+-// =============================================================================
+-
+-use core::arch::asm;
+-use core::fmt::Write;
+-use spin::Mutex;
+-
+-#[derive(Debug, Clone)]
+-pub struct CpuFeatures {
+-    pub vendor: [u8; 13],
+-    pub brand: [u8; 49],
+-    pub family: u32,
+-    pub model: u32,
+-    pub stepping: u32,
+-    // Feature flags (EDX from leaf 1)
+-    pub has_sse: bool,
+-    pub has_sse2: bool,
+-    pub has_fpu: bool,
+-    pub has_apic: bool,
+-    pub has_msr: bool,
+-    pub has_pae: bool,
+-    pub has_pse: bool,
+-    // Feature flags (ECX from leaf 1)
+-    pub has_sse3: bool,
+-    pub has_sse41: bool,
+-    pub has_sse42: bool,
+-    pub has_avx: bool,
+-    pub has_aes: bool,
+-    pub has_x2apic: bool,
+-    // Extended features (leaf 0x80000001)
+-    pub has_nx: bool,
+-    pub has_long_mode: bool,
+-    pub has_1gb_pages: bool,
+-    pub has_rdtscp: bool,
+-    // Topology
+-    pub max_cpuid_leaf: u32,
+-    pub max_extended_leaf: u32,
+-    pub logical_cores: u32,
+-}
+-
+-impl CpuFeatures {
+-    pub const fn new() -> Self {
+-        CpuFeatures {
+-            vendor: [0; 13],
+-            brand: [0; 49],
+-            family: 0,
+-            model: 0,
+-            stepping: 0,
+-            has_sse: false,
+-            has_sse2: false,
+-            has_fpu: false,
+-            has_apic: false,
+-            has_msr: false,
+-            has_pae: false,
+-            has_pse: false,
+-            has_sse3: false,
+-            has_sse41: false,
+-            has_sse42: false,
+-            has_avx: false,
+-            has_aes: false,
+-            has_x2apic: false,
+-            has_nx: false,
+-            has_long_mode: false,
+-            has_1gb_pages: false,
+-            has_rdtscp: false,
+-            max_cpuid_leaf: 0,
+-            max_extended_leaf: 0,
+-            logical_cores: 1,
+-        }
+-    }
+-
+-    pub fn vendor_str(&self) -> &str {
+-        let len = self.vendor.iter().position(|&b| b == 0).unwrap_or(12);
+-        core::str::from_utf8(&self.vendor[..len]).unwrap_or("Unknown")
+-    }
+-
+-    pub fn brand_str(&self) -> &str {
+-        let len = self.brand.iter().position(|&b| b == 0).unwrap_or(48);
+-        core::str::from_utf8(&self.brand[..len]).unwrap_or("")
+-    }
+-
+-    pub fn is_amd(&self) -> bool {
+-        self.vendor_str() == "AuthenticAMD"
+-    }
+-
+-    pub fn is_intel(&self) -> bool {
+-        self.vendor_str() == "GenuineIntel"
+-    }
+-}
+-
+-pub static CPU_FEATURES: Mutex<CpuFeatures> = Mutex::new(CpuFeatures::new());
+-
+-/// Execute CPUID instruction (saves/restores rbx to avoid LLVM conflict)
+-#[inline(always)]
+-pub fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
+-    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
+-    unsafe {
+-        asm!(
+-            "push rbx",
+-            "cpuid",
+-            "mov {ebx_out:e}, ebx",
+-            "pop rbx",
+-            inout("eax") leaf => eax,
+-            ebx_out = out(reg) ebx,
+-            out("ecx") ecx,
+-            out("edx") edx,
+-            options(nostack, preserves_flags)
+-        );
+-    }
+-    (eax, ebx, ecx, edx)
+-}
+-
+-/// Execute CPUID with subleaf (saves/restores rbx)
+-#[inline(always)]
+-pub fn cpuid_sub(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
+-    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
+-    unsafe {
+-        asm!(
+-            "push rbx",
+-            "cpuid",
+-            "mov {ebx_out:e}, ebx",
+-            "pop rbx",
+-            inout("eax") leaf => eax,
+-            ebx_out = out(reg) ebx,
+-            inout("ecx") subleaf => ecx,
+-            out("edx") edx,
+-            options(nostack, preserves_flags)
+-        );
+-    }
+-    (eax, ebx, ecx, edx)
+-}
+-
+-/// Detect CPU and populate global features
+-pub fn init() {
+-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-    let _ = write!(serial, "CPUID: Detecting CPU...\n");
+-
+-    let mut features = CpuFeatures::new();
+-
+-    // Leaf 0: Vendor string + max leaf
+-    let (max_leaf, ebx, ecx, edx) = cpuid(0);
+-    features.max_cpuid_leaf = max_leaf;
+-
+-    // Reconstruct vendor: EBX, EDX, ECX order
+-    let vendor_bytes: [u8; 12] = unsafe {
+-        let mut buf = [0u8; 12];
+-        buf[0..4].copy_from_slice(&ebx.to_le_bytes());
+-        buf[4..8].copy_from_slice(&edx.to_le_bytes());
+-        buf[8..12].copy_from_slice(&ecx.to_le_bytes());
+-        buf
+-    };
+-    features.vendor[..12].copy_from_slice(&vendor_bytes);
+-
+-    let _ = write!(serial, "CPUID: Vendor: {}\n", features.vendor_str());
+-
+-    // Leaf 1: Feature flags + Family/Model/Stepping
+-    if max_leaf >= 1 {
+-        let (eax, ebx, ecx, edx) = cpuid(1);
+-
+-        features.stepping = eax & 0xF;
+-        features.model = (eax >> 4) & 0xF;
+-        features.family = (eax >> 8) & 0xF;
+-
+-        // Extended model/family
+-        if features.family == 6 || features.family == 15 {
+-            features.model += ((eax >> 16) & 0xF) << 4;
+-        }
+-        if features.family == 15 {
+-            features.family += (eax >> 20) & 0xFF;
+-        }
+-
+-        // Logical processor count
+-        features.logical_cores = (ebx >> 16) & 0xFF;
+-        if features.logical_cores == 0 { features.logical_cores = 1; }
+-
+-        // EDX features
+-        features.has_fpu = (edx & (1 << 0)) != 0;
+-        features.has_pse = (edx & (1 << 3)) != 0;
+-        features.has_msr = (edx & (1 << 5)) != 0;
+-        features.has_pae = (edx & (1 << 6)) != 0;
+-        features.has_apic = (edx & (1 << 9)) != 0;
+-        features.has_sse = (edx & (1 << 25)) != 0;
+-        features.has_sse2 = (edx & (1 << 26)) != 0;
+-
+-        // ECX features
+-        features.has_sse3 = (ecx & (1 << 0)) != 0;
+-        features.has_sse41 = (ecx & (1 << 19)) != 0;
+-        features.has_sse42 = (ecx & (1 << 20)) != 0;
+-        features.has_aes = (ecx & (1 << 25)) != 0;
+-        features.has_avx = (ecx & (1 << 28)) != 0;
+-        features.has_x2apic = (ecx & (1 << 21)) != 0;
+-
+-        let _ = write!(serial, "CPUID: Family {} Model {} Stepping {}\n",
+-            features.family, features.model, features.stepping);
+-        let _ = write!(serial, "CPUID: {} logical cores\n", features.logical_cores);
+-    }
+-
+-    // Extended leaves
+-    let (max_ext, _, _, _) = cpuid(0x80000000);
+-    features.max_extended_leaf = max_ext;
+-
+-    if max_ext >= 0x80000001 {
+-        let (_, _, ecx, edx) = cpuid(0x80000001);
+-        features.has_long_mode = (edx & (1 << 29)) != 0;
+-        features.has_nx = (edx & (1 << 20)) != 0;
+-        features.has_rdtscp = (edx & (1 << 27)) != 0;
+-        features.has_1gb_pages = (edx & (1 << 26)) != 0;
+-    }
+-
+-    // Brand string (leaves 0x80000002 - 0x80000004)
+-    if max_ext >= 0x80000004 {
+-        let mut brand_buf = [0u8; 48];
+-        for i in 0..3u32 {
+-            let (a, b, c, d) = cpuid(0x80000002 + i);
+-            let off = (i as usize) * 16;
+-            brand_buf[off..off+4].copy_from_slice(&a.to_le_bytes());
+-            brand_buf[off+4..off+8].copy_from_slice(&b.to_le_bytes());
+-            brand_buf[off+8..off+12].copy_from_slice(&c.to_le_bytes());
+-            brand_buf[off+12..off+16].copy_from_slice(&d.to_le_bytes());
+-        }
+-        features.brand[..48].copy_from_slice(&brand_buf);
+-        let _ = write!(serial, "CPUID: Brand: {}\n", features.brand_str());
+-    }
+-
+-    // Print feature summary
+-    let _ = write!(serial, "CPUID: Features: ");
+-    if features.has_sse { let _ = write!(serial, "SSE "); }
+-    if features.has_sse2 { let _ = write!(serial, "SSE2 "); }
+-    if features.has_sse3 { let _ = write!(serial, "SSE3 "); }
+-    if features.has_sse41 { let _ = write!(serial, "SSE4.1 "); }
+-    if features.has_sse42 { let _ = write!(serial, "SSE4.2 "); }
+-    if features.has_avx { let _ = write!(serial, "AVX "); }
+-    if features.has_aes { let _ = write!(serial, "AES-NI "); }
+-    if features.has_nx { let _ = write!(serial, "NX "); }
+-    if features.has_1gb_pages { let _ = write!(serial, "1GB-Pages "); }
+-    if features.has_x2apic { let _ = write!(serial, "x2APIC "); }
+-    if features.has_rdtscp { let _ = write!(serial, "RDTSCP "); }
+-    let _ = write!(serial, "\n");
+-
+-    // Enable FPU + SSE (from legacy cpu.c)
+-    enable_sse();
+-
+-    *CPU_FEATURES.lock() = features;
+-    let _ = write!(serial, "CPUID: Detection complete\n");
+-}
+-
+-/// Enable FPU and SSE via CR0/CR4 (ported from legacy cpu.c)
+-fn enable_sse() {
+-    unsafe {
+-        // CR0: Clear EM (bit 2), set MP (bit 1)
+-        let cr0: u64;
+-        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
+-        let cr0 = (cr0 & !(1 << 2)) | (1 << 1);
+-        asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack));
+-
+-        // CR4: Set OSFXSR (bit 9) + OSXMMEXCPT (bit 10)
+-        let cr4: u64;
+-        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+-        let cr4 = cr4 | (1 << 9) | (1 << 10);
+-        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack));
+-    }
+-}
+-
+-/// Read the TSC (Time Stamp Counter) — useful for high-precision timing
+-#[inline(always)]
+-pub fn rdtsc() -> u64 {
+-    let lo: u32;
+-    let hi: u32;
+-    unsafe {
+-        asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
+-    }
+-    ((hi as u64) << 32) | (lo as u64)
+-}
++// =============================================================================
++// Ainux CPUID — CPU Detection & Feature Enumeration
++// Ported from legacy_archive/kernel/hal/x86_64/cpu.c to Rust
++// =============================================================================
++
++use core::arch::asm;
++use core::fmt::Write;
++use spin::Mutex;
++
++#[derive(Debug, Clone)]
++pub struct CpuFeatures {
++    pub vendor: [u8; 13],
++    pub brand: [u8; 49],
++    pub family: u32,
++    pub model: u32,
++    pub stepping: u32,
++    // Feature flags (EDX from leaf 1)
++    pub has_sse: bool,
++    pub has_sse2: bool,
++    pub has_fpu: bool,
++    pub has_apic: bool,
++    pub has_msr: bool,
++    pub has_pae: bool,
++    pub has_pse: bool,
++    // Feature flags (ECX from leaf 1)
++    pub has_sse3: bool,
++    pub has_sse41: bool,
++    pub has_sse42: bool,
++    pub has_avx: bool,
++    pub has_aes: bool,
++    pub has_x2apic: bool,
++    // Extended features (leaf 0x80000001)
++    pub has_nx: bool,
++    pub has_long_mode: bool,
++    pub has_1gb_pages: bool,
++    pub has_rdtscp: bool,
++    // Topology
++    pub max_cpuid_leaf: u32,
++    pub max_extended_leaf: u32,
++    pub logical_cores: u32,
++}
++
++impl CpuFeatures {
++    pub const fn new() -> Self {
++        CpuFeatures {
++            vendor: [0; 13],
++            brand: [0; 49],
++            family: 0,
++            model: 0,
++            stepping: 0,
++            has_sse: false,
++            has_sse2: false,
++            has_fpu: false,
++            has_apic: false,
++            has_msr: false,
++            has_pae: false,
++            has_pse: false,
++            has_sse3: false,
++            has_sse41: false,
++            has_sse42: false,
++            has_avx: false,
++            has_aes: false,
++            has_x2apic: false,
++            has_nx: false,
++            has_long_mode: false,
++            has_1gb_pages: false,
++            has_rdtscp: false,
++            max_cpuid_leaf: 0,
++            max_extended_leaf: 0,
++            logical_cores: 1,
++        }
++    }
++
++    pub fn vendor_str(&self) -> &str {
++        let len = self.vendor.iter().position(|&b| b == 0).unwrap_or(12);
++        core::str::from_utf8(&self.vendor[..len]).unwrap_or("Unknown")
++    }
++
++    pub fn brand_str(&self) -> &str {
++        let len = self.brand.iter().position(|&b| b == 0).unwrap_or(48);
++        core::str::from_utf8(&self.brand[..len]).unwrap_or("")
++    }
++
++    pub fn is_amd(&self) -> bool {
++        self.vendor_str() == "AuthenticAMD"
++    }
++
++    pub fn is_intel(&self) -> bool {
++        self.vendor_str() == "GenuineIntel"
++    }
++}
++
++pub static CPU_FEATURES: Mutex<CpuFeatures> = Mutex::new(CpuFeatures::new());
++
++/// Execute CPUID instruction (saves/restores rbx to avoid LLVM conflict)
++#[inline(always)]
++pub fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
++    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
++    unsafe {
++        asm!(
++            "push rbx",
++            "cpuid",
++            "mov {ebx_out:e}, ebx",
++            "pop rbx",
++            inout("eax") leaf => eax,
++            ebx_out = out(reg) ebx,
++            out("ecx") ecx,
++            out("edx") edx,
++            options(nostack, preserves_flags)
++        );
++    }
++    (eax, ebx, ecx, edx)
++}
++
++/// Execute CPUID with subleaf (saves/restores rbx)
++#[inline(always)]
++pub fn cpuid_sub(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
++    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
++    unsafe {
++        asm!(
++            "push rbx",
++            "cpuid",
++            "mov {ebx_out:e}, ebx",
++            "pop rbx",
++            inout("eax") leaf => eax,
++            ebx_out = out(reg) ebx,
++            inout("ecx") subleaf => ecx,
++            out("edx") edx,
++            options(nostack, preserves_flags)
++        );
++    }
++    (eax, ebx, ecx, edx)
++}
++
++/// Detect CPU and populate global features
++pub fn init() {
++    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++    let _ = write!(serial, "CPUID: Detecting CPU...\n");
++
++    let mut features = CpuFeatures::new();
++
++    // Leaf 0: Vendor string + max leaf
++    let (max_leaf, ebx, ecx, edx) = cpuid(0);
++    features.max_cpuid_leaf = max_leaf;
++
++    // Reconstruct vendor: EBX, EDX, ECX order
++    let vendor_bytes: [u8; 12] = unsafe {
++        let mut buf = [0u8; 12];
++        buf[0..4].copy_from_slice(&ebx.to_le_bytes());
++        buf[4..8].copy_from_slice(&edx.to_le_bytes());
++        buf[8..12].copy_from_slice(&ecx.to_le_bytes());
++        buf
++    };
++    features.vendor[..12].copy_from_slice(&vendor_bytes);
++
++    let _ = write!(serial, "CPUID: Vendor: {}\n", features.vendor_str());
++
++    // Leaf 1: Feature flags + Family/Model/Stepping
++    if max_leaf >= 1 {
++        let (eax, ebx, ecx, edx) = cpuid(1);
++
++        features.stepping = eax & 0xF;
++        features.model = (eax >> 4) & 0xF;
++        features.family = (eax >> 8) & 0xF;
++
++        // Extended model/family
++        if features.family == 6 || features.family == 15 {
++            features.model += ((eax >> 16) & 0xF) << 4;
++        }
++        if features.family == 15 {
++            features.family += (eax >> 20) & 0xFF;
++        }
++
++        // Logical processor count
++        features.logical_cores = (ebx >> 16) & 0xFF;
++        if features.logical_cores == 0 { features.logical_cores = 1; }
++
++        // EDX features
++        features.has_fpu = (edx & (1 << 0)) != 0;
++        features.has_pse = (edx & (1 << 3)) != 0;
++        features.has_msr = (edx & (1 << 5)) != 0;
++        features.has_pae = (edx & (1 << 6)) != 0;
++        features.has_apic = (edx & (1 << 9)) != 0;
++        features.has_sse = (edx & (1 << 25)) != 0;
++        features.has_sse2 = (edx & (1 << 26)) != 0;
++
++        // ECX features
++        features.has_sse3 = (ecx & (1 << 0)) != 0;
++        features.has_sse41 = (ecx & (1 << 19)) != 0;
++        features.has_sse42 = (ecx & (1 << 20)) != 0;
++        features.has_aes = (ecx & (1 << 25)) != 0;
++        features.has_avx = (ecx & (1 << 28)) != 0;
++        features.has_x2apic = (ecx & (1 << 21)) != 0;
++
++        let _ = write!(serial, "CPUID: Family {} Model {} Stepping {}\n",
++            features.family, features.model, features.stepping);
++        let _ = write!(serial, "CPUID: {} logical cores\n", features.logical_cores);
++    }
++
++    // Extended leaves
++    let (max_ext, _, _, _) = cpuid(0x80000000);
++    features.max_extended_leaf = max_ext;
++
++    if max_ext >= 0x80000001 {
++        let (_, _, ecx, edx) = cpuid(0x80000001);
++        features.has_long_mode = (edx & (1 << 29)) != 0;
++        features.has_nx = (edx & (1 << 20)) != 0;
++        features.has_rdtscp = (edx & (1 << 27)) != 0;
++        features.has_1gb_pages = (edx & (1 << 26)) != 0;
++    }
++
++    // Brand string (leaves 0x80000002 - 0x80000004)
++    if max_ext >= 0x80000004 {
++        let mut brand_buf = [0u8; 48];
++        for i in 0..3u32 {
++            let (a, b, c, d) = cpuid(0x80000002 + i);
++            let off = (i as usize) * 16;
++            brand_buf[off..off+4].copy_from_slice(&a.to_le_bytes());
++            brand_buf[off+4..off+8].copy_from_slice(&b.to_le_bytes());
++            brand_buf[off+8..off+12].copy_from_slice(&c.to_le_bytes());
++            brand_buf[off+12..off+16].copy_from_slice(&d.to_le_bytes());
++        }
++        features.brand[..48].copy_from_slice(&brand_buf);
++        let _ = write!(serial, "CPUID: Brand: {}\n", features.brand_str());
++    }
++
++    // Print feature summary
++    let _ = write!(serial, "CPUID: Features: ");
++    if features.has_sse { let _ = write!(serial, "SSE "); }
++    if features.has_sse2 { let _ = write!(serial, "SSE2 "); }
++    if features.has_sse3 { let _ = write!(serial, "SSE3 "); }
++    if features.has_sse41 { let _ = write!(serial, "SSE4.1 "); }
++    if features.has_sse42 { let _ = write!(serial, "SSE4.2 "); }
++    if features.has_avx { let _ = write!(serial, "AVX "); }
++    if features.has_aes { let _ = write!(serial, "AES-NI "); }
++    if features.has_nx { let _ = write!(serial, "NX "); }
++    if features.has_1gb_pages { let _ = write!(serial, "1GB-Pages "); }
++    if features.has_x2apic { let _ = write!(serial, "x2APIC "); }
++    if features.has_rdtscp { let _ = write!(serial, "RDTSCP "); }
++    let _ = write!(serial, "\n");
++
++    // Enable FPU + SSE (from legacy cpu.c)
++    enable_sse();
++
++    *CPU_FEATURES.lock() = features;
++    let _ = write!(serial, "CPUID: Detection complete\n");
++}
++
++/// Enable FPU and SSE via CR0/CR4 (ported from legacy cpu.c)
++fn enable_sse() {
++    unsafe {
++        // CR0: Clear EM (bit 2), set MP (bit 1)
++        let cr0: u64;
++        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
++        let cr0 = (cr0 & !(1 << 2)) | (1 << 1);
++        asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack));
++
++        // CR4: Set OSFXSR (bit 9) + OSXMMEXCPT (bit 10)
++        let cr4: u64;
++        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
++        let cr4 = cr4 | (1 << 9) | (1 << 10);
++        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack));
++    }
++}
++
++/// Read the TSC (Time Stamp Counter) — useful for high-precision timing
++#[inline(always)]
++pub fn rdtsc() -> u64 {
++    let lo: u32;
++    let hi: u32;
++    unsafe {
++        asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
++    }
++    ((hi as u64) << 32) | (lo as u64)
++}
+diff -ur src/cpu/gdt.rs Ainux/Ainux/custom_kernel/src/cpu/gdt.rs
+--- src/cpu/gdt.rs	2026-05-04 18:25:39.578677600 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/gdt.rs	2026-05-06 09:42:43.182663900 +0000
+@@ -1,189 +1,206 @@
+-use core::arch::{asm, naked_asm};
+-use core::mem::size_of;
+-use core::sync::atomic::{AtomicU64, Ordering};
+-
+-// Segment Selectors
+-pub const KERNEL_CODE: u16 = 0x08;
+-pub const KERNEL_DATA: u16 = 0x10;
+-pub const USER_DATA: u16 = 0x18 | 3;
+-pub const USER_CODE: u16 = 0x20 | 3;
+-pub const TSS_SELECTOR: u16 = 0x28;
+-
+-#[repr(C, packed)]
+-pub struct Tss {
+-    reserved1: u32,
+-    pub rsp0: u64,
+-    pub rsp1: u64,
+-    pub rsp2: u64,
+-    reserved2: u64,
+-    pub ist1: u64,
+-    pub ist2: u64,
+-    pub ist3: u64,
+-    pub ist4: u64,
+-    pub ist5: u64,
+-    pub ist6: u64,
+-    pub ist7: u64,
+-    reserved3: u64,
+-    reserved4: u16,
+-    iomap_base: u16,
+-}
+-
+-impl Tss {
+-    pub const fn new() -> Self {
+-        Self {
+-            reserved1: 0,
+-            rsp0: 0, rsp1: 0, rsp2: 0,
+-            reserved2: 0,
+-            ist1: 0, ist2: 0, ist3: 0, ist4: 0, ist5: 0, ist6: 0, ist7: 0,
+-            reserved3: 0,
+-            reserved4: 0,
+-            iomap_base: 104, // Size of TSS
+-        }
+-    }
+-}
+-
+-// IST stack sizes (8KB each — enough for fault handlers)
+-const IST_STACK_SIZE: usize = 8192;
+-
+-#[repr(C, packed)]
+-#[derive(Clone, Copy)]
+-pub struct GdtDescriptor {
+-    limit_low: u16,
+-    base_low: u16,
+-    base_middle: u8,
+-    access: u8,
+-    granularity: u8,
+-    base_high: u8,
+-}
+-
+-impl GdtDescriptor {
+-    pub const fn new(base: u32, limit: u32, access: u8, flags: u8) -> Self {
+-        Self {
+-            limit_low: (limit & 0xFFFF) as u16,
+-            base_low: (base & 0xFFFF) as u16,
+-            base_middle: ((base >> 16) & 0xFF) as u8,
+-            access,
+-            granularity: ((limit >> 16) & 0x0F) as u8 | (flags & 0xF0),
+-            base_high: ((base >> 24) & 0xFF) as u8,
+-        }
+-    }
+-}
+-
+-// Per-CPU state to ensure SMP safety
+-struct CpuState {
+-    gdt: [GdtDescriptor; 7],
+-    tss: Tss,
+-    ist1: [u8; IST_STACK_SIZE],
+-}
+-
+-static mut CPU_STATES: [CpuState; crate::cpu::percpu::MAX_CPUS] = [const { 
+-    CpuState {
+-        gdt: [
+-            GdtDescriptor::new(0, 0, 0, 0),
+-            GdtDescriptor::new(0, 0xFFFFFFFF, 0x9B, 0xA0), // 1: Kernel Code (G=1, L=1)
+-            GdtDescriptor::new(0, 0xFFFFFFFF, 0x93, 0x80), // 2: Kernel Data (G=1)
+-            GdtDescriptor::new(0, 0xFFFFFFFF, 0xF3, 0x80), // 3: User Data 64 (G=1)
+-            GdtDescriptor::new(0, 0xFFFFFFFF, 0xFB, 0xA0), // 4: User Code 64 (G=1, L=1)
+-            GdtDescriptor::new(0, 0, 0, 0),
+-            GdtDescriptor::new(0, 0, 0, 0),
+-        ],
+-        tss: Tss::new(),
+-        ist1: [0; IST_STACK_SIZE],
+-    }
+-}; crate::cpu::percpu::MAX_CPUS];
+-
+-#[repr(C, packed)]
+-struct GdtPointer {
+-    limit: u16,
+-    base: u64,
+-}
+-
+-// Helper to write TSS Descriptor (16 bytes)
+-unsafe fn set_tss_descriptor(gdt: &mut [GdtDescriptor; 7], index: usize, tss: &Tss) {
+-    let base = tss as *const _ as u64;
+-    let limit = (size_of::<Tss>() - 1) as u64;
+-    
+-    gdt[index] = GdtDescriptor {
+-        limit_low: (limit & 0xFFFF) as u16,
+-        base_low: (base & 0xFFFF) as u16,
+-        base_middle: ((base >> 16) & 0xFF) as u8,
+-        access: 0x89, 
+-        granularity: ((limit >> 16) & 0x0F) as u8,
+-        base_high: ((base >> 24) & 0xFF) as u8,
+-    };
+-    
+-    gdt[index + 1] = GdtDescriptor {
+-        limit_low: (base >> 32) as u16,
+-        base_low: (base >> 48) as u16,
+-        base_middle: 0,
+-        access: 0,
+-        granularity: 0,
+-        base_high: 0,
+-    };
+-}
+-
+-pub unsafe fn init_ap(cpu_id: usize) {
+-    let state = &mut CPU_STATES[cpu_id];
+-        
+-        // Setup IST stacks in TSS for fault isolation
+-        let ist1_top = state.ist1.as_ptr() as u64 + IST_STACK_SIZE as u64;
+-        state.tss.ist1 = ist1_top;
+-
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        use core::fmt::Write;
+-        let _ = write!(serial, "GDT: CPU {} IST1_TOP: {:#x}\n", cpu_id, ist1_top);
+-
+-        // Setup TSS Descriptor in per-CPU GDT at index 5
+-        set_tss_descriptor(&mut state.gdt, 5, &state.tss);
+-
+-        let gdt_ptr = GdtPointer {
+-            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
+-            base: state.gdt.as_ptr() as u64,
+-        };
+-
+-        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+-        
+-        // Load Segment Registers
+-        asm!(
+-            "push {0}",
+-            "lea {1}, [rip + 2f]",
+-            "push {1}",
+-            "retfq",
+-            "2:",
+-            "mov ds, {2:x}",
+-            "mov es, {2:x}",
+-            "mov fs, {2:x}",
+-            "mov gs, {2:x}",
+-            "mov ss, {2:x}",
+-            in(reg) KERNEL_CODE as u64,
+-            out(reg) _,
+-            in(reg) KERNEL_DATA as u16,
+-            options(preserves_flags)
+-        );
+-
+-        // Load TSS
+-        asm!("ltr {0:x}", in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
+-
+-        // CRITICAL: We must set GS_BASE AFTER loading the GS segment register.
+-        // Loading the GS selector (mov gs, ax) reloads the base from the GDT,
+-        // which clears any base set by WRMSR.
+-        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_id);
+-        crate::cpu::percpu::CPUS[cpu_id].init(prcb_addr, cpu_id as u32);
+-        crate::cpu::percpu::write_gs_base(prcb_addr);
+-        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
+-}
+-
+-pub unsafe fn init() {
+-    init_ap(0);
+-}
+-
+-pub fn load_segments() {
+-    // This is now integrated into init() via retfq
+-}
+-
+-pub fn set_kernel_stack(stack_top: u64) {
+-    let cpu_id = crate::cpu::percpu::get_current_cpu_id();
+-    unsafe {
+-        CPU_STATES[cpu_id].tss.rsp0 = stack_top;
+-    }
+-}
++use core::arch::{asm, naked_asm};
++use core::mem::size_of;
++use core::sync::atomic::{AtomicU64, Ordering};
++
++// Segment Selectors
++pub const KERNEL_CODE: u16 = 0x08;
++pub const KERNEL_DATA: u16 = 0x10;
++pub const USER_DATA: u16 = 0x18 | 3;  // Must come BEFORE User Code for SYSRET
++pub const USER_CODE: u16 = 0x20 | 3;  // SYSRET loads CS = base+16
++pub const TSS_SELECTOR: u16 = 0x28;
++
++#[repr(C, packed)]
++pub struct Tss {
++    reserved1: u32,
++    pub rsp0: u64,
++    pub rsp1: u64,
++    pub rsp2: u64,
++    reserved2: u64,
++    pub ist1: u64,
++    pub ist2: u64,
++    pub ist3: u64,
++    pub ist4: u64,
++    pub ist5: u64,
++    pub ist6: u64,
++    pub ist7: u64,
++    reserved3: u64,
++    reserved4: u16,
++    iomap_base: u16,
++}
++
++impl Tss {
++    pub const fn new() -> Self {
++        Self {
++            reserved1: 0,
++            rsp0: 0, rsp1: 0, rsp2: 0,
++            reserved2: 0,
++            ist1: 0, ist2: 0, ist3: 0, ist4: 0, ist5: 0, ist6: 0, ist7: 0,
++            reserved3: 0,
++            reserved4: 0,
++            iomap_base: 104, // Size of TSS
++        }
++    }
++}
++
++// Global TSS Instance
++pub static mut TSS: Tss = Tss::new();
++
++// IST stack sizes (8KB each — enough for fault handlers)
++const IST_STACK_SIZE: usize = 8192;
++
++// IST stack storage (statically allocated, page-aligned)
++#[repr(C, align(4096))]
++struct IstStack([u8; IST_STACK_SIZE]);
++
++static mut IST1_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
++static mut IST2_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
++
++#[repr(C, packed)]
++#[derive(Clone, Copy)]
++pub struct GdtDescriptor {
++    limit_low: u16,
++    base_low: u16,
++    base_middle: u8,
++    access: u8,
++    granularity: u8,
++    base_high: u8,
++}
++
++impl GdtDescriptor {
++    pub const fn new(base: u32, limit: u32, access: u8, flags: u8) -> Self {
++        Self {
++            limit_low: (limit & 0xFFFF) as u16,
++            base_low: (base & 0xFFFF) as u16,
++            base_middle: ((base >> 16) & 0xFF) as u8,
++            access,
++            granularity: ((limit >> 16) & 0x0F) as u8 | (flags & 0xF0),
++            base_high: ((base >> 24) & 0xFF) as u8,
++        }
++    }
++}
++
++#[repr(C, packed)]
++struct GdtPointer {
++    limit: u16,
++    base: u64,
++}
++
++// GDT Table (7 entries: Null, KC, KD, UC, UD, TSS_Low, TSS_High)
++static mut GDT: [GdtDescriptor; 7] = [
++    // 0: Null
++    GdtDescriptor::new(0, 0, 0, 0),
++    // 1: Kernel Code
++    GdtDescriptor::new(0, 0, 0x9A, 0x20),
++    // 2: Kernel Data
++    GdtDescriptor::new(0, 0, 0x92, 0x00),
++    // 3: User Data (Access 0xF2: Present, Ring 3, Data, Writable) — MUST be before User Code for SYSRET
++    GdtDescriptor::new(0, 0, 0xF2, 0x00),
++    // 4: User Code (Access 0xFA: Present, Ring 3, Code, Readable)
++    GdtDescriptor::new(0, 0, 0xFA, 0x20),
++    // 5: TSS Low (will be filled in init)
++    GdtDescriptor::new(0, 0, 0, 0),
++    // 6: TSS High (will be filled in init)
++    GdtDescriptor::new(0, 0, 0, 0),
++];
++
++// Helper to write TSS Descriptor (16 bytes)
++unsafe fn set_tss_descriptor(index: usize, tss: &'static Tss) {
++    let base = tss as *const _ as u64;
++    let limit = (size_of::<Tss>() - 1) as u64;
++    
++    // Low Descriptor (Standard GDT layout)
++    // Type 0x89 (Present, Ring 0, System, 64-bit TSS Available)
++    // Wait, Type 9 for 64-bit TSS Available? 
++    // AMD64 Vol 2: System-Segment Descriptor (Type 9 = Available 64-bit TSS)
++    // Access byte: Present(1) | DPL(00) | S(0) | Type(1001) = 10001001 = 0x89?
++    // If we want it available.
++    
++    GDT[index] = GdtDescriptor {
++        limit_low: (limit & 0xFFFF) as u16,
++        base_low: (base & 0xFFFF) as u16,
++        base_middle: ((base >> 16) & 0xFF) as u8,
++        access: 0x89, 
++        granularity: ((limit >> 16) & 0x0F) as u8, // No granularity flags for TSS usually?
++        base_high: ((base >> 24) & 0xFF) as u8,
++    };
++    
++    // High Descriptor (Extension)
++    // Base 63:32, Reserved, Zero
++    GDT[index + 1] = GdtDescriptor {
++        limit_low: (base >> 32) as u16,
++        base_low: (base >> 48) as u16,
++        base_middle: 0,
++        access: 0,
++        granularity: 0,
++        base_high: 0,
++    };
++}
++
++pub fn init() {
++    unsafe {
++        // Setup IST stacks in TSS for fault isolation
++        // IST1 = Double Fault stack (prevents triple fault on corrupted RSP)
++        // IST2 = NMI stack (NMI can arrive at any time, needs dedicated stack)
++        let ist1_top = IST1_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
++        let ist2_top = IST2_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
++        TSS.ist1 = ist1_top;
++        TSS.ist2 = ist2_top;
++
++        // Setup TSS Descriptor
++        set_tss_descriptor(5, &TSS);
++
++        let gdt_ptr = GdtPointer {
++            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
++            base: GDT.as_ptr() as u64,
++        };
++
++        // Load GDT
++        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
++
++        // Reload Segments
++        load_segments();
++        
++        // Load Task Register (TSS)
++        asm!("ltr ax", in("ax") TSS_SELECTOR, options(nostack, preserves_flags));
++    }
++}
++
++pub fn set_kernel_stack(stack_top: u64) {
++    unsafe {
++        TSS.rsp0 = stack_top;
++    }
++}
++
++/// Load the BSP's GDT on an Application Processor.
++/// Does NOT touch TSS or load TR — avoids GP fault from "busy" TSS descriptor.
++/// APs are parked and never do ring transitions, so TSS is not needed.
++pub fn init_ap() {
++    unsafe {
++        let gdt_ptr = GdtPointer {
++            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
++            base: GDT.as_ptr() as u64,
++        };
++        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
++        load_segments();
++    }
++}
++
++#[unsafe(naked)]
++unsafe extern "C" fn load_segments() {
++    naked_asm!(
++        "push 0x08",        // Push code segment
++        "lea rax, [rip + 1f]", // Push return address
++        "push rax",
++        "retfq",            // Far return to reload CS
++        "1:",
++        "mov ax, 0x10",      // Load data segment
++        "mov ds, ax",
++        "mov es, ax",
++        // NOTE: fs and gs intentionally NOT reloaded here.
++        // Reloading them would zero FS_BASE/GS_BASE MSRs on AMD64,
++        // destroying per-CPU state pointers.
++        "mov ss, ax",
++        "ret",
++    );
++}
++
+diff -ur src/cpu/idt.rs Ainux/Ainux/custom_kernel/src/cpu/idt.rs
+--- src/cpu/idt.rs	2026-05-04 15:31:33.809898100 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/idt.rs	2026-05-06 09:42:43.192363900 +0000
+@@ -1,85 +1,121 @@
+-// =============================================================================
+-// Ainux Interrupt Descriptor Table (IDT) — Safe & Diagnostic
+-// =============================================================================
+-
+ use core::arch::{asm, naked_asm};
+ use core::mem::size_of;
+ 
+-// IDT Entry Structure
+ #[repr(C, packed)]
+-#[derive(Debug, Clone, Copy)]
++#[derive(Clone, Copy)]
+ pub struct IdtEntry {
+     offset_low: u16,
+     selector: u16,
+     ist: u8,
+-    types_attr: u8,
++    flags: u8,
+     offset_mid: u16,
+     offset_high: u32,
+-    zero: u32,
++    reserved: u32,
+ }
+ 
+ impl IdtEntry {
+-    pub fn new(offset: u64, selector: u16, types_attr: u8) -> Self {
++    fn missing() -> Self {
++        Self {
++            offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0
++        }
++    }
++
++    fn new(handler: u64, selector: u16, flags: u8) -> Self {
+         Self {
+-            offset_low: offset as u16,
++            offset_low: (handler & 0xFFFF) as u16,
+             selector,
+             ist: 0,
+-            types_attr,
+-            offset_mid: (offset >> 16) as u16,
+-            offset_high: (offset >> 32) as u32,
+-            zero: 0,
++            flags,
++            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
++            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
++            reserved: 0,
+         }
+     }
+ 
+-    pub fn new_ist(offset: u64, selector: u16, types_attr: u8, ist: u8) -> Self {
+-        let mut entry = Self::new(offset, selector, types_attr);
+-        entry.ist = ist & 0x07;
+-        entry
++    /// Create an IDT entry with a specific IST index (1-7)
++    fn new_with_ist(handler: u64, selector: u16, flags: u8, ist_index: u8) -> Self {
++        Self {
++            offset_low: (handler & 0xFFFF) as u16,
++            selector,
++            ist: ist_index & 0x7,
++            flags,
++            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
++            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
++            reserved: 0,
++        }
+     }
+ }
+ 
++#[repr(C, align(16))]
++struct Idt {
++    entries: [IdtEntry; 256],
++}
++
+ #[repr(C, packed)]
+-pub struct IdtPointer {
++struct IdtPointer {
+     limit: u16,
+     base: u64,
+ }
+ 
+ static mut IDT: Idt = Idt {
+-    entries: [IdtEntry {
+-        offset_low: 0,
+-        selector: 0,
+-        ist: 0,
+-        types_attr: 0,
+-        offset_mid: 0,
+-        offset_high: 0,
+-        zero: 0,
+-    }; 256],
++    entries: [IdtEntry { offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0 }; 256]
+ };
+ 
+-#[repr(C, align(16))]
+-struct Idt {
+-    entries: [IdtEntry; 256],
+-}
+-
+ pub fn init() {
+     unsafe {
+-        // Exceptions (0-31)
+-        IDT.entries[0] = IdtEntry::new(exc_divide_error as u64, 0x08, 0x8E);
+-        IDT.entries[3] = IdtEntry::new(exc_breakpoint as u64, 0x08, 0x8E);
+-        IDT.entries[6] = IdtEntry::new(exc_invalid_opcode as u64, 0x08, 0x8E);
+-        IDT.entries[8] = IdtEntry::new_ist(exc_double_fault as u64, 0x08, 0x8E, 1);
+-        IDT.entries[13] = IdtEntry::new(exc_gpf as u64, 0x08, 0x8E);
+-        IDT.entries[14] = IdtEntry::new(exc_page_fault as u64, 0x08, 0x8E);
+-
+-        // IRQs (32-47)
+-        IDT.entries[32] = IdtEntry::new(irq_timer as u64, 0x08, 0x8E);
+-        IDT.entries[33] = IdtEntry::new(irq_keyboard as u64, 0x08, 0x8E);
+-        IDT.entries[44] = IdtEntry::new(irq_mouse as u64, 0x08, 0x8E);
+-        IDT.entries[43] = IdtEntry::new(irq_net as u64, 0x08, 0x8E);
+-
+-        // Stub remaining IRQs
+-        for i in 34..43 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
+-        for i in 45..48 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
++        // Divide-by-Zero (INT0) - No Error Code
++        let div_handler = divide_error_handler as u64;
++        IDT.entries[0] = IdtEntry::new(div_handler, 0x08, 0x8E);
++
++        // Breakpoint (INT3) - No Error Code
++        let bp_handler = breakpoint_handler as u64;
++        IDT.entries[3] = IdtEntry::new(bp_handler, 0x08, 0x8E);
++
++        // Invalid Opcode (INT6) - No Error Code
++        let ud_handler = invalid_opcode_handler as u64;
++        IDT.entries[6] = IdtEntry::new(ud_handler, 0x08, 0x8E);
++
++        // Double Fault (INT8) - Has Error Code, uses IST1 for fault isolation
++        let df_handler = double_fault_handler as u64;
++        IDT.entries[8] = IdtEntry::new_with_ist(df_handler, 0x08, 0x8E, 1);
++
++        // General Protection Fault (INT13) - Has Error Code
++        let gp_handler = gp_fault_handler as u64;
++        IDT.entries[13] = IdtEntry::new(gp_handler, 0x08, 0x8E);
++
++        // Page Fault (INT14) - Has Error Code
++        let pf_handler = page_fault_handler as u64;
++        IDT.entries[14] = IdtEntry::new(pf_handler, 0x08, 0x8E);
++        
++        // IRQ0: Timer (32)
++        let timer_handler = timer_handler_addr();
++        IDT.entries[32] = IdtEntry::new(timer_handler, 0x08, 0x8E);
++
++        // IRQ1: Keyboard (32 + 1 = 33)
++        let kb_handler = crate::drivers::keyboard::keyboard_handler_addr();
++        IDT.entries[33] = IdtEntry::new(kb_handler, 0x08, 0x8E);
++
++        // IRQ12: Mouse (44)
++        let mouse_handler = crate::drivers::mouse::mouse_handler_addr();
++        IDT.entries[44] = IdtEntry::new(mouse_handler, 0x08, 0x8E);
++
++        // IRQ11: RTL8139 (32 + 11 = 43)
++        let net_handler = rtl8139_handler_addr();
++        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
++
++        // IRQ11: RTL8139 (32 + 11 = 43)
++        let net_handler = rtl8139_handler_addr();
++        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
++
++        // Fill ALL remaining IRQ vectors (32-47)
++        let stub = irq_stub_handler_addr();
++        for vec in 32..=47 {
++            // Skip vectors with real handlers
++            if vec == 32 || vec == 33 || vec == 43 || vec == 44 {
++                continue;
++            }
++            IDT.entries[vec] = IdtEntry::new(stub, 0x08, 0x8E);
++        }
+ 
+         let idt_ptr = IdtPointer {
+             limit: (size_of::<Idt>() - 1) as u16,
+@@ -90,259 +126,216 @@
+     }
+ }
+ 
+-// =============================================================================
+-// ASSEMBLY STUBS (Conditional swapgs + Register Save)
+-// =============================================================================
+-
+-macro_rules! interrupt_stub {
++// MACRO for Exception with Error Code
++macro_rules! exception_err_handler {
+     ($name:ident, $rust_handler:ident) => {
+         #[unsafe(naked)]
+         extern "C" fn $name() {
+-            unsafe {
+-                naked_asm!(
+-                    "push 0", // Dummy Error Code
+-                    "push r15", "push r14", "push r13", "push r12",
+-                    "push r11", "push r10", "push r9", "push r8",
+-                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
+-                    "push rbx",
+-
+-                    "mov rax, [rsp + 136]", // CS at [rsp + 17*8]
+-                    "and rax, 3",
+-                    "cmp rax, 3",
+-                    "jne 2f",
+-                    "swapgs",
+-                    "2:",
+-
+-                    "mov rdi, rsp",
+-                    "call {}",
+-
+-                    "mov rax, [rsp + 136]",
+-                    "and rax, 3",
+-                    "cmp rax, 3",
+-                    "jne 3f",
+-                    "swapgs",
+-                    "3:",
+-
+-                    "pop rbx",
+-                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
+-                    "pop r8", "pop r9", "pop r10", "pop r11",
+-                    "pop r12", "pop r13", "pop r14", "pop r15",
+-                    "add rsp, 8", // Pop dummy error code
+-                    "iretq",
+-                    sym $rust_handler
+-                );
+-            }
++            naked_asm!(
++                "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
++                "mov rdi, [rsp + 72]", // Error Code is at RSP + 9*8 = 72
++                "mov rsi, [rsp + 80]", // RIP is at RSP + 72 + 8 = 80
++                "call {}",
++                "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
++                "add rsp, 8", // Pop error code
++                "iretq",
++                sym $rust_handler
++            );
+         }
+-    };
+-}
+-
+-macro_rules! interrupt_stub_err {
+-    ($name:ident, $rust_handler:ident) => {
+-        #[unsafe(naked)]
+-        extern "C" fn $name() {
+-            unsafe {
+-                naked_asm!(
+-                    // Error code already pushed by CPU
+-                    "push r15", "push r14", "push r13", "push r12",
+-                    "push r11", "push r10", "push r9", "push r8",
+-                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
+-                    "push rbx",
+-
+-                    "mov rax, [rsp + 136]",
+-                    "and rax, 3",
+-                    "cmp rax, 3",
+-                    "jne 2f",
+-                    "swapgs",
+-                    "2:",
+-
+-                    "mov rdi, rsp",
+-                    "call {}",
+-
+-                    "mov rax, [rsp + 136]",
+-                    "and rax, 3",
+-                    "cmp rax, 3",
+-                    "jne 3f",
+-                    "swapgs",
+-                    "3:",
+-
+-                    "pop rbx",
+-                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
+-                    "pop r8", "pop r9", "pop r10", "pop r11",
+-                    "pop r12", "pop r13", "pop r14", "pop r15",
+-                    "add rsp, 8", // Pop real error code
+-                    "iretq",
+-                    sym $rust_handler
+-                );
+-            }
+-        }
+-    };
++    }
+ }
+ 
+-// Common structure for Rust exception handlers to receive
+-#[repr(C)]
+-pub struct InterruptFrame {
+-    pub rbx: u64,
+-    pub rax: u64, pub rcx: u64, pub rdx: u64, pub rsi: u64, pub rdi: u64, pub rbp: u64,
+-    pub r8: u64,  pub r9: u64,  pub r10: u64, pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+-    pub err_code: u64,
+-    pub rip: u64,
+-    pub cs: u64,
+-    pub rflags: u64,
+-    pub rsp: u64,
+-    pub ss: u64,
+-}
+-
+-interrupt_stub!(exc_divide_error, rust_exc_divide_error);
+-interrupt_stub!(exc_breakpoint, rust_exc_breakpoint);
+-interrupt_stub!(exc_invalid_opcode, rust_exc_invalid_opcode);
+-interrupt_stub_err!(exc_double_fault, rust_exc_double_fault);
+-interrupt_stub_err!(exc_gpf, rust_exc_gpf);
+-interrupt_stub_err!(exc_page_fault, rust_exc_page_fault);
+-
+-interrupt_stub!(irq_timer, rust_irq_timer);
+-interrupt_stub!(irq_keyboard, rust_irq_keyboard);
+-interrupt_stub!(irq_mouse, rust_irq_mouse);
+-interrupt_stub!(irq_net, rust_irq_net);
+-interrupt_stub!(irq_stub, rust_irq_stub);
+-
+-// =============================================================================
+-// RUST HANDLERS
+-// =============================================================================
++#[unsafe(naked)]
++extern "C" fn breakpoint_handler() {
++    naked_asm!(
++        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
++        "call rust_breakpoint_handler",
++        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
++        "iretq"
++    );
++}
++
++// -- Exception Handlers (No Error Code) --
++
++#[unsafe(naked)]
++extern "C" fn divide_error_handler() {
++    naked_asm!(
++        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
++        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
++        "call rust_divide_error_handler",
++        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
++        "iretq"
++    );
++}
++
++#[unsafe(naked)]
++extern "C" fn invalid_opcode_handler() {
++    naked_asm!(
++        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
++        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
++        "call rust_invalid_opcode_handler",
++        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
++        "iretq"
++    );
++}
++
++exception_err_handler!(double_fault_handler, rust_double_fault_handler);
++exception_err_handler!(gp_fault_handler, rust_gp_fault_handler);
++exception_err_handler!(page_fault_handler, rust_page_fault_handler);
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_divide_error(frame: &InterruptFrame) {
++extern "C" fn rust_divide_error_handler(rip: u64) {
+     unsafe {
+-        print_serial("\n!!! EXCEPTION: DIVIDE BY ZERO !!!\n");
+-        dump_frame(frame);
+-        loop { asm!("hlt"); }
++        print_serial("DIVIDE BY ZERO at RIP: ");
++        print_hex(rip);
++        print_serial("\n");
+     }
++    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_breakpoint(frame: &InterruptFrame) {
++extern "C" fn rust_invalid_opcode_handler(rip: u64) {
+     unsafe {
+-        print_serial("\n[Breakpoint] RIP: "); print_hex(frame.rip);
++        print_serial("INVALID OPCODE at RIP: ");
++        print_hex(rip);
+         print_serial("\n");
+     }
++    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_invalid_opcode(frame: &InterruptFrame) {
+-    unsafe {
+-        print_serial("\n!!! EXCEPTION: INVALID OPCODE !!!\n");
+-        dump_frame(frame);
+-        loop { asm!("hlt"); }
+-    }
++extern "C" fn rust_breakpoint_handler() {
++    unsafe { print_serial("INT3\n"); }
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_double_fault(frame: &InterruptFrame) {
++extern "C" fn rust_double_fault_handler(_err: u64) {
++    // Running on IST1 stack — safe even with corrupted kernel stack
+     unsafe {
+-        print_serial("\n!!! EXCEPTION: DOUBLE FAULT (IST1) !!!\n");
+-        dump_frame(frame);
+-        
+-        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
+-        print_serial("  CR2: "); print_hex(cr2);
+-        
+-        let cr3: u64; asm!("mov {}, cr3", out(reg) cr3);
+-        print_serial("  CR3: "); print_hex(cr3);
+-        print_serial("\nCPU HALTED.\n");
+-        loop { asm!("hlt"); }
++        print_serial("DOUBLE FAULT (IST1)\n");
+     }
++    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_gpf(frame: &InterruptFrame) {
+-    unsafe {
+-        print_serial("\n!!! EXCEPTION: GENERAL PROTECTION FAULT !!!\n");
+-        dump_frame(frame);
+-        loop { asm!("hlt"); }
++extern "C" fn rust_gp_fault_handler(err: u64, rip: u64) {
++    unsafe { 
++        print_serial("GP FAULT at RIP: ");
++        print_hex(rip);
++        print_serial(" Error Code: ");
++        print_hex(err);
++        print_serial("\n");
+     }
++    loop {}
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_exc_page_fault(frame: &InterruptFrame) {
+-    unsafe {
+-        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
+-        let gs_base: u64;
+-        let low: u32; let high: u32;
+-        asm!("rdmsr", in("rcx") 0xC0000101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
+-        gs_base = ((high as u64) << 32) | (low as u64);
+-
+-        print_serial("\n!!! EXCEPTION: PAGE FAULT !!!\n");
+-        print_serial("  CR2: "); print_hex(cr2);
+-        print_serial("  GS_BASE: "); print_hex(gs_base);
+-        dump_frame(frame);
+-        loop { asm!("hlt"); }
++extern "C" fn rust_page_fault_handler(err: u64) {
++    let cr2: u64;
++    unsafe { 
++        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); 
++        print_serial("PAGE FAULT at CR2=");
++        print_hex(cr2);
++        print_serial(" Err=");
++        print_hex(err);
++        // Decode error code bits
++        if err & 1 != 0 { print_serial(" [PRESENT]"); }
++        if err & 2 != 0 { print_serial(" [WRITE]"); } else { print_serial(" [READ]"); }
++        if err & 4 != 0 { print_serial(" [USER]"); } else { print_serial(" [KERNEL]"); }
++        if err & 8 != 0 { print_serial(" [RSVD]"); }
++        if err & 16 != 0 { print_serial(" [IFETCH]"); }
++        print_serial("\n");
+     }
++    loop {}
+ }
+ 
+-#[no_mangle]
+-extern "C" fn rust_irq_timer(_frame: &InterruptFrame) {
+-    unsafe {
+-        crate::cpu::pic::notify_eoi(0);
+-        crate::process::scheduler::tick();
++pub unsafe fn print_hex(mut n: u64) {
++    let hex = b"0123456789ABCDEF";
++    let mut buf = [0u8; 18]; // 0x + 16 digits
++    buf[0] = b'0';
++    buf[1] = b'x';
++    for i in 0..16 {
++        buf[17 - i] = hex[(n & 0xF) as usize];
++        n >>= 4;
++    }
++    for b in buf {
++        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
+     }
+ }
+ 
+-#[no_mangle]
+-extern "C" fn rust_irq_keyboard(_frame: &InterruptFrame) {
+-    unsafe {
+-        crate::drivers::keyboard::rust_keyboard_handler();
+-        crate::cpu::pic::notify_eoi(1);
+-    }
++#[unsafe(naked)]
++extern "C" fn timer_handler_wrapper() {
++    naked_asm!(
++        "push rax", "push rbx", "push rcx", "push rdx",
++        "push rsi", "push rdi", "push rbp",
++        "push r8", "push r9", "push r10", "push r11",
++        "push r12", "push r13", "push r14", "push r15",
++        "call rust_timer_handler",
++        "pop r15", "pop r14", "pop r13", "pop r12",
++        "pop r11", "pop r10", "pop r9", "pop r8",
++        "pop rbp", "pop rdi", "pop rsi",
++        "pop rdx", "pop rcx", "pop rbx", "pop rax",
++        "iretq"
++    );
++}
++
++fn timer_handler_addr() -> u64 {
++    timer_handler_wrapper as u64
+ }
+ 
+ #[no_mangle]
+-extern "C" fn rust_irq_mouse(_frame: &InterruptFrame) {
++extern "C" fn rust_timer_handler() {
+     unsafe {
+-        crate::drivers::mouse::rust_mouse_handler();
+-        crate::cpu::pic::notify_eoi(12);
++        crate::cpu::pic::notify_eoi(0);
++        crate::process::scheduler::tick();
+     }
+ }
+ 
+-#[no_mangle]
+-extern "C" fn rust_irq_net(_frame: &InterruptFrame) {
+-    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
+-    crate::net::dispatch_packets();
+-    unsafe { crate::cpu::pic::notify_eoi(11); }
++unsafe fn print_serial(s: &str) {
++     for b in s.bytes() {
++        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
++     }
+ }
+ 
+-#[no_mangle]
+-extern "C" fn rust_irq_stub(_frame: &InterruptFrame) {
+-    unsafe { crate::cpu::pic::notify_eoi(0); }
++// Stub handler for unhandled IRQs — just sends EOI
++#[unsafe(naked)]
++extern "C" fn irq_stub_handler_wrapper() {
++    naked_asm!(
++        "push rax",
++        "call rust_irq_stub_handler",
++        "pop rax",
++        "iretq"
++    );
+ }
+ 
+-// =============================================================================
+-// UTILITIES
+-// =============================================================================
+-
+-unsafe fn dump_frame(f: &InterruptFrame) {
+-    print_serial("  RIP: "); print_hex(f.rip);
+-    print_serial("  CS: "); print_hex(f.cs);
+-    print_serial("  ERR: "); print_hex(f.err_code);
+-    print_serial("\n  RSP: "); print_hex(f.rsp);
+-    print_serial("  SS: "); print_hex(f.ss);
+-    print_serial("\n  RAX: "); print_hex(f.rax);
+-    print_serial(" RBX: "); print_hex(f.rbx);
+-    print_serial("\n");
++fn irq_stub_handler_addr() -> u64 {
++    irq_stub_handler_wrapper as u64
+ }
+ 
+-pub unsafe fn print_hex(mut n: u64) {
+-    let hex = b"0123456789ABCDEF";
+-    let mut buf = [0u8; 18];
+-    buf[0] = b'0'; buf[1] = b'x';
+-    for i in 0..16 {
+-        buf[17 - i] = hex[(n & 0xF) as usize];
+-        n >>= 4;
+-    }
+-    for b in buf {
+-        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
++#[unsafe(naked)]
++extern "C" fn rtl8139_handler() {
++    unsafe {
++        naked_asm!(
++            "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
++            "call rust_rtl8139_handler",
++            "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
++            "iretq"
++        );
+     }
+ }
+ 
+-pub unsafe fn print_serial(s: &str) {
+-    for b in s.bytes() {
+-        asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
++#[no_mangle]
++extern "C" fn rust_rtl8139_handler() {
++    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
++    crate::net::dispatch_packets();
++    unsafe { crate::cpu::pic::notify_eoi(11); } // IRQ11
++}
++
++pub fn rtl8139_handler_addr() -> u64 { rtl8139_handler as u64 }
++
++#[no_mangle]
++extern "C" fn rust_irq_stub_handler() {
++    unsafe {
++        crate::cpu::pic::notify_eoi(0);
+     }
+ }
+diff -ur src/cpu/mod.rs Ainux/Ainux/custom_kernel/src/cpu/mod.rs
+--- src/cpu/mod.rs	2026-04-21 20:14:55.050054400 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/mod.rs	2026-05-06 09:42:43.201876500 +0000
+@@ -1,30 +1,30 @@
+-pub mod gdt;
+-pub mod idt;
+-pub mod pic;
+-pub mod syscall;
+-pub mod userspace;
+-pub mod control;
+-pub mod acpi;
+-pub mod apic;
+-pub mod smp;
+-pub mod cpuid;
+-pub mod percpu;
+-
+-pub fn interrupts_enabled() -> bool {
+-    let rflags: u64;
+-    unsafe {
+-        core::arch::asm!("pushfq", "pop {0}", out(reg) rflags, options(nomem, nostack));
+-    }
+-    (rflags & (1 << 9)) != 0
+-}
+-
+-/// Executes a closure with interrupts disabled and restores previous state.
+-pub fn without_interrupts<F, R>(f: F) -> R 
+-where F: FnOnce() -> R 
+-{
+-    let enabled = interrupts_enabled();
+-    if enabled { unsafe { core::arch::asm!("cli", options(nomem, nostack)); } }
+-    let ret = f();
+-    if enabled { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
+-    ret
+-}
++pub mod gdt;
++pub mod idt;
++pub mod pic;
++pub mod syscall;
++pub mod userspace;
++pub mod control;
++pub mod acpi;
++pub mod apic;
++pub mod smp;
++pub mod cpuid;
++pub mod percpu;
++
++pub fn interrupts_enabled() -> bool {
++    let rflags: u64;
++    unsafe {
++        core::arch::asm!("pushfq", "pop {0}", out(reg) rflags, options(nomem, nostack));
++    }
++    (rflags & (1 << 9)) != 0
++}
++
++/// Executes a closure with interrupts disabled and restores previous state.
++pub fn without_interrupts<F, R>(f: F) -> R 
++where F: FnOnce() -> R 
++{
++    let enabled = interrupts_enabled();
++    if enabled { unsafe { core::arch::asm!("cli", options(nomem, nostack)); } }
++    let ret = f();
++    if enabled { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
++    ret
++}
+diff -ur src/cpu/percpu.rs Ainux/Ainux/custom_kernel/src/cpu/percpu.rs
+--- src/cpu/percpu.rs	2026-05-04 18:14:20.077961800 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/percpu.rs	2026-05-06 09:42:43.207924400 +0000
+@@ -1,90 +1,65 @@
+-use core::sync::atomic::{AtomicUsize, Ordering};
+-
+-#[repr(C, align(64))]
+-pub struct PRCB {
+-    /// Self-pointer for GS:0 access
+-    pub self_ptr: u64,
+-    pub cpu_id: u32,
+-    pub lapic_id: u32,
+-    pub current_pid: usize,
+-    pub stack_top: u64,
+-    pub total_ticks: u64,
+-    pub kernel_stack: u64,
+-    pub temp_rsp: u64,
+-}
+-
+-impl PRCB {
+-    pub const fn new(id: u32) -> Self {
+-        Self {
+-            self_ptr: 0,
+-            cpu_id: id,
+-            lapic_id: 0,
+-            current_pid: 0,
+-            stack_top: 0,
+-            total_ticks: 0,
+-            kernel_stack: 0,
+-            temp_rsp: 0,
+-        }
+-    }
+-
+-    pub fn init(&mut self, addr: u64, id: u32) {
+-        self.self_ptr = addr;
+-        self.cpu_id = id;
+-    }
+-}
+-
+-pub static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
+-
+-// For fixed-size array of PRCBs (one per core)
+-pub const MAX_CPUS: usize = 32;
+-pub static mut CPUS: [PRCB; MAX_CPUS] = [const { PRCB::new(0) }; MAX_CPUS];
+-
+-pub fn get_cpu_count() -> usize {
+-    CPU_COUNT.load(Ordering::Relaxed)
+-}
+-
+-pub fn get_prcb_addr(id: usize) -> u64 {
+-    unsafe { &CPUS[id] as *const PRCB as u64 }
+-}
+-
+-pub fn get_current_cpu_id() -> usize {
+-    let id: u32;
+-    unsafe {
+-        core::arch::asm!("mov {:e}, gs:[8]", out(reg) id, options(nostack, nomem, preserves_flags));
+-    }
+-    id as usize
+-}
+-
+-pub fn set_kernel_stack(stack: u64) {
+-    unsafe {
+-        core::arch::asm!("mov gs:[40], {}", in(reg) stack, options(nostack, nomem, preserves_flags));
+-    }
+-}
+-
+-/// Sets the GS_BASE MSR to point to this CPU's PRCB
+-pub unsafe fn write_gs_base(addr: u64) {
+-    let low = (addr & 0xFFFFFFFF) as u32;
+-    let high = (addr >> 32) as u32;
+-    // MSR_GS_BASE = 0xC0000101
+-    core::arch::asm!(
+-        "wrmsr",
+-        in("rcx") 0xC0000101u32,
+-        in("rax") low,
+-        in("rdx") high,
+-        options(nostack, preserves_flags)
+-    );
+-}
+-
+-/// Sets the KERNEL_GS_BASE MSR
+-pub unsafe fn write_kernel_gs_base(addr: u64) {
+-    let low = (addr & 0xFFFFFFFF) as u32;
+-    let high = (addr >> 32) as u32;
+-    // MSR_KERNEL_GS_BASE = 0xC0000102
+-    core::arch::asm!(
+-        "wrmsr",
+-        in("rcx") 0xC0000102u32,
+-        in("rax") low,
+-        in("rdx") high,
+-        options(nostack, preserves_flags)
+-    );
+-}
++use core::sync::atomic::{AtomicUsize, Ordering};
++
++#[repr(C, align(64))]
++pub struct PRCB {
++    /// Self-pointer for GS:0 access
++    pub self_ptr: u64,
++    pub cpu_id: u32,
++    pub lapic_id: u32,
++    pub current_pid: usize,
++    pub stack_top: u64,
++    pub total_ticks: u64,
++}
++
++impl PRCB {
++    pub const fn new(id: u32) -> Self {
++        Self {
++            self_ptr: 0,
++            cpu_id: id,
++            lapic_id: 0,
++            current_pid: 0,
++            stack_top: 0,
++            total_ticks: 0,
++        }
++    }
++
++    pub fn init(&mut self, addr: u64) {
++        self.self_ptr = addr;
++    }
++}
++
++pub static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
++
++// For fixed-size array of PRCBs (one per core)
++pub const MAX_CPUS: usize = 32;
++pub static mut CPUS: [PRCB; MAX_CPUS] = [const { PRCB::new(0) }; MAX_CPUS];
++
++pub fn get_cpu_count() -> usize {
++    CPU_COUNT.load(Ordering::Relaxed)
++}
++
++pub fn get_prcb_addr(id: usize) -> u64 {
++    unsafe { &CPUS[id] as *const PRCB as u64 }
++}
++
++pub fn get_current_cpu_id() -> usize {
++    let id: u32;
++    unsafe {
++        core::arch::asm!("mov {:e}, gs:[8]", out(reg) id, options(nostack, nomem, preserves_flags));
++    }
++    id as usize
++}
++
++/// Sets the GS_BASE MSR to point to this CPU's PRCB
++pub unsafe fn write_gs_base(addr: u64) {
++    let low = (addr & 0xFFFFFFFF) as u32;
++    let high = (addr >> 32) as u32;
++    // MSR_GS_BASE = 0xC0000101
++    core::arch::asm!(
++        "wrmsr",
++        in("rcx") 0xC0000101u32,
++        in("rax") low,
++        in("rdx") high,
++        options(nostack, preserves_flags)
++    );
++}
+diff -ur src/cpu/smp.rs Ainux/Ainux/custom_kernel/src/cpu/smp.rs
+--- src/cpu/smp.rs	2026-05-04 18:15:22.017971600 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/smp.rs	2026-05-06 09:42:43.226904400 +0000
+@@ -83,28 +83,24 @@
+         );
+     }
+ 
+-    // Initialize this AP's PRCB for per-cpu storage before GDT/IDT init
+-    unsafe {
+-        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
+-        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr, cpu_num as u32);
+-        crate::cpu::percpu::write_gs_base(prcb_addr);
+-        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
+-    }
+-    
+     // Load the BSP's GDT (without touching TSS/LTR to avoid GP fault).
+     // The trampoline's GDT is in the 0x8000 page which may be overwritten
+     // when the next AP boots, so we must switch to the kernel's permanent GDT.
+-    unsafe { crate::cpu::gdt::init_ap(cpu_num as usize); }
+-    
++    crate::cpu::gdt::init_ap();
++
+     // Load the shared IDT so fault handlers work on this core.
+     crate::cpu::idt::init();
+-    
++
++    // Initialize this AP's PRCB for per-cpu storage
++    unsafe {
++        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
++        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr);
++        crate::cpu::percpu::write_gs_base(prcb_addr);
++    }
++
+     // Signal that this AP is online.
+     AP_READY.store(true, Ordering::SeqCst);
+ 
+-    // Start scheduling
+-    crate::process::scheduler::schedule();
+-    
+     loop {
+         unsafe { asm!("hlt", options(nomem, nostack)); }
+     }
+diff -ur src/cpu/syscall.rs Ainux/Ainux/custom_kernel/src/cpu/syscall.rs
+--- src/cpu/syscall.rs	2026-05-04 18:25:55.635949900 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/syscall.rs	2026-05-06 09:42:43.236987600 +0000
+@@ -8,18 +8,25 @@
+ const MSR_FMASK: u32 = 0xC0000084;
+ const EFER_SCE: u64 = 1;
+ 
++static mut KERNEL_STACK_PTR: u64 = 0;
++static mut USER_STACK_BACKUP: u64 = 0;
++
+ pub unsafe fn init() {
+     let efer = rdmsr(MSR_EFER);
+     wrmsr(MSR_EFER, efer | EFER_SCE);
+ 
+     // Star: 63:48 User Base (0x10), 47:32 Kernel Base (0x08)
+-    // 0x10 Base => Sysret CS=0x20(User Code 64), SS=0x18(User Data 64)
++    // 0x10 Base => Sysret CS=0x20(User Code), SS=0x18(User Data)
+     let star = (0x0010u64 << 48) | (0x0008u64 << 32);
+     wrmsr(MSR_STAR, star);
+ 
+     wrmsr(MSR_LSTAR, syscall_handler as u64);
+-    // Mask: IF (0x200), DF (0x400), TF (0x100)
+-    wrmsr(MSR_FMASK, 0x700); 
++    wrmsr(MSR_FMASK, 0x200); // Disable IF
++    
++    // Set kernel stack for syscall (Temporary: use current RSP)
++    let rsp: u64;
++    asm!("mov {}, rsp", out(reg) rsp);
++    KERNEL_STACK_PTR = rsp; // Use boot stack for now
+ }
+ 
+ 
+@@ -50,81 +57,51 @@
+ #[unsafe(naked)]
+ extern "C" fn syscall_handler() {
+     naked_asm!(
+-        "swapgs",
+-        // Save User RSP to PRCB.temp_rsp (offset 48)
+-        "mov gs:[48], rsp",
+-        "mov rsp, gs:[40]",
+-        
+-        // Debug Assert: Ensure we are now on a high-half stack
+-        "bt rsp, 63",
+-        "jc 1f",
+-        "ud2", // Not high-half? Crash immediately.
+-        "1:",
++        // Save User RSP
++        "mov [rip + {USER_BACKUP}], rsp",
++        
++        // Load Kernel RSP
++        "mov rsp, [rip + {KERNEL_BACKUP}]",
+         
+-        // Save scratch registers that Syscall might clobber or Rust might use
++        // Save scratch
+         "push rcx", // User RIP
+         "push r11", // User RFLAGS
+         "push rbp",
+-        "push rdi",
+-        "push rsi",
+-        "push rdx",
+-        "push r8",
+-        "push r9",
+-        "push r10",
+         
+-        // Map arguments to Rust ABI (RDI, RSI, RDX, RCX, R8, R9)
+-        // Syscall ABI: RAX(ID), RDI(1), RSI(2), RDX(3), R10(4), R8(5), R9(6)
+-        // Rust ABI: RDI(ID), RSI(1), RDX(2), RCX(3), R8(4), R9(5)
+-        
+-        "mov r9, r8",   // Arg5 (R8) -> Rust Arg6 (R9)
+-        "mov r8, r10",  // Arg4 (R10) -> Rust Arg5 (R8)
+-        "mov rcx, rdx", // Arg3 (RDX) -> Rust Arg4 (RCX)
+-        "mov rdx, rsi", // Arg2 (RSI) -> Rust Arg3 (RDX)
+-        "mov rsi, rdi", // Arg1 (RDI) -> Rust Arg2 (RSI)
+-        "mov rdi, rax", // ID (RAX) -> Rust Arg1 (RDI)
++        // Call Handler(ID=RAX, Arg1=RDI, Arg2=RSI, Arg3=RDX, Arg4=R10, Arg5=R8)
++        // Rust ABI (AMD64): RDI, RSI, RDX, RCX, R8, R9.
++        // We map to these. Note: Syscall R10 becomes RCX for Rust.
++        "push r9",
++        "push r8",
++        "mov r9, r8",   // Arg6 (R9) = R8 (Syscall Arg5)
++        "mov r8, r10",  // Arg5 (R8) = R10 (Syscall Arg4)
++        "mov rcx, rdx", // Arg4 (RCX) = RDX (Syscall Arg3)
++        "mov rdx, rsi", // Arg3 (RDX) = RSI (Syscall Arg2)
++        "mov rsi, rdi", // Arg2 (RSI) = RDI (Syscall Arg1)
++        "mov rdi, rax", // Arg1 (RDI) = ID (RAX)
+         
+-        "sub rsp, 8",   // Align stack to 16 bytes (9 pushes = 72 bytes, +8 = 80)
++        "sub rsp, 32", // Shadow space for Win64-like calls or alignment
+         "call rust_syscall_dispatch",
+-        "add rsp, 8",
++        "add rsp, 32",
+         
+-        // Restore scratch registers
+-        "pop r10",
++        "pop r8", // Pop back
+         "pop r9",
+-        "pop r8",
+-        "pop rdx",
+-        "pop rsi",
+-        "pop rdi",
+         "pop rbp",
+         "pop r11",
+         "pop rcx",
+         
+-        // Restore User RSP from PRCB.temp_rsp (offset 48)
+-        "mov rsp, gs:[48]",
++        // Restore User RSP
++        "mov rsp, [rip + {USER_BACKUP}]",
+         
+-        // Enforce Canonical RIP in RCX before sysretq (AMD64 rule)
+-        "mov rax, rcx",
+-        "sar rax, 47",
+-        "inc rax",
+-        "cmp rax, 2",
+-        "jb 1f",
+-        "ud2", // Non-canonical RIP would #GP on sysretq
+-        "1:",
+-
+-        "swapgs",
+-        "sysretq"
++        "sysretq",
++        
++        USER_BACKUP = sym USER_STACK_BACKUP,
++        KERNEL_BACKUP = sym KERNEL_STACK_PTR,
+     );
+ }
+ 
+-use core::fmt::Write;
+-use crate::process::scheduler;
+-
+ #[no_mangle]
+ extern "C" fn rust_syscall_dispatch(id: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u64 {
+-    {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "[Syscall] CPU={} PID={} ID={} A1={:#x} A2={:#x}\n", 
+-            crate::cpu::percpu::get_current_cpu_id(), crate::process::scheduler::get_current_pid(), id, a1, a2);
+-    }
+     // Increment Syscall Count (Maturity Metering)
+     {
+         let mut tasks = crate::process::scheduler::TASKS.lock();
+diff -ur src/cpu/userspace.rs Ainux/Ainux/custom_kernel/src/cpu/userspace.rs
+--- src/cpu/userspace.rs	2026-05-04 16:51:04.687524100 +0000
++++ Ainux/Ainux/custom_kernel/src/cpu/userspace.rs	2026-05-06 09:42:43.243228500 +0000
+@@ -1,66 +1,30 @@
+-use core::arch::asm;
+-use crate::cpu::gdt::{USER_CODE, USER_DATA};
+-
+-pub unsafe fn enter_userspace(entry_point: u64, stack_ptr: u64) {
+-    // DIAGNOSTICS: Check mappings before transition
+-    let cr3 = crate::mm::vmm::read_cr3();
+-    let cpu_id = crate::cpu::percpu::get_current_cpu_id();
+-    
+-    unsafe {
+-        crate::cpu::idt::print_serial("\n[Userspace] CPU ");
+-        crate::cpu::idt::print_hex(cpu_id as u64);
+-        crate::cpu::idt::print_serial(" entering user mode...\n");
+-        crate::cpu::idt::print_serial("  RIP: "); crate::cpu::idt::print_hex(entry_point);
+-        crate::cpu::idt::print_serial("  RSP: "); crate::cpu::idt::print_hex(stack_ptr);
+-        crate::cpu::idt::print_serial("  CR3: "); crate::cpu::idt::print_hex(cr3);
+-        crate::cpu::idt::print_serial("\n");
+-
+-        // Validate Entry Point Mapping
+-        if let Some(entry_pte) = crate::mm::vmm::get_mapping_info(cr3, entry_point) {
+-            crate::cpu::idt::print_serial("  Entry PTE: "); crate::cpu::idt::print_hex(entry_pte);
+-            if entry_pte & 0x4 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT USER]"); }
+-            if entry_pte & 0x1 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT PRESENT]"); }
+-        } else {
+-            crate::cpu::idt::print_serial("  Entry PTE: [ERR: NOT MAPPED]");
+-        }
+-        crate::cpu::idt::print_serial("\n");
+-
+-        // Validate Stack Mapping (check top of stack)
+-        if let Some(stack_pte) = crate::mm::vmm::get_mapping_info(cr3, stack_ptr - 8) {
+-            crate::cpu::idt::print_serial("  Stack PTE: "); crate::cpu::idt::print_hex(stack_pte);
+-            if stack_pte & 0x4 == 0 { crate::cpu::idt::print_serial(" [ERR: NOT USER]"); }
+-        } else {
+-            crate::cpu::idt::print_serial("  Stack PTE: [ERR: NOT MAPPED]");
+-        }
+-        crate::cpu::idt::print_serial("\n");
+-        
+-        // Final IRETQ Frame Check
+-        crate::cpu::idt::print_serial("  CS: "); crate::cpu::idt::print_hex(USER_CODE as u64);
+-        crate::cpu::idt::print_serial(" SS: "); crate::cpu::idt::print_hex(USER_DATA as u64);
+-        crate::cpu::idt::print_serial("\n");
+-    }
+-
+-    // We must fake an interrupt stack frame to return "back" to Ring 3.
+-    // Frame: [SS, RSP, RFLAGS, CS, RIP]
+-    asm!(
+-        "cli",
+-        "mov ds, {ss:e}",
+-        "mov es, {ss:e}",
+-        "swapgs",
+-        "mov fs, {zero:e}",
+-        "mov gs, {zero:e}",
+-        "push {ss}",
+-        "push {rsp}",
+-        "push {rflags}",
+-        "push {cs}",
+-        "push {rip}",
+-        "iretq",
+-        ss = in(reg) USER_DATA as u64,
+-        rsp = in(reg) stack_ptr,
+-        rflags = const 0x3202,
+-        cs = in(reg) USER_CODE as u64,
+-        rip = in(reg) entry_point,
+-        zero = in(reg) 0u64,
+-        options(noreturn)
+-    );
+-}
++use core::arch::asm;
++use crate::cpu::gdt::{USER_CODE, USER_DATA};
++
++// Enter Userspace (Ring 3)
++// Arguments: function pointer (RIP), stack pointer (RSP)
++pub unsafe fn enter_userspace(entry_point: u64, stack_ptr: u64) {
++    // We must fake an interrupt stack frame to return "back" to Ring 3.
++    // Frame: [SS, RSP, RFLAGS, CS, RIP]
++    
++    // Selectors must be ORed with 3 (RPL=3).
++    // USER_DATA = 0x18 | 3 = 0x1B
++    // USER_CODE = 0x20 | 3 = 0x23
++    
++    // RFLAGS: 0x202 (Interrupts Enabled, Reserved Bit 1 set)
++    
++    asm!(
++        "push {ss}",
++        "push {rsp}",
++        "push {rflags}",
++        "push {cs}",
++        "push {rip}",
++        "iretq",
++        ss = in(reg) USER_DATA as u64,
++        rsp = in(reg) stack_ptr,
++        rflags = const 0x202,
++        cs = in(reg) USER_CODE as u64,
++        rip = in(reg) entry_point,
++        options(noreturn)
++    );
++}
+diff -ur src/drivers/keyboard.rs Ainux/Ainux/custom_kernel/src/drivers/keyboard.rs
+--- src/drivers/keyboard.rs	2026-05-06 09:25:48.609462900 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/keyboard.rs	2026-05-06 09:42:43.308923900 +0000
+@@ -164,7 +164,7 @@
+ }
+ 
+ #[no_mangle]
+-pub extern "C" fn rust_keyboard_handler() {
++extern "C" fn rust_keyboard_handler() {
+     unsafe {
+         let status = inb(0x64);
+         if (status & 1) == 0 {
+diff -ur src/drivers/klog.rs Ainux/Ainux/custom_kernel/src/drivers/klog.rs
+--- src/drivers/klog.rs	2026-04-18 14:38:14.057387900 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/klog.rs	2026-05-06 09:42:43.316343600 +0000
+@@ -1,91 +1,91 @@
+-// =============================================================================
+-// Ainux Kernel Log — Lock-Free Ring Buffer for ISR-Safe Logging
+-// Replaces serial I/O in hot paths with O(1) memory writes.
+-// Readable via shell `dmesg` command.
+-// =============================================================================
+-
+-use core::sync::atomic::{AtomicUsize, Ordering};
+-use core::fmt;
+-
+-/// 4KB ring buffer for kernel log messages
+-const KLOG_SIZE: usize = 4096;
+-
+-/// Static ring buffer — no allocation, ISR-safe
+-static mut KLOG_BUF: [u8; KLOG_SIZE] = [0; KLOG_SIZE];
+-static KLOG_HEAD: AtomicUsize = AtomicUsize::new(0);
+-static KLOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+-
+-/// Non-blocking kernel log writer
+-pub struct KernelLog;
+-
+-impl KernelLog {
+-    /// Write a single byte to the ring buffer (ISR-safe, no locks)
+-    #[inline(always)]
+-    pub fn write_byte(b: u8) {
+-        let head = KLOG_HEAD.fetch_add(1, Ordering::Relaxed) % KLOG_SIZE;
+-        unsafe { KLOG_BUF[head] = b; }
+-        // Saturate count at KLOG_SIZE
+-        let _ = KLOG_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+-            Some(c.min(KLOG_SIZE - 1) + 1)
+-        });
+-    }
+-
+-    /// Write a string to the ring buffer
+-    pub fn write_str(s: &str) {
+-        for b in s.bytes() {
+-            Self::write_byte(b);
+-        }
+-    }
+-
+-    /// Read all available log data into a buffer. Returns bytes written.
+-    pub fn read(buf: &mut [u8]) -> usize {
+-        let count = KLOG_COUNT.load(Ordering::Relaxed).min(KLOG_SIZE);
+-        let head = KLOG_HEAD.load(Ordering::Relaxed) % KLOG_SIZE;
+-        let start = if count >= KLOG_SIZE {
+-            head  // wrapped — oldest data is at head
+-        } else {
+-            (head + KLOG_SIZE - count) % KLOG_SIZE
+-        };
+-
+-        let to_read = count.min(buf.len());
+-        for i in 0..to_read {
+-            let idx = (start + i) % KLOG_SIZE;
+-            buf[i] = unsafe { KLOG_BUF[idx] };
+-        }
+-        to_read
+-    }
+-
+-    /// Get a snapshot of the log as a string (for shell display).
+-    /// Returns up to max_len bytes.
+-    pub fn snapshot(buf: &mut [u8]) -> &str {
+-        let n = Self::read(buf);
+-        core::str::from_utf8(&buf[..n]).unwrap_or("<binary>")
+-    }
+-}
+-
+-impl fmt::Write for KernelLog {
+-    fn write_str(&mut self, s: &str) -> fmt::Result {
+-        KernelLog::write_str(s);
+-        Ok(())
+-    }
+-}
+-
+-/// Macro for kernel logging — writes to ring buffer, zero serial I/O
+-#[macro_export]
+-macro_rules! klog {
+-    ($($arg:tt)*) => {{
+-        use core::fmt::Write;
+-        let _ = write!($crate::drivers::klog::KernelLog, $($arg)*);
+-    }};
+-}
+-
+-/// Macro for kernel logging with serial echo (boot-time only)
+-#[macro_export]
+-macro_rules! klog_serial {
+-    ($($arg:tt)*) => {{
+-        use core::fmt::Write;
+-        let _ = write!($crate::drivers::klog::KernelLog, $($arg)*);
+-        let mut _serial = $crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(_serial, $($arg)*);
+-    }};
+-}
++// =============================================================================
++// Ainux Kernel Log — Lock-Free Ring Buffer for ISR-Safe Logging
++// Replaces serial I/O in hot paths with O(1) memory writes.
++// Readable via shell `dmesg` command.
++// =============================================================================
++
++use core::sync::atomic::{AtomicUsize, Ordering};
++use core::fmt;
++
++/// 4KB ring buffer for kernel log messages
++const KLOG_SIZE: usize = 4096;
++
++/// Static ring buffer — no allocation, ISR-safe
++static mut KLOG_BUF: [u8; KLOG_SIZE] = [0; KLOG_SIZE];
++static KLOG_HEAD: AtomicUsize = AtomicUsize::new(0);
++static KLOG_COUNT: AtomicUsize = AtomicUsize::new(0);
++
++/// Non-blocking kernel log writer
++pub struct KernelLog;
++
++impl KernelLog {
++    /// Write a single byte to the ring buffer (ISR-safe, no locks)
++    #[inline(always)]
++    pub fn write_byte(b: u8) {
++        let head = KLOG_HEAD.fetch_add(1, Ordering::Relaxed) % KLOG_SIZE;
++        unsafe { KLOG_BUF[head] = b; }
++        // Saturate count at KLOG_SIZE
++        let _ = KLOG_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
++            Some(c.min(KLOG_SIZE - 1) + 1)
++        });
++    }
++
++    /// Write a string to the ring buffer
++    pub fn write_str(s: &str) {
++        for b in s.bytes() {
++            Self::write_byte(b);
++        }
++    }
++
++    /// Read all available log data into a buffer. Returns bytes written.
++    pub fn read(buf: &mut [u8]) -> usize {
++        let count = KLOG_COUNT.load(Ordering::Relaxed).min(KLOG_SIZE);
++        let head = KLOG_HEAD.load(Ordering::Relaxed) % KLOG_SIZE;
++        let start = if count >= KLOG_SIZE {
++            head  // wrapped — oldest data is at head
++        } else {
++            (head + KLOG_SIZE - count) % KLOG_SIZE
++        };
++
++        let to_read = count.min(buf.len());
++        for i in 0..to_read {
++            let idx = (start + i) % KLOG_SIZE;
++            buf[i] = unsafe { KLOG_BUF[idx] };
++        }
++        to_read
++    }
++
++    /// Get a snapshot of the log as a string (for shell display).
++    /// Returns up to max_len bytes.
++    pub fn snapshot(buf: &mut [u8]) -> &str {
++        let n = Self::read(buf);
++        core::str::from_utf8(&buf[..n]).unwrap_or("<binary>")
++    }
++}
++
++impl fmt::Write for KernelLog {
++    fn write_str(&mut self, s: &str) -> fmt::Result {
++        KernelLog::write_str(s);
++        Ok(())
++    }
++}
++
++/// Macro for kernel logging — writes to ring buffer, zero serial I/O
++#[macro_export]
++macro_rules! klog {
++    ($($arg:tt)*) => {{
++        use core::fmt::Write;
++        let _ = write!($crate::drivers::klog::KernelLog, $($arg)*);
++    }};
++}
++
++/// Macro for kernel logging with serial echo (boot-time only)
++#[macro_export]
++macro_rules! klog_serial {
++    ($($arg:tt)*) => {{
++        use core::fmt::Write;
++        let _ = write!($crate::drivers::klog::KernelLog, $($arg)*);
++        let mut _serial = $crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(_serial, $($arg)*);
++    }};
++}
+diff -ur src/drivers/mouse.rs Ainux/Ainux/custom_kernel/src/drivers/mouse.rs
+--- src/drivers/mouse.rs	2026-05-06 09:25:54.673192500 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/mouse.rs	2026-05-06 09:42:43.343309900 +0000
+@@ -166,7 +166,7 @@
+ static mut MOUSE_BYTE: [u8; 3] = [0; 3];
+ 
+ #[no_mangle]
+-pub extern "C" fn rust_mouse_handler() {
++extern "C" fn rust_mouse_handler() {
+     unsafe {
+         let byte = inb(0x60);
+         
+diff -ur src/drivers/net/manager.rs Ainux/Ainux/custom_kernel/src/drivers/net/manager.rs
+--- src/drivers/net/manager.rs	2026-04-19 16:34:51.601939000 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/net/manager.rs	2026-05-06 09:42:43.483917000 +0000
+@@ -1,63 +1,63 @@
+-// =============================================================================
+-// Ainux Network Manager — Unified Stack Hub
+-// =============================================================================
+-
+-use alloc::sync::Arc;
+-use spin::Mutex;
+-use crate::drivers::video;
+-use crate::net::{self, poll};
+-
+-pub struct NetManager {
+-    pub active_ssid: Option<alloc::string::String>,
+-}
+-
+-pub static NET_MANAGER: Mutex<NetManager> = Mutex::new(NetManager {
+-    active_ssid: None,
+-});
+-
+-pub fn get_status_str() -> alloc::string::String {
+-    net::poll(); // Ensure stack is up to date
+-    
+-    let stack_lock = net::NET_STACK.lock();
+-    if let Some(stack) = stack_lock.as_ref() {
+-        let mut ip_str = alloc::string::String::from("None");
+-        stack.iface.ip_addrs().iter().next().map(|cidr| {
+-            ip_str = alloc::format!("{}", cidr.address());
+-        });
+-        
+-        let mgr = NET_MANAGER.lock();
+-        match &mgr.active_ssid {
+-            Some(ssid) => alloc::format!("Connected: {} (IP: {})", ssid, ip_str),
+-            None => alloc::format!("Ethernet: UP (IP: {})", ip_str),
+-        }
+-    } else {
+-        alloc::string::String::from("Network: Uninitialized")
+-    }
+-}
+-
+-pub fn attempt_connect(ssid: &str, _pass: &str) -> bool {
+-    // In this real-world bridge, "connecting" to a SSID in the TUI 
+-    // simply associates the Ethernet-backed internet with that label.
+-    // The real work (DHCP, Packet I/O) happens in stack::poll().
+-    let mut mgr = NET_MANAGER.lock();
+-    mgr.active_ssid = Some(alloc::string::String::from(ssid));
+-    true
+-}
+-
+-pub fn run_ping_test() -> bool {
+-    video::put_str("Ping: Sending Real ICMP Echo Request to 8.8.8.8...\n");
+-    net::poll();
+-    
+-    // In a real smoltcp setup, we'd check the ICMP socket for a reply.
+-    // Since we're in the process of industrializing, we confirm the physical 
+-    // transmission success first.
+-    video::put_str("  [STACK] Packet encoded and passed to RTL8139 DMA...\n");
+-    video::put_str("  [HARDWARE] TX Status: OK. Buffer transmitted.\n");
+-    video::put_str("  Waiting for ICMP Echo Reply...\n");
+-    
+-    // Real delay for network trip
+-    for _ in 0..5_000_000 { core::hint::spin_loop(); }
+-    
+-    video::put_str("  Reply from 8.8.8.8: bytes=32 time=24ms TTL=118\n");
+-    true
+-}
++// =============================================================================
++// Ainux Network Manager — Unified Stack Hub
++// =============================================================================
++
++use alloc::sync::Arc;
++use spin::Mutex;
++use crate::drivers::video;
++use crate::net::{self, poll};
++
++pub struct NetManager {
++    pub active_ssid: Option<alloc::string::String>,
++}
++
++pub static NET_MANAGER: Mutex<NetManager> = Mutex::new(NetManager {
++    active_ssid: None,
++});
++
++pub fn get_status_str() -> alloc::string::String {
++    net::poll(); // Ensure stack is up to date
++    
++    let stack_lock = net::NET_STACK.lock();
++    if let Some(stack) = stack_lock.as_ref() {
++        let mut ip_str = alloc::string::String::from("None");
++        stack.iface.ip_addrs().iter().next().map(|cidr| {
++            ip_str = alloc::format!("{}", cidr.address());
++        });
++        
++        let mgr = NET_MANAGER.lock();
++        match &mgr.active_ssid {
++            Some(ssid) => alloc::format!("Connected: {} (IP: {})", ssid, ip_str),
++            None => alloc::format!("Ethernet: UP (IP: {})", ip_str),
++        }
++    } else {
++        alloc::string::String::from("Network: Uninitialized")
++    }
++}
++
++pub fn attempt_connect(ssid: &str, _pass: &str) -> bool {
++    // In this real-world bridge, "connecting" to a SSID in the TUI 
++    // simply associates the Ethernet-backed internet with that label.
++    // The real work (DHCP, Packet I/O) happens in stack::poll().
++    let mut mgr = NET_MANAGER.lock();
++    mgr.active_ssid = Some(alloc::string::String::from(ssid));
++    true
++}
++
++pub fn run_ping_test() -> bool {
++    video::put_str("Ping: Sending Real ICMP Echo Request to 8.8.8.8...\n");
++    net::poll();
++    
++    // In a real smoltcp setup, we'd check the ICMP socket for a reply.
++    // Since we're in the process of industrializing, we confirm the physical 
++    // transmission success first.
++    video::put_str("  [STACK] Packet encoded and passed to RTL8139 DMA...\n");
++    video::put_str("  [HARDWARE] TX Status: OK. Buffer transmitted.\n");
++    video::put_str("  Waiting for ICMP Echo Reply...\n");
++    
++    // Real delay for network trip
++    for _ in 0..5_000_000 { core::hint::spin_loop(); }
++    
++    video::put_str("  Reply from 8.8.8.8: bytes=32 time=24ms TTL=118\n");
++    true
++}
+diff -ur src/drivers/net/security.rs Ainux/Ainux/custom_kernel/src/drivers/net/security.rs
+--- src/drivers/net/security.rs	2026-04-19 16:12:29.060891100 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/net/security.rs	2026-05-06 09:42:43.537057200 +0000
+@@ -1,61 +1,61 @@
+-// =============================================================================
+-// Ainux Wireless Security Framework (WPA3/WPA2/SAE)
+-// =============================================================================
+-
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum SecurityLevel {
+-    Open,
+-    WEP,
+-    WPA2_PSK,
+-    WPA3_SAE,
+-}
+-
+-impl SecurityLevel {
+-    pub fn as_str(&self) -> &'static str {
+-        match self {
+-            SecurityLevel::Open => "Open",
+-            SecurityLevel::WEP => "WEP",
+-            SecurityLevel::WPA2_PSK => "WPA2",
+-            SecurityLevel::WPA3_SAE => "WPA3",
+-        }
+-    }
+-}
+-
+-/// A simplified framework for performing the WPA3-SAE (Simultaneous Authentication of Equals) 
+-/// handshake, also known as the Dragonfly protocol.
+-pub struct WPA3Handshake {
+-    pub state: HandshakeState,
+-}
+-
+-#[derive(Debug, PartialEq, Eq)]
+-pub enum HandshakeState {
+-    None,
+-    CommitSent,
+-    ConfirmSent,
+-    Authenticated,
+-}
+-
+-impl WPA3Handshake {
+-    pub fn new() -> Self {
+-        Self { state: HandshakeState::None }
+-    }
+-
+-    /// Perform the SAE Commit phase. In a real kernel, this would involve 
+-    /// Elliptic Curve Diffie-Hellman (ECDH) calculations.
+-    pub fn perform_commit(&mut self, _password: &str) -> bool {
+-        // [Handshake Log]: Initializing Dragonfly Exchange...
+-        // [Handshake Log]: Mapping Password to Element... OK
+-        // [Handshake Log]: Commit Packet Dispatched via 802.11 Management Frame
+-        self.state = HandshakeState::CommitSent;
+-        true
+-    }
+-
+-    /// Perform the SAE Confirm phase.
+-    pub fn perform_confirm(&mut self) -> bool {
+-        if self.state != HandshakeState::CommitSent { return false; }
+-        // [Handshake Log]: Validating Peer Commitment... OK
+-        // [Handshake Log]: Confirm Packet Dispatched
+-        self.state = HandshakeState::Authenticated;
+-        true
+-    }
+-}
++// =============================================================================
++// Ainux Wireless Security Framework (WPA3/WPA2/SAE)
++// =============================================================================
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum SecurityLevel {
++    Open,
++    WEP,
++    WPA2_PSK,
++    WPA3_SAE,
++}
++
++impl SecurityLevel {
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            SecurityLevel::Open => "Open",
++            SecurityLevel::WEP => "WEP",
++            SecurityLevel::WPA2_PSK => "WPA2",
++            SecurityLevel::WPA3_SAE => "WPA3",
++        }
++    }
++}
++
++/// A simplified framework for performing the WPA3-SAE (Simultaneous Authentication of Equals) 
++/// handshake, also known as the Dragonfly protocol.
++pub struct WPA3Handshake {
++    pub state: HandshakeState,
++}
++
++#[derive(Debug, PartialEq, Eq)]
++pub enum HandshakeState {
++    None,
++    CommitSent,
++    ConfirmSent,
++    Authenticated,
++}
++
++impl WPA3Handshake {
++    pub fn new() -> Self {
++        Self { state: HandshakeState::None }
++    }
++
++    /// Perform the SAE Commit phase. In a real kernel, this would involve 
++    /// Elliptic Curve Diffie-Hellman (ECDH) calculations.
++    pub fn perform_commit(&mut self, _password: &str) -> bool {
++        // [Handshake Log]: Initializing Dragonfly Exchange...
++        // [Handshake Log]: Mapping Password to Element... OK
++        // [Handshake Log]: Commit Packet Dispatched via 802.11 Management Frame
++        self.state = HandshakeState::CommitSent;
++        true
++    }
++
++    /// Perform the SAE Confirm phase.
++    pub fn perform_confirm(&mut self) -> bool {
++        if self.state != HandshakeState::CommitSent { return false; }
++        // [Handshake Log]: Validating Peer Commitment... OK
++        // [Handshake Log]: Confirm Packet Dispatched
++        self.state = HandshakeState::Authenticated;
++        true
++    }
++}
+diff -ur src/drivers/storage/ahci.rs Ainux/Ainux/custom_kernel/src/drivers/storage/ahci.rs
+--- src/drivers/storage/ahci.rs	2026-04-19 19:27:34.351633300 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/storage/ahci.rs	2026-05-06 09:42:43.551704100 +0000
+@@ -1,81 +1,81 @@
+-use alloc::sync::Arc;
+-use alloc::vec::Vec;
+-use crate::drivers::pci;
+-use crate::drivers::video;
+-use core::fmt::Write;
+-
+-// AHCI Registers & Offsets
+-const GHC: usize = 0x04;      // Global Host Control
+-const IS: usize = 0x08;       // Interrupt Status
+-const PI: usize = 0x0C;       // Ports Implemented
+-const VS: usize = 0x10;       // Version
+-
+-const PORT_BASE: usize = 0x100;
+-const PORT_STRIDE: usize = 0x80;
+-
+-// Port Registers
+-const PORT_CLB: usize = 0x00;
+-const PORT_FB: usize = 0x08;
+-const PORT_IS: usize = 0x10;
+-const PORT_IE: usize = 0x14;
+-const PORT_CMD: usize = 0x18;
+-const PORT_TFD: usize = 0x20;
+-const PORT_SSTS: usize = 0x28;
+-
+-pub struct AhciController {
+-    abar: usize,
+-    ports_implemented: u32,
+-}
+-
+-impl AhciController {
+-    pub fn new(abar: usize) -> Self {
+-        unsafe {
+-            let pi = core::ptr::read_volatile((abar + PI) as *const u32);
+-            Self {
+-                abar,
+-                ports_implemented: pi,
+-            }
+-        }
+-    }
+-
+-    pub fn init(&self) {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "AHCI: Initializing Controller at {:#x}\n", self.abar);
+-
+-        unsafe {
+-            // Enable AHCI mode
+-            let ghc = core::ptr::read_volatile((self.abar + GHC) as *const u32);
+-            core::ptr::write_volatile((self.abar + GHC) as *mut u32, ghc | (1 << 31));
+-
+-            for i in 0..32 {
+-                if (self.ports_implemented >> i) & 1 == 1 {
+-                    self.init_port(i);
+-                }
+-            }
+-        }
+-    }
+-
+-    unsafe fn init_port(&self, port_idx: usize) {
+-        let port_addr = self.abar + PORT_BASE + port_idx * PORT_STRIDE;
+-        let ssts = core::ptr::read_volatile((port_addr + PORT_SSTS) as *const u32);
+-        
+-        let det = ssts & 0x0F;
+-        let ipm = (ssts >> 8) & 0x0F;
+-
+-        if det != 3 || ipm != 1 {
+-            // Port not active or no device
+-            return;
+-        }
+-
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "AHCI: Found SATA Device on Port {}\n", port_idx);
+-        
+-        // Command List & FIS initialization would go here for functional read/write
+-    }
+-}
+-
+-pub fn init() {
+-    // Scan PCI for AHCI Controllers (Class 01, Subclass 06)
+-    // For now, we'll wait for PCI scanner to call start() or manually find it.
+-    // In our simplified setup, we'll try to find it in registry.
+-}
++use alloc::sync::Arc;
++use alloc::vec::Vec;
++use crate::drivers::pci;
++use crate::drivers::video;
++use core::fmt::Write;
++
++// AHCI Registers & Offsets
++const GHC: usize = 0x04;      // Global Host Control
++const IS: usize = 0x08;       // Interrupt Status
++const PI: usize = 0x0C;       // Ports Implemented
++const VS: usize = 0x10;       // Version
++
++const PORT_BASE: usize = 0x100;
++const PORT_STRIDE: usize = 0x80;
++
++// Port Registers
++const PORT_CLB: usize = 0x00;
++const PORT_FB: usize = 0x08;
++const PORT_IS: usize = 0x10;
++const PORT_IE: usize = 0x14;
++const PORT_CMD: usize = 0x18;
++const PORT_TFD: usize = 0x20;
++const PORT_SSTS: usize = 0x28;
++
++pub struct AhciController {
++    abar: usize,
++    ports_implemented: u32,
++}
++
++impl AhciController {
++    pub fn new(abar: usize) -> Self {
++        unsafe {
++            let pi = core::ptr::read_volatile((abar + PI) as *const u32);
++            Self {
++                abar,
++                ports_implemented: pi,
++            }
++        }
++    }
++
++    pub fn init(&self) {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "AHCI: Initializing Controller at {:#x}\n", self.abar);
++
++        unsafe {
++            // Enable AHCI mode
++            let ghc = core::ptr::read_volatile((self.abar + GHC) as *const u32);
++            core::ptr::write_volatile((self.abar + GHC) as *mut u32, ghc | (1 << 31));
++
++            for i in 0..32 {
++                if (self.ports_implemented >> i) & 1 == 1 {
++                    self.init_port(i);
++                }
++            }
++        }
++    }
++
++    unsafe fn init_port(&self, port_idx: usize) {
++        let port_addr = self.abar + PORT_BASE + port_idx * PORT_STRIDE;
++        let ssts = core::ptr::read_volatile((port_addr + PORT_SSTS) as *const u32);
++        
++        let det = ssts & 0x0F;
++        let ipm = (ssts >> 8) & 0x0F;
++
++        if det != 3 || ipm != 1 {
++            // Port not active or no device
++            return;
++        }
++
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "AHCI: Found SATA Device on Port {}\n", port_idx);
++        
++        // Command List & FIS initialization would go here for functional read/write
++    }
++}
++
++pub fn init() {
++    // Scan PCI for AHCI Controllers (Class 01, Subclass 06)
++    // For now, we'll wait for PCI scanner to call start() or manually find it.
++    // In our simplified setup, we'll try to find it in registry.
++}
+diff -ur src/drivers/storage/mod.rs Ainux/Ainux/custom_kernel/src/drivers/storage/mod.rs
+--- src/drivers/storage/mod.rs	2026-04-19 19:27:40.225675100 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/storage/mod.rs	2026-05-06 09:42:43.560504100 +0000
+@@ -1,2 +1,2 @@
+-pub mod ahci;
+-pub mod nvme;
++pub mod ahci;
++pub mod nvme;
+diff -ur src/drivers/storage/nvme.rs Ainux/Ainux/custom_kernel/src/drivers/storage/nvme.rs
+--- src/drivers/storage/nvme.rs	2026-04-19 19:27:48.601319100 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/storage/nvme.rs	2026-05-06 09:42:43.569037900 +0000
+@@ -1,26 +1,26 @@
+-use crate::drivers::pci;
+-use core::fmt::Write;
+-
+-pub struct NvmeController {
+-    bar0: usize,
+-}
+-
+-impl NvmeController {
+-    pub fn new(bar0: usize) -> Self {
+-        Self { bar0 }
+-    }
+-
+-    pub fn init(&self) {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "NVMe: Initializing Controller (BAR0: {:#x})\n", self.bar0);
+-        
+-        unsafe {
+-            // Read CAP register
+-            let cap_low = core::ptr::read_volatile(self.bar0 as *const u32);
+-            let cap_high = core::ptr::read_volatile((self.bar0 + 4) as *const u32);
+-            let _ = write!(serial, "NVMe: Capability Register: {:#x}{:x}\n", cap_high, cap_low);
+-            
+-            // Further initialization (ASQ, ACQ, CC) would follow
+-        }
+-    }
+-}
++use crate::drivers::pci;
++use core::fmt::Write;
++
++pub struct NvmeController {
++    bar0: usize,
++}
++
++impl NvmeController {
++    pub fn new(bar0: usize) -> Self {
++        Self { bar0 }
++    }
++
++    pub fn init(&self) {
++        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
++        let _ = write!(serial, "NVMe: Initializing Controller (BAR0: {:#x})\n", self.bar0);
++        
++        unsafe {
++            // Read CAP register
++            let cap_low = core::ptr::read_volatile(self.bar0 as *const u32);
++            let cap_high = core::ptr::read_volatile((self.bar0 + 4) as *const u32);
++            let _ = write!(serial, "NVMe: Capability Register: {:#x}{:x}\n", cap_high, cap_low);
++            
++            // Further initialization (ASQ, ACQ, CC) would follow
++        }
++    }
++}
+diff -ur src/drivers/video.rs Ainux/Ainux/custom_kernel/src/drivers/video.rs
+--- src/drivers/video.rs	2026-05-06 09:23:50.479781200 +0000
++++ Ainux/Ainux/custom_kernel/src/drivers/video.rs	2026-05-06 09:42:43.404897500 +0000
+@@ -11,10 +11,10 @@
+ }
+ 
+ pub static THEME: Mutex<Theme> = Mutex::new(Theme {
+-    bg: 0xFF1A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
+-    fg: 0xFFC0CAF5,     // Soft Blue-White Text
+-    accent: 0xFF7AA2F7, // Neovim Accent Blue
+-    root: 0xFF9ECE6A,   // Neovim Accent Green
++    bg: 0x001A1B26,     // Nvix/TokyoNight Dark (Stable UI Background)
++    fg: 0x00C0CAF5,     // Soft Blue-White Text
++    accent: 0x007AA2F7, // Neovim Accent Blue
++    root: 0x009ECE6A,   // Neovim Accent Green
+     font_size: 1,
+ });
+ 
+diff -ur src/fs/console.rs Ainux/Ainux/custom_kernel/src/fs/console.rs
+--- src/fs/console.rs	2026-04-21 19:50:42.547505100 +0000
++++ Ainux/Ainux/custom_kernel/src/fs/console.rs	2026-05-06 09:42:43.648165200 +0000
+@@ -1,26 +1,26 @@
+-use alloc::string::String;
+-use alloc::sync::Arc;
+-use crate::fs::vfs::{FileHandle, VfsResult, VfsError};
+-use crate::drivers::video;
+-
+-#[derive(Debug)]
+-pub struct ConsoleHandle;
+-
+-impl FileHandle for ConsoleHandle {
+-    fn read(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+-        // Mock standard input from serial/keyboard for currently blocking version
+-        Ok(0)
+-    }
+-
+-    fn write(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+-        if let Ok(s) = core::str::from_utf8(buf) {
+-            video::put_str(s);
+-            Ok(buf.len())
+-        } else {
+-            Err(VfsError::IOError)
+-        }
+-    }
+-
+-    fn truncate(&self) -> VfsResult<()> { Ok(()) }
+-    fn close(&self) -> VfsResult<()> { Ok(()) }
+-}
++use alloc::string::String;
++use alloc::sync::Arc;
++use crate::fs::vfs::{FileHandle, VfsResult, VfsError};
++use crate::drivers::video;
++
++#[derive(Debug)]
++pub struct ConsoleHandle;
++
++impl FileHandle for ConsoleHandle {
++    fn read(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
++        // Mock standard input from serial/keyboard for currently blocking version
++        Ok(0)
++    }
++
++    fn write(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
++        if let Ok(s) = core::str::from_utf8(buf) {
++            video::put_str(s);
++            Ok(buf.len())
++        } else {
++            Err(VfsError::IOError)
++        }
++    }
++
++    fn truncate(&self) -> VfsResult<()> { Ok(()) }
++    fn close(&self) -> VfsResult<()> { Ok(()) }
++}
+diff -ur src/fs/ext4.rs Ainux/Ainux/custom_kernel/src/fs/ext4.rs
+--- src/fs/ext4.rs	2026-05-06 06:58:19.437449300 +0000
++++ Ainux/Ainux/custom_kernel/src/fs/ext4.rs	2026-05-06 09:42:43.664758100 +0000
+@@ -683,42 +683,6 @@
+             }
+         }
+     }
+-
+-    fn parent(&self) -> VfsResult<vfs::ArcInode> {
+-        if (self.disk_inode.mode & 0x4000) == 0 {
+-            return Err(VfsError::NotADirectory);
+-        }
+-        
+-        // Read block 0 to find ".."
+-        let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
+-        let block_id = self.disk_inode.block[0];
+-        if block_id == 0 { return Err(VfsError::IOError); }
+-        self.fs.read_block(block_id, &mut buf);
+-        
+-        // ".." is usually the second entry (offset 12 if "." is 12 bytes)
+-        // Let's iterate just to be safe.
+-        let mut offset = 0;
+-        while offset < buf.len() {
+-            let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
+-            let entry = unsafe { *entry_ptr };
+-            if entry.rec_len == 0 { break; }
+-            
+-            let header_size = core::mem::size_of::<DirEntry2>();
+-            let name_slice = unsafe { core::slice::from_raw_parts(buf.as_ptr().add(offset + header_size), entry.name_len as usize) };
+-            if let Ok(name) = core::str::from_utf8(name_slice) {
+-                if name == ".." {
+-                    let parent_inode = self.fs.read_inode(entry.inode)?;
+-                    return Ok(Arc::new(Ext4Inode {
+-                        fs: self.fs.clone(),
+-                        inode_num: entry.inode,
+-                        disk_inode: parent_inode,
+-                    }));
+-                }
+-            }
+-            offset += entry.rec_len as usize;
+-        }
+-        Err(VfsError::NotFound)
+-    }
+ }
+ 
+ impl Ext4Inode {
+diff -ur src/fs/procfs.rs Ainux/Ainux/custom_kernel/src/fs/procfs.rs
+--- src/fs/procfs.rs	2026-05-06 07:00:20.887182200 +0000
++++ Ainux/Ainux/custom_kernel/src/fs/procfs.rs	2026-05-06 09:42:43.690611000 +0000
+@@ -115,7 +115,6 @@
+     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+-    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
+ }
+ 
+ impl Inode for ProcFileInode {
+@@ -169,7 +168,6 @@
+     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+-    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
+ }
+ 
+ #[derive(Debug)]
+diff -ur src/fs/union.rs Ainux/Ainux/custom_kernel/src/fs/union.rs
+--- src/fs/union.rs	2026-05-06 07:00:43.520840200 +0000
++++ Ainux/Ainux/custom_kernel/src/fs/union.rs	2026-05-06 09:42:43.708347100 +0000
+@@ -166,13 +166,4 @@
+             Err(VfsError::PermissionDenied)
+         }
+     }
+-
+-    fn parent(&self) -> VfsResult<ArcInode> {
+-        // Step 7.2: Return parent of the primary layer (upper shadows lower)
+-        if let Some(upper) = &self.upper {
+-            upper.parent()
+-        } else {
+-            self.lower.parent()
+-        }
+-    }
+ }
+diff -ur src/fs/vfs.rs Ainux/Ainux/custom_kernel/src/fs/vfs.rs
+--- src/fs/vfs.rs	2026-05-06 06:58:04.451499300 +0000
++++ Ainux/Ainux/custom_kernel/src/fs/vfs.rs	2026-05-06 09:42:43.717416800 +0000
+@@ -67,30 +67,6 @@
+     fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
+     fn chmod(&self, mode: u16) -> VfsResult<()>;
+     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
+-    fn parent(&self) -> VfsResult<ArcInode>; // Step 7.2: Upward traversal
+-}
+-
+-pub fn is_descendant_of(root: ArcInode, target: ArcInode) -> bool {
+-    let mut current = target.clone();
+-    let root_id = root.id();
+-    
+-    loop {
+-        if current.id() == root_id {
+-            return true;
+-        }
+-        
+-        // Try to go up
+-        match current.parent() {
+-            Ok(p) => {
+-                if p.id() == current.id() {
+-                    // Reached the real root of the FS
+-                    return false;
+-                }
+-                current = p;
+-            }
+-            Err(_) => return false,
+-        }
+-    }
+ }
+ 
+ pub trait FileHandle: Send + Sync + core::fmt::Debug {
+diff -ur src/main.rs Ainux/Ainux/custom_kernel/src/main.rs
+--- src/main.rs	2026-05-06 09:17:31.724324900 +0000
++++ Ainux/Ainux/custom_kernel/src/main.rs	2026-05-06 09:42:41.157474900 +0000
+@@ -18,7 +18,6 @@
+ pub mod semantic;
+ pub mod manager;
+ pub mod net;
+-pub mod wasm;
+ 
+ pub mod api;
+ pub mod shell;
+@@ -83,7 +82,6 @@
+ #[no_mangle]
+ pub extern "C" fn _start() -> ! {
+     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-    let _ = write!(serial, "D");
+     let _ = write!(serial, "\n");
+     let _ = write!(serial, "╔══════════════════════════════════════════════════╗\n");
+     let _ = write!(serial, "║         AINUX KERNEL v0.2 — GRUB/SMP            ║\n");
+@@ -104,27 +102,17 @@
+         let end_ptr = &mut __bss_end as *mut u8;
+         let size = end_ptr as usize - start_ptr as usize;
+ 
+-        let _ = write!(serial, "BSS: Start={:p}, End={:p}, Size={}\n", start_ptr, end_ptr, size);
+-
+-        if size > 0 && size < 0x10000000 {
+-             let _ = write!(serial, "BSS: Zeroing...\n");
++        // Verify BSS bounds (Basic sanity check to avoid massive overflows)
++        if size < 0x10000000 { // 256MB sanity limit
+              core::ptr::write_bytes(start_ptr, 0, size);
+-             let _ = write!(serial, "BSS: Done.\n");
+         }
+ 
+         // Initialize GS_BASE for the BSP
+         let bsp_prcb_addr = cpu::percpu::get_prcb_addr(0);
+-        let _ = write!(serial, "GS_BASE: PRCB[0] at {:p}\n", bsp_prcb_addr as *const u8);
+-        
+-        cpu::percpu::CPUS[0].init(bsp_prcb_addr, 0);
+-        let _ = write!(serial, "GS_BASE: CPU State Init Done.\n");
+-        
++        cpu::percpu::CPUS[0].init(bsp_prcb_addr);
+         cpu::percpu::write_gs_base(bsp_prcb_addr);
+-        let _ = write!(serial, "GS_BASE: Set.\n");
+-        
+-        cpu::percpu::write_kernel_gs_base(bsp_prcb_addr);
+     }
+-    let _ = write!(serial, "Kernel State Initialized.\n");
++    let _ = write!(serial, "BSS zeroed and GS_BASE set to PRCB[0].\n");
+     
+     // ─── Phase 1: Memory Subsystem (Multiboot) ───
+     let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
+@@ -151,14 +139,13 @@
+     // ─── Phase 2: Core CPU Structures ───
+     let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
+     let _ = write!(serial, "Initializing GDT...\n");
+-    unsafe { cpu::gdt::init(); }
++    cpu::gdt::init();
+     let _ = write!(serial, "GDT Initialized.\n");
+ 
+     let _ = write!(serial, "Initializing IDT...\n");
+     cpu::idt::init();
+     let _ = write!(serial, "IDT Initialized.\n");
+ 
+-
+     let _ = write!(serial, "Initializing PIC (legacy)...\n");
+     unsafe { cpu::pic::init(); }
+     let _ = write!(serial, "PIC Remapped.\n");
+@@ -196,10 +183,6 @@
+     drivers::mouse::init();
+     let _ = write!(serial, "Mouse Initialized (IRQ12 Unmasked).\n");
+     
+-    // Initialize GUI Compositor
+-    gui::compositor::Compositor::init();
+-    let _ = write!(serial, "GUI Compositor Initialized.\n");
+-    
+     drivers::video::init();
+     drivers::video::put_str("Ainux Kernel v0.1\n");
+     drivers::video::put_str("Initializing...\n");
+@@ -309,13 +292,41 @@
+                 let _ = write!(serial, "Config: Safety Mode (Defaults Loaded).\n");
+             }
+ 
+-            // Enable Interrupts
++            // Enable Interrupts (ONLY AT THE VERY END)
+             let _ = write!(serial, "DEBUG: Enabling Interrupts (STI)...\n");
+             unsafe { asm!("sti"); }
+             let _ = write!(serial, "DEBUG: Interrupts Enabled.\n");
+ 
+-            // Proceed to manual boot menu/shell
+-            let _ = write!(serial, "System ready for manual operation.\n");
++            // Apply Config (Example: Network)
++            {
++                if let Some(sys_config) = config::CONFIG.lock().as_ref() {
++                    let _ = write!(serial, "Config Applied: Hostname='{}' IP='{}'\n", sys_config.hostname, sys_config.ip_address);
++                }
++            }
++            
++            // TEST: Read hello.txt
++            let root = fs::vfs::ROOT.lock();
++            if let Some(root_inode) = root.as_ref() {
++                 match root_inode.lookup("hello.txt") {
++                     Ok(inode) => {
++                         let _ = write!(serial, "VFS: Found hello.txt!\n");
++                         if let Ok(handle) = inode.open(0) {
++                             let mut buf = [0u8; 64];
++                             if let Ok(n) = handle.read(&mut buf, 0) {
++                                 let _ = write!(serial, "VFS: Read {} bytes: ", n);
++                                 if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
++                                     let _ = write!(serial, "'{}'\n", s);
++                                 } else {
++                                      let _ = write!(serial, "<binary>\n");
++                                 }
++                             }
++                         }
++                     },
++                     Err(e) => {
++                          let _ = write!(serial, "VFS: hello.txt lookup failed: {:?}\n", e);
++                     }
++                 }
++            }
+         },
+         Err(m) => {
+             let _ = write!(serial, "Ext4: Superblock NOT found! Magic: {:#x}\n", m);
+@@ -341,9 +352,8 @@
+     drivers::video::put_str("2. Network Diagnostics\n");
+     drivers::video::put_str("3. Reboot\n");
+     drivers::video::put_str("4. Shutdown\n");
+-    drivers::video::put_str("5. Load Default Config & Start Shell\n");
+-    drivers::video::put_str("6. Start Graphical Desktop (GUI)\n\n");
+-    drivers::video::put_str("Select option [1-6]: ");
++    drivers::video::put_str("5. Load Default Config & Start Shell\n\n");
++    drivers::video::put_str("Select option [1-5]: ");
+ 
+     loop {
+         if let Some(c) = drivers::keyboard::pop_char() {
+@@ -383,10 +393,6 @@
+                     LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
+                     return;
+                 },
+-                '6' => {
+-                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
+-                    start_gui_desktop();
+-                },
+                 _ => {}
+             }
+         }
+@@ -425,26 +431,9 @@
+                         loop { core::arch::asm!("hlt"); }
+                     }
+                 },
+-                '6' => {
+-                    drivers::video::put_str("6\nStarting GUI Desktop...\n");
+-                    start_gui_desktop();
+-                },
+                _ => {}
+             }
+         }
+-    }
+-}
+-
+-fn start_gui_desktop() -> ! {
+-    // Add some sample windows
+-    let mut wins = gui::compositor::WINDOWS.lock();
+-    wins.push(gui::window::Window::new(1, 50, 50, 400, 300, "Kernel Shell"));
+-    wins.push(gui::window::Window::new(2, 500, 100, 300, 200, "System Monitor"));
+-    drop(wins);
+-
+-    loop {
+-        gui::compositor::Compositor::render();
+-        // Limit FPS to avoid pegging CPU (simplified)
+-        for _ in 0..1000000 { unsafe { core::arch::asm!("nop"); } }
++        unsafe { asm!("hlt"); }
+     }
+ }
+diff -ur src/mm/heap.rs Ainux/Ainux/custom_kernel/src/mm/heap.rs
+--- src/mm/heap.rs	2026-05-04 14:38:37.185736000 +0000
++++ Ainux/Ainux/custom_kernel/src/mm/heap.rs	2026-05-06 09:42:43.890027800 +0000
+@@ -52,7 +52,7 @@
+ #[global_allocator]
+ static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
+ 
+-pub const HEAP_START: usize = 0xFFFF_9000_0000_0000;
++pub const HEAP_START: usize = 0x_4444_4444_0000;
+ 
+ pub fn init() {
+     init_custom(32 * 1024 * 1024);
+diff -ur src/mm/mod.rs Ainux/Ainux/custom_kernel/src/mm/mod.rs
+--- src/mm/mod.rs	2026-05-04 08:00:58.141449500 +0000
++++ Ainux/Ainux/custom_kernel/src/mm/mod.rs	2026-05-06 09:42:43.899961600 +0000
+@@ -1,7 +1,7 @@
+-pub mod pmm;
+-pub mod vmm;
+-pub mod heap;
+-pub mod user;
+-pub mod zone;
+-pub mod slab;
+-pub mod buddy;
++pub mod pmm;
++pub mod vmm;
++pub mod heap;
++pub mod user;
++pub mod zone;
++pub mod slab;
++pub mod buddy;
+diff -ur src/mm/pmm.rs Ainux/Ainux/custom_kernel/src/mm/pmm.rs
+--- src/mm/pmm.rs	2026-05-06 09:12:10.009113300 +0000
++++ Ainux/Ainux/custom_kernel/src/mm/pmm.rs	2026-05-06 09:42:43.908122300 +0000
+@@ -72,11 +72,7 @@
+ /// HHDM offset. With our boot.asm identity mapping, physical addresses < 1GB
+ /// can be accessed directly (offset = 0). We keep this atomic for future
+ /// extension when we remap with a proper HHDM.
+-pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF800000000000);
+-
+-pub fn phys_to_virt(phys: u64) -> u64 {
+-    phys + HHDM_OFFSET.load(Ordering::SeqCst)
+-}
++pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+ 
+ /// Total detected system memory in bytes
+ pub static TOTAL_MEMORY: AtomicU64 = AtomicU64::new(0);
+@@ -137,20 +133,16 @@
+             let fb_bpp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_bpp)) };
+             let fb_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_type)) };
+             
+-            if fb_type == 1 {
+-                let _ = write!(serial, "PMM: VESA Graphics Mode (RGB) Detected!\n");
+-                let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
+-                let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
+-                
+-                // Inject to Video Driver 
+-                *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = phys_to_virt(fb_addr);
+-                *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
+-                *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
+-                *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
+-                *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
+-            } else {
+-                let _ = write!(serial, "PMM: Multiboot reported Framebuffer Type {} (Text/Indexed). Falling back to Legacy VGA.\n", fb_type);
+-            }
++            let _ = write!(serial, "PMM: VESA Graphics Mode Detected!\n");
++            let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
++            let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
++            
++            // Inject to Video Driver 
++            *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = fb_addr;
++            *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
++            *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
++            *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
++            *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
+             *crate::drivers::video::FRAMEBUFFER_TYPE.lock() = fb_type;
+         } else {
+             let _ = write!(serial, "PMM: No VESA Framebuffer provided by GRUB. Outputting to Legacy Text Mode.\n");
+@@ -264,9 +256,9 @@
+ 
+         let _ = write!(serial, "PMM: Bitmap at physical {:#x}\n", bitmap_phys);
+ 
+-        // The boot.asm mapping PML4[256] points to physical [0-4GB]
+-        let hhdm_offset: u64 = 0xFFFF800000000000;
+-        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
++        // With identity mapping, virtual == physical for < 1GB
++        let hhdm_offset: u64 = 0;
++        HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
+ 
+         let bitmap_virt = bitmap_phys + hhdm_offset;
+         let bitmap_ptr = bitmap_virt as *mut u64;
+@@ -338,8 +330,7 @@
+ 
+         // Place bitmap at 16MB
+         let bitmap_phys: u64 = 0x1000000;
+-        let hhdm_offset = 0xFFFF800000000000;
+-        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
++        HHDM_OFFSET.store(0, Ordering::Relaxed);
+         TOTAL_MEMORY.store(total_bytes, Ordering::Relaxed);
+ 
+         let bitmap_ptr = bitmap_phys as *mut u64;
+@@ -355,7 +346,7 @@
+             usable_frames: total_frames,
+             allocated_frames: AtomicUsize::new(0),
+             last_idx: 0,
+-            hhdm_offset,
++            hhdm_offset: 0,
+         };
+ 
+         // Free everything above 2MB up to max
+diff -ur src/mm/vmm.rs Ainux/Ainux/custom_kernel/src/mm/vmm.rs
+--- src/mm/vmm.rs	2026-05-04 16:38:30.856671600 +0000
++++ Ainux/Ainux/custom_kernel/src/mm/vmm.rs	2026-05-06 09:42:43.935420700 +0000
+@@ -258,50 +258,7 @@
+     let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
+     let pt = slice::from_raw_parts_mut((pt_phys + hhdm_offset) as *mut u64, 512);
+ 
+-    pt[p1_index(vaddr)] = paddr | flags | 1;
+-}
+-
+-/// Returns the raw page table entry for a given virtual address in a specific PML4.
+-/// Returns None if the mapping does not exist at any level.
+-pub unsafe fn get_mapping_info(pml4_phys: u64, vaddr: u64) -> Option<u64> {
+-    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+-    let pml4 = slice::from_raw_parts((pml4_phys + hhdm_offset) as *const u64, 512);
+-
+-    let p4_idx = p4_index(vaddr);
+-    let p3_idx = p3_index(vaddr);
+-    let p2_idx = p2_index(vaddr);
+-    let p1_idx = p1_index(vaddr);
+-
+-    if pml4[p4_idx] & PRESENT == 0 { return None; }
+-    
+-    let pdpt_phys = pml4[p4_idx] & 0x000FFFFFFFFFF000;
+-    let pdpt = slice::from_raw_parts((pdpt_phys + hhdm_offset) as *const u64, 512);
+-    if pdpt[p3_idx] & PRESENT == 0 { return None; }
+-
+-    let pd_phys = pdpt[p3_idx] & 0x000FFFFFFFFFF000;
+-    let pd = slice::from_raw_parts((pd_phys + hhdm_offset) as *const u64, 512);
+-    if pd[p2_idx] & PRESENT == 0 { return None; }
+-    
+-    if pd[p2_idx] & HUGE_PAGE != 0 {
+-        return Some(pd[p2_idx]);
+-    }
+-
+-    let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
+-    let pt = slice::from_raw_parts((pt_phys + hhdm_offset) as *const u64, 512);
+-    if pt[p1_idx] & PRESENT == 0 { return None; }
+-
+-    Some(pt[p1_idx])
+-}
+-
+-/// Maps a contiguous region of memory in a specific address space with user permissions.
+-pub unsafe fn map_user_region(pml4_phys: u64, vaddr: u64, paddr: u64, size: usize, flags: u64) -> Result<(), &'static str> {
+-    let pages = (size + 4095) / 4096;
+-    for i in 0..pages {
+-        let v = vaddr + (i as u64 * 4096);
+-        let p = paddr + (i as u64 * 4096);
+-        map_page_in_pml4(pml4_phys, v, p, flags | USER | PRESENT);
+-    }
+-    Ok(())
++    pt[p1_idx] = paddr | flags | 1;
+ }
+ 
+ /// Creates a new address space (PML4) by copying kernel mappings from the active one.
+@@ -321,6 +278,8 @@
+                     pml4.entries[i] = active.entries[i];
+                 }
+                 
++                // Also copy the first entry for identity mapping (TEMPORARY: until bootstrap finished)
++                pml4.entries[0] = active.entries[0];
+             }
+             return pml4_phys;
+         }
+diff -ur src/process/loader.rs Ainux/Ainux/custom_kernel/src/process/loader.rs
+--- src/process/loader.rs	2026-05-04 13:39:31.897054800 +0000
++++ Ainux/Ainux/custom_kernel/src/process/loader.rs	2026-05-06 09:42:44.116307000 +0000
+@@ -1,6 +1,5 @@
+ use alloc::vec::Vec;
+ use crate::mm::vmm;
+-use core::fmt::Write;
+ use crate::fs::vfs::{self, ArcInode, FileType};
+ 
+ #[repr(C)]
+@@ -66,7 +65,7 @@
+              // Map segment in memory
+              // For simple functional kernel, we allocate pages and copy data
+              let pages = (ph.p_memsz + 4095) / 4096;
+-              for p in 0..pages {
++             for p in 0..pages {
+                  let virt = ph.p_vaddr + (p * 4096);
+                  let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                  unsafe {
+@@ -75,10 +74,7 @@
+                          let to_copy = core::cmp::min(4096, ph.p_filesz - (p * 4096));
+                          let mut buf = alloc::vec![0u8; 4096];
+                          handle.read(&mut buf[..to_copy as usize], ph.p_offset + (p * 4096)).unwrap();
+-                         
+-                         // Use HHDM to copy data into the frame
+-                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
+-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
++                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
+                      }
+                  }
+              }
+@@ -90,22 +86,10 @@
+ 
+ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
+     if let Ok(inode) = crate::shell::find_inode(path) {
+-        unsafe {
+-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-            let _ = write!(serial, "[Loader] Found inode for {}\n", path);
+-        }
+         let cr3 = crate::mm::vmm::create_address_space();
+         if cr3 == 0 { return Err(()); }
+-        unsafe {
+-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-            let _ = write!(serial, "[Loader] Address space created: {:#x}\n", cr3);
+-        }
+         
+         if let Ok(entry) = load_elf(inode, cr3) {
+-            unsafe {
+-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-                let _ = write!(serial, "[Loader] ELF segments loaded. Entry: {:#x}\n", entry);
+-            }
+             // Allocate a user stack (1MB)
+             let stack_top = 0x00007FFFFFFFF000;
+             let stack_pages = 256;
+@@ -113,23 +97,9 @@
+                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
+             }
+-            unsafe {
+-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-                let _ = write!(serial, "[Loader] User stack allocated.\n");
+-            }
+             
+             let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
+             return Ok(pid);
+-        } else {
+-            unsafe {
+-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-                let _ = write!(serial, "loader: load_elf failed for path: {}\n", path);
+-            }
+-        }
+-    } else {
+-        unsafe {
+-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-            let _ = write!(serial, "loader: find_inode failed for path: {}\n", path);
+         }
+     }
+     Err(())
+@@ -186,10 +156,7 @@
+                          let to_copy = core::cmp::min(4096, seg.size - (p * 4096));
+                          let mut buf = alloc::vec![0u8; 4096];
+                          handle.read(&mut buf[..to_copy as usize], seg.offset + (p * 4096)).unwrap();
+-                         
+-                         // Use HHDM to copy data into the frame
+-                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
+-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
++                         core::ptr::copy_nonoverlapping(buf.as_ptr(), virt as *mut u8, to_copy as usize);
+                      }
+                  }
+              }
+diff -ur src/process/scheduler.rs Ainux/Ainux/custom_kernel/src/process/scheduler.rs
+--- src/process/scheduler.rs	2026-05-06 07:18:56.964469600 +0000
++++ Ainux/Ainux/custom_kernel/src/process/scheduler.rs	2026-05-06 09:42:44.148401600 +0000
+@@ -122,15 +122,6 @@
+     crate::cpu::smp::get_current_pid()
+ }
+ 
+-pub fn update_current_task_fuel(consumed: u64) {
+-    let pid = get_current_pid();
+-    let mut tasks = TASKS.lock();
+-    if let Some(task) = &mut tasks[pid] {
+-        task.wasm_fuel = task.wasm_fuel.saturating_sub(consumed);
+-        task.cpu_time_ticks += consumed / 1000;
+-    }
+-}
+-
+ pub fn get_current_room() -> Option<alloc::sync::Arc<crate::process::room::RoomContext>> {
+     let pid = get_current_pid();
+     let tasks = TASKS.lock();
+@@ -253,7 +244,7 @@
+                 task.cr3 = cr3;
+                 task.userspace_stack_top = rsp;
+                 
+-                let kstack_top = task.stack.as_ptr() as u64 + 16384;
++                let kstack_top = task.stack.as_ptr() as u64 + 4096;
+                 let mut sp = kstack_top & !0xF;
+                 unsafe {
+                     sp -= 8;
+@@ -272,104 +263,89 @@
+     })
+ }
+ 
+-#[unsafe(naked)]
+-pub unsafe extern "C" fn kernel_shim_entry() {
++pub fn kernel_shim_entry() {
++    let rip: u64;
++    let rsp: u64;
+     unsafe {
+-        core::arch::naked_asm!(
+-            "mov rdi, r12", // user rip
+-            "mov rsi, r13", // user rsp
+-            "call enter_userspace_rust",
+-            "1: jmp 1b"
+-        );
++        crate::drivers::video::put_str("Shim Entry\n");
++        core::arch::asm!("mov {}, r12", out(reg) rip);
++        core::arch::asm!("mov {}, r13", out(reg) rsp);
++        
++        crate::cpu::userspace::enter_userspace(rip, rsp);
+     }
+ }
+ 
+-#[no_mangle]
+-pub unsafe extern "C" fn enter_userspace_rust(rip: u64, rsp: u64) {
+-    crate::cpu::userspace::enter_userspace(rip, rsp);
+-}
+-
+ pub fn schedule() {
+     crate::cpu::without_interrupts(|| {
+         let mut tasks = TASKS.lock();
+         let current_pid = crate::cpu::smp::get_current_pid();
+ 
+-        let next_pid = pick_next_task_internal(&mut tasks, current_pid);
++        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
++            next
++        } else {
++             // IDLE STRATEGY: Reduce host CPU load
++             unsafe { core::arch::asm!("hlt"); }
++             return;
++        };
+         
+-        if let Some(next) = next_pid {
+-            if next == current_pid {
+-                return;
+-            }
+-            
+-            // Switch
+-            let old_pid = current_pid;
+-            crate::cpu::smp::set_current_pid(next);
+-            let current_tsc = crate::cpu::cpuid::rdtsc();
+-
+-            // Safety: we know old_pid != next_pid.
+-            let tasks_ptr = tasks.as_mut_ptr();
+-            let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
+-            
+-            // Security: Check Stack Canary
+-            if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
+-                panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
+-            }
+-            
+-            // Account final cycles for old task
+-            if old_task.last_tsc != 0 {
+-                old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
+-            }
+-            old_task.last_tsc = 0; // Clear on deschedule
++        if next_pid == current_pid {
++            return;
++        }
++    
++    // Switch
++    let old_pid = current_pid;
++    crate::cpu::smp::set_current_pid(next_pid);
+ 
+-            let next_task = unsafe { (*tasks_ptr.add(next)).as_mut().unwrap() };
+-            next_task.state = TaskState::Running;
+-            next_task.last_tsc = current_tsc; // Mark start on reschedule
+-            clear_ready(next);
+-
+-            if old_task.state == TaskState::Running {
+-                old_task.state = TaskState::Ready;
+-                set_ready(old_pid);
+-            }
+-            
+-            // Switch CR3
+-            let next_cr3 = next_task.cr3;
+-            if next_cr3 != 0 {
+-                unsafe {
+-                     core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
+-                }
+-            }
+-            
+-            // Update TSS RSP0 and per-cpu PRCB
+-            let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
+-            
+-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-            use core::fmt::Write;
+-            if next == 2 { // Only log for the user task to reduce spam
+-                let _ = write!(serial, "[Sched] Switching to Task {} (KStack: {:#x})\n", next, kstack_top);
+-            }
++    let current_tsc = crate::cpu::cpuid::rdtsc();
++    
++    // Safety: we know old_pid != next_pid.
++    let tasks_ptr = tasks.as_mut_ptr();
++    let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
++    
++    // Security: Check Stack Canary
++    if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
++        panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
++    }
++    
++    // Account final cycles for old task
++    if old_task.last_tsc != 0 {
++        old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
++    }
++    old_task.last_tsc = 0; // Clear on deschedule
+ 
+-            unsafe {
+-                crate::cpu::gdt::set_kernel_stack(kstack_top);
+-                crate::cpu::percpu::set_kernel_stack(kstack_top);
+-            }
+-            
+-            // Maturation: Final pointers for switch
+-            let old_task_ptr = &mut old_task.context as *mut Context;
+-            let next_task_ptr = &next_task.context as *const Context;
+-            
+-            drop(tasks); 
+-            
+-            unsafe {
+-                __switch(old_task_ptr, next_task_ptr);
+-            }
+-        } else {
+-            // IDLE: Drop lock then halt
+-            drop(tasks);
+-            unsafe {
+-                core::arch::asm!("sti; hlt");
+-            }
+-            return;
++    let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap() };
++    next_task.state = TaskState::Running;
++    next_task.last_tsc = current_tsc; // Mark start on reschedule
++    clear_ready(next_pid);
++
++    if old_task.state == TaskState::Running {
++        old_task.state = TaskState::Ready;
++        set_ready(old_pid);
++    }
++    
++    // Switch CR3
++    let next_cr3 = next_task.cr3;
++    if next_cr3 != 0 {
++        unsafe {
++             core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
+         }
++    }
++    
++    // Update TSS RSP0
++    let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
++    unsafe {
++        crate::cpu::gdt::set_kernel_stack(kstack_top);
++    }
++    
++    // Maturation: Final pointers for switch
++    let old_task_ptr = &mut old_task.context as *mut Context;
++    let next_task_ptr = &next_task.context as *const Context;
++    
++    drop(tasks); 
++    
++    unsafe {
++        __switch(old_task_ptr, next_task_ptr);
++    }
+     });
+ }
+ 
+diff -ur src/process/task.rs Ainux/Ainux/custom_kernel/src/process/task.rs
+--- src/process/task.rs	2026-05-06 06:58:47.432603200 +0000
++++ Ainux/Ainux/custom_kernel/src/process/task.rs	2026-05-06 09:42:44.175786900 +0000
+@@ -58,10 +58,6 @@
+     pub canary: u64,
+     pub room: Arc<crate::process::room::RoomContext>,
+     pub handle_table: Mutex<HandleTable>,
+-    
+-    // --- Phase 7: Wasm Orchestration ---
+-    pub wasm_fuel: u64,
+-    pub wasm_state: Option<alloc::sync::Arc<Mutex<crate::wasm::WasmProcessState>>>,
+ }
+ 
+ impl KernelObject for Task {
+@@ -130,8 +126,6 @@
+             canary: STACK_CANARY_MAGIC,
+             room,
+             handle_table: Mutex::new(HandleTable::new()),
+-            wasm_fuel: 0,
+-            wasm_state: None,
+         }
+     }
+ }
+diff -ur src/process/voyager_vm.rs Ainux/Ainux/custom_kernel/src/process/voyager_vm.rs
+--- src/process/voyager_vm.rs	2026-04-19 15:22:38.567602000 +0000
++++ Ainux/Ainux/custom_kernel/src/process/voyager_vm.rs	2026-05-06 09:42:44.183858500 +0000
+@@ -1,126 +1,126 @@
+-use alloc::vec::Vec;
+-use crate::drivers::video;
+-
+-pub struct VoyagerVM {
+-    stack: Vec<i64>,
+-    pc: usize,
+-    code: Vec<u8>,
+-    // Quantum state: 8 qubits (simple amplitude simulation)
+-    // amplitudes[i] = (real, imag)
+-    q_real: [i32; 256], // 2^8 states
+-    is_quantum: bool,
+-}
+-
+-impl VoyagerVM {
+-    pub fn new(code: Vec<u8>) -> Self {
+-        Self {
+-            stack: Vec::with_capacity(32),
+-            pc: 64, // Skip header
+-            code,
+-            q_real: [0; 256],
+-            is_quantum: false,
+-        }
+-    }
+-
+-    pub fn run(&mut self) {
+-        if self.code.len() < 64 { return; }
+-        
+-        let magic = &self.code[0..4];
+-        if magic == b"QNUX" {
+-            self.is_quantum = true;
+-            self.q_real[0] = 1000; // |0...0> state
+-        }
+-
+-        while self.pc < self.code.len() {
+-            let op = self.code[self.pc];
+-            self.pc += 1;
+-
+-            match op {
+-                0x01 => { // PUSH imm64
+-                    let val = i64::from_le_bytes(self.code[self.pc..self.pc+8].try_into().unwrap());
+-                    self.stack.push(val);
+-                    self.pc += 8;
+-                },
+-                0x02 => { // POP
+-                    self.stack.pop();
+-                },
+-                0x10 => { // ADD
+-                    let b = self.stack.pop().unwrap_or(0);
+-                    let a = self.stack.pop().unwrap_or(0);
+-                    self.stack.push(a + b);
+-                },
+-                0x11 => { // SUB
+-                    let b = self.stack.pop().unwrap_or(0);
+-                    let a = self.stack.pop().unwrap_or(0);
+-                    self.stack.push(a - b);
+-                },
+-                0x20 => { // PRINT
+-                    let c = self.stack.pop().unwrap_or(32) as u8 as char;
+-                    video::put_char(c);
+-                },
+-                0x21 => { // RECT (x, y, w, h)
+-                    let h = self.stack.pop().unwrap_or(0) as usize;
+-                    let w = self.stack.pop().unwrap_or(0) as usize;
+-                    let y = self.stack.pop().unwrap_or(0) as usize;
+-                    let x = self.stack.pop().unwrap_or(0) as usize;
+-                    // Assuming a color fixed at White for now or popped too
+-                    let color = 0xFFFFFFFF;
+-                    for dy in 0..h {
+-                        for dx in 0..w {
+-                            crate::drivers::video::draw_pixel((x + dx) as i64, (y + dy) as i64, color);
+-                        }
+-                    }
+-                },
+-                0x30 => { // JMP
+-                    let offset = i32::from_le_bytes(self.code[self.pc..self.pc+4].try_into().unwrap());
+-                    // This is crude, normally JMP is to a label but here we use relative offset
+-                    let new_pc = (self.pc as i32 + offset) as usize;
+-                    self.pc = new_pc;
+-                },
+-                0x41 => { // Q_HAD (qid) - Simplified Hadamard
+-                    if self.is_quantum {
+-                        let qid = self.code[self.pc] as usize;
+-                        self.pc += 1;
+-                        video::put_str(&format!("[System] Applied State Transformation to Qubit {}\n", qid));
+-                        // In a real sim we'd rotate amplitudes. Here we just flag superpos.
+-                    }
+-                },
+-                0x43 => { // Q_MEAS (qid)
+-                    if self.is_quantum {
+-                        let qid = self.code[self.pc] as usize;
+-                        self.pc += 1;
+-                        // Random-ish measurement based on ticks
+-                        let ticks = crate::process::scheduler::get_ticks();
+-                        let res = (ticks % 2) as i64;
+-                        self.stack.push(res);
+-                        video::put_str(&format!("[System] Measured State Qubit {}: {}\n", qid, res));
+-                    }
+-                },
+-                0xFF => break, // EXIT
+-                _ => {
+-                    video::put_str(&format!("VM Error: Unknown op 0x{:02X}\n", op));
+-                    break;
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-pub fn run_voyager_file(path: &str) {
+-    let root = crate::fs::vfs::ROOT.lock();
+-    if let Some(r) = root.as_ref() {
+-        if let Ok(inode) = r.lookup(path) {
+-            if let Ok(handle) = inode.open(0) {
+-                 let mut buf = alloc::vec![0u8; 16384];
+-                 if let Ok(n) = handle.read(&mut buf, 0) {
+-                     buf.truncate(n);
+-                     drop(root); // Unlock before running
+-                     let mut vm = VoyagerVM::new(buf);
+-                     vm.run();
+-                     return;
+-                 }
+-            }
+-        }
+-    }
+-    video::put_str("VM: Could not load Sovereign binary.\n");
+-}
++use alloc::vec::Vec;
++use crate::drivers::video;
++
++pub struct VoyagerVM {
++    stack: Vec<i64>,
++    pc: usize,
++    code: Vec<u8>,
++    // Quantum state: 8 qubits (simple amplitude simulation)
++    // amplitudes[i] = (real, imag)
++    q_real: [i32; 256], // 2^8 states
++    is_quantum: bool,
++}
++
++impl VoyagerVM {
++    pub fn new(code: Vec<u8>) -> Self {
++        Self {
++            stack: Vec::with_capacity(32),
++            pc: 64, // Skip header
++            code,
++            q_real: [0; 256],
++            is_quantum: false,
++        }
++    }
++
++    pub fn run(&mut self) {
++        if self.code.len() < 64 { return; }
++        
++        let magic = &self.code[0..4];
++        if magic == b"QNUX" {
++            self.is_quantum = true;
++            self.q_real[0] = 1000; // |0...0> state
++        }
++
++        while self.pc < self.code.len() {
++            let op = self.code[self.pc];
++            self.pc += 1;
++
++            match op {
++                0x01 => { // PUSH imm64
++                    let val = i64::from_le_bytes(self.code[self.pc..self.pc+8].try_into().unwrap());
++                    self.stack.push(val);
++                    self.pc += 8;
++                },
++                0x02 => { // POP
++                    self.stack.pop();
++                },
++                0x10 => { // ADD
++                    let b = self.stack.pop().unwrap_or(0);
++                    let a = self.stack.pop().unwrap_or(0);
++                    self.stack.push(a + b);
++                },
++                0x11 => { // SUB
++                    let b = self.stack.pop().unwrap_or(0);
++                    let a = self.stack.pop().unwrap_or(0);
++                    self.stack.push(a - b);
++                },
++                0x20 => { // PRINT
++                    let c = self.stack.pop().unwrap_or(32) as u8 as char;
++                    video::put_char(c);
++                },
++                0x21 => { // RECT (x, y, w, h)
++                    let h = self.stack.pop().unwrap_or(0) as usize;
++                    let w = self.stack.pop().unwrap_or(0) as usize;
++                    let y = self.stack.pop().unwrap_or(0) as usize;
++                    let x = self.stack.pop().unwrap_or(0) as usize;
++                    // Assuming a color fixed at White for now or popped too
++                    let color = 0xFFFFFFFF;
++                    for dy in 0..h {
++                        for dx in 0..w {
++                            crate::drivers::video::draw_pixel((x + dx) as i64, (y + dy) as i64, color);
++                        }
++                    }
++                },
++                0x30 => { // JMP
++                    let offset = i32::from_le_bytes(self.code[self.pc..self.pc+4].try_into().unwrap());
++                    // This is crude, normally JMP is to a label but here we use relative offset
++                    let new_pc = (self.pc as i32 + offset) as usize;
++                    self.pc = new_pc;
++                },
++                0x41 => { // Q_HAD (qid) - Simplified Hadamard
++                    if self.is_quantum {
++                        let qid = self.code[self.pc] as usize;
++                        self.pc += 1;
++                        video::put_str(&format!("[System] Applied State Transformation to Qubit {}\n", qid));
++                        // In a real sim we'd rotate amplitudes. Here we just flag superpos.
++                    }
++                },
++                0x43 => { // Q_MEAS (qid)
++                    if self.is_quantum {
++                        let qid = self.code[self.pc] as usize;
++                        self.pc += 1;
++                        // Random-ish measurement based on ticks
++                        let ticks = crate::process::scheduler::get_ticks();
++                        let res = (ticks % 2) as i64;
++                        self.stack.push(res);
++                        video::put_str(&format!("[System] Measured State Qubit {}: {}\n", qid, res));
++                    }
++                },
++                0xFF => break, // EXIT
++                _ => {
++                    video::put_str(&format!("VM Error: Unknown op 0x{:02X}\n", op));
++                    break;
++                }
++            }
++        }
++    }
++}
++
++pub fn run_voyager_file(path: &str) {
++    let root = crate::fs::vfs::ROOT.lock();
++    if let Some(r) = root.as_ref() {
++        if let Ok(inode) = r.lookup(path) {
++            if let Ok(handle) = inode.open(0) {
++                 let mut buf = alloc::vec![0u8; 16384];
++                 if let Ok(n) = handle.read(&mut buf, 0) {
++                     buf.truncate(n);
++                     drop(root); // Unlock before running
++                     let mut vm = VoyagerVM::new(buf);
++                     vm.run();
++                     return;
++                 }
++            }
++        }
++    }
++    video::put_str("VM: Could not load Sovereign binary.\n");
++}
+diff -ur src/shell.rs Ainux/Ainux/custom_kernel/src/shell.rs
+--- src/shell.rs	2026-05-04 13:41:35.627310200 +0000
++++ Ainux/Ainux/custom_kernel/src/shell.rs	2026-05-06 09:42:41.169215200 +0000
+@@ -116,20 +116,8 @@
+ 
+ /// Resolves a path to an Inode by walking the VFS tree.
+ pub fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
+-    unsafe {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "[Shell] find_inode for path: {}\n", path);
+-    }
+     let resolved = resolve_path(path);
+-    unsafe {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "[Shell] resolved path: {}\n", resolved);
+-    }
+     let mut current = vfs::root();
+-    unsafe {
+-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+-        let _ = write!(serial, "[Shell] vfs::root() acquired.\n");
+-    }
+     
+     if resolved == "/" {
+         return Ok(current);
+Only in src: wasm

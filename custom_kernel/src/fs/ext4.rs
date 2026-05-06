@@ -683,6 +683,42 @@ impl Inode for Ext4Inode {
             }
         }
     }
+
+    fn parent(&self) -> VfsResult<vfs::ArcInode> {
+        if (self.disk_inode.mode & 0x4000) == 0 {
+            return Err(VfsError::NotADirectory);
+        }
+        
+        // Read block 0 to find ".."
+        let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
+        let block_id = self.disk_inode.block[0];
+        if block_id == 0 { return Err(VfsError::IOError); }
+        self.fs.read_block(block_id, &mut buf);
+        
+        // ".." is usually the second entry (offset 12 if "." is 12 bytes)
+        // Let's iterate just to be safe.
+        let mut offset = 0;
+        while offset < buf.len() {
+            let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
+            let entry = unsafe { *entry_ptr };
+            if entry.rec_len == 0 { break; }
+            
+            let header_size = core::mem::size_of::<DirEntry2>();
+            let name_slice = unsafe { core::slice::from_raw_parts(buf.as_ptr().add(offset + header_size), entry.name_len as usize) };
+            if let Ok(name) = core::str::from_utf8(name_slice) {
+                if name == ".." {
+                    let parent_inode = self.fs.read_inode(entry.inode)?;
+                    return Ok(Arc::new(Ext4Inode {
+                        fs: self.fs.clone(),
+                        inode_num: entry.inode,
+                        disk_inode: parent_inode,
+                    }));
+                }
+            }
+            offset += entry.rec_len as usize;
+        }
+        Err(VfsError::NotFound)
+    }
 }
 
 impl Ext4Inode {

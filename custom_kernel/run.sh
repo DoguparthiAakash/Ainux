@@ -40,7 +40,7 @@ grub-mkrescue -o ainux.iso iso_root || { echo "ISO creation failed"; exit 1; }
 if [ ! -f disk2.img ]; then
     echo "Creating disk2.img (32MB)..."
     dd if=/dev/zero of=disk2.img bs=1M count=32
-    mkfs.ext4 -O ^extents,^64bit -F disk2.img || { echo "mkfs.ext4 failed"; exit 1; }
+    mkfs.ext4 -O ^extents,^64bit,^metadata_csum -F disk2.img || { echo "mkfs.ext4 failed"; exit 1; }
 fi
 
 # Populate with hello.txt
@@ -68,11 +68,10 @@ fi
 
 # Export for external VMs
 if command -v qemu-img >/dev/null 2>&1; then
-    echo "Exporting VM-compatible disks..."
-    rm -f ainux_disk.vdi ainux_disk.vmdk
-    qemu-img convert -f raw -O vdi disk2.img ainux_disk.vdi
-    qemu-img convert -f raw -O vmdk disk2.img ainux_disk.vmdk
-    echo "Exports ready: ainux_disk.vdi (VirtualBox), ainux_disk.vmdk (VMware)"
+    :
+#    qemu-img convert -f raw -O vdi disk2.img ainux_disk.vdi
+#    qemu-img convert -f raw -O vmdk disk2.img ainux_disk.vmdk
+#    echo "Exports ready: ainux_disk.vdi (VirtualBox), ainux_disk.vmdk (VMware)"
 else
     echo "Warning: qemu-img not found. Skipping VM disk export."
 fi
@@ -89,17 +88,19 @@ fi
 # Run QEMU with SMP (4 cores), 2GB RAM, serial output
 echo "Starting QEMU (SMP=4)..."
 echo "Use Ctrl+A, X to exit."
-qemu-system-x86_64 \
+    DISK_RUN="disk2_run_$$.img"
+    cp -f disk2.img $DISK_RUN
+    qemu-system-x86_64 \
     -M pc \
     -smp 4 \
     -m 2G \
     -cdrom ainux.iso \
     -boot d \
     -serial stdio \
-    -display vnc=:0 \
-    -drive file=disk2.img,format=raw,index=0,media=disk \
+    -display vnc=0.0.0.0:0 \
+    -drive file=$DISK_RUN,format=raw,index=0,media=disk \
     $ACCEL \
     -net nic,model=rtl8139 \
-    -net user,hostfwd=tcp::2223-:22,hostfwd=tcp::8081-:8080 \
+    -net user \
     -device usb-ehci,id=usb \
     -device usb-host,vendorid=0x148f,productid=0x7601

@@ -1,211 +1,152 @@
-; =============================================================================
-; Ainux Multiboot Boot Stub — 32-bit Protected Mode → 64-bit Long Mode
-; Passes Multiboot info struct pointer to Rust kernel_main(info_ptr: u64)
-; Maps first 4GB identity + higher-half for ACPI/hardware access
-;
-; OPTIMIZED: Merged PD loops, fixed STOSD count, NX+PGE enabled
-; =============================================================================
+; src/asm/boot.asm
+; Ainux Bootloader Shim — Multiboot to Long Mode (64-bit)
 
-global _start_multiboot
-global boot_pml4
-extern _start               ; Rust entry: fn _start() -> !
-
-; We store the multiboot info pointer in a global so Rust can read it
-global MULTIBOOT_INFO_PTR
-global MULTIBOOT_MAGIC_VAL
+extern _start
+; extern rust_main ; Renamed to _start in main.rs
 
 section .multiboot
 align 4
-    dd 0x1BADB002            ; Multiboot1 magic
-    dd 0x00000007            ; Flags: ALIGN(0) | MEMINFO(1) | VIDEO(2)
-    dd -(0x1BADB002 + 0x00000007) ; Checksum
-    dd 0                     ; header_addr
-    dd 0                     ; load_addr
-    dd 0                     ; load_end_addr
-    dd 0                     ; bss_end_addr
-    dd 0                     ; entry_addr
-    dd 0                     ; mode_type (0 = linear graphics)
-    dd 0                     ; width (auto)
-    dd 0                     ; height (auto)
-    dd 32                    ; depth (32 bpp preferred)
+    dd 0x1BADB002               ; Magic
+    dd 0x00                     ; Flags
+    dd -(0x1BADB002 + 0x00)     ; Checksum
 
-section .data
-align 8
-MULTIBOOT_INFO_PTR: dq 0    ; Will hold physical address of multiboot_info
-MULTIBOOT_MAGIC_VAL: dq 0   ; Will hold the magic number from EAX
-
-; Table of PD base addresses for the unified fill loop
-align 8
-pd_table:
-    dd boot_pd0              ; PD index 0: maps 0x00000000 - 0x3FFFFFFF
-    dd boot_pd1              ; PD index 1: maps 0x40000000 - 0x7FFFFFFF
-    dd boot_pd2              ; PD index 2: maps 0x80000000 - 0xBFFFFFFF
-    dd boot_pd3              ; PD index 3: maps 0xC0000000 - 0xFFFFFFFF
-
-section .bss
-align 4096
-boot_pml4:
-    resb 4096
-boot_pdpt:
-    resb 4096
-boot_pd0:                   ; PD for 0-1GB
-    resb 4096
-boot_pd1:                   ; PD for 1-2GB
-    resb 4096
-boot_pd2:                   ; PD for 2-3GB
-    resb 4096
-boot_pd3:                   ; PD for 3-4GB
-    resb 4096
-boot_pd_high:               ; PD for higher-half kernel
-    resb 4096
-stack_bottom:
-    resb 32768               ; 32 KB stack (generous for SMP init)
-stack_top:
-
-section .text
+; =============================================================================
+; 32-bit Entry Point
+; =============================================================================
 bits 32
+global _start_multiboot
 _start_multiboot:
-    ; Save Multiboot info (EBX = info ptr, EAX = magic)
-    mov [MULTIBOOT_INFO_PTR], ebx
+    cli
+    cld
+
+    ; Save Multiboot magic and info pointer
     mov [MULTIBOOT_MAGIC_VAL], eax
+    mov [MULTIBOOT_INFO_PTR], ebx
 
-    mov esp, stack_top
+    ; Set up a temporary boot stack (low memory)
+    mov esp, boot_stack_top
 
-    ; ---- Zero out ALL page tables in one shot ----
-    ; 7 tables × 4096 bytes = 28672 bytes = 7168 dwords
-    ; Tables are contiguous in BSS: pml4, pdpt, pd0, pd1, pd2, pd3, pd_high
+    ; ---- Paging Setup (Simplified & Robust) ----
+    ; Clear page tables (6 pages: PML4, PDPT, 4 PDs)
     mov edi, boot_pml4
     xor eax, eax
-    mov ecx, 7168            ; 7 × 1024 dwords = 7 × 4096 bytes
+    mov ecx, 1024 * 6
     rep stosd
 
-    ; ---- PML4[0] → PDPT (identity map) ----
+    ; 1. Link PML4 entries
     mov eax, boot_pdpt
-    or eax, 0b11               ; Present + Writable
-    mov [boot_pml4], eax
+    or eax, 0b11 ; Present + Writable
+    mov [boot_pml4], eax               ; Identity Map (0..512GB)
+    mov [boot_pml4 + 256 * 8], eax     ; Direct Map (0xFFFF800000000000)
+    mov [boot_pml4 + 511 * 8], eax     ; Higher Half (0xFFFFFFFF80000000)
 
-    ; ---- PML4[511] → same PDPT (higher-half) ----
-    mov [boot_pml4 + 511 * 8], eax
-
-    ; ---- PDPT[0..3] → PD0..PD3 ----
-    mov eax, boot_pd0
+    ; 2. Link PDPT entries (Map 4GB)
+    ; Identity & Direct Map: 0-4GB (Indices 0, 1, 2, 3)
+    ; Higher Half Map: -2GB and -1GB (Indices 510, 511)
+    
+    mov eax, boot_pd
     or eax, 0b11
-    mov [boot_pdpt], eax
+    mov [boot_pdpt + 0 * 8], eax       ; Identity 0-1GB
+    mov [boot_pdpt + 510 * 8], eax     ; High-Half 0-1GB (at -2GB)
 
-    mov eax, boot_pd1
+    mov eax, boot_pd + 4096
     or eax, 0b11
-    mov [boot_pdpt + 1 * 8], eax
+    mov [boot_pdpt + 1 * 8], eax       ; Identity 1-2GB
+    mov [boot_pdpt + 511 * 8], eax     ; High-Half 1-2GB (at -1GB)
 
-    mov eax, boot_pd2
+    mov eax, boot_pd + 8192
     or eax, 0b11
-    mov [boot_pdpt + 2 * 8], eax
+    mov [boot_pdpt + 2 * 8], eax       ; Identity 2-3GB
 
-    mov eax, boot_pd3
+    mov eax, boot_pd + 12288
     or eax, 0b11
-    mov [boot_pdpt + 3 * 8], eax
+    mov [boot_pdpt + 3 * 8], eax       ; Identity 3-4GB
 
-    ; ---- PDPT[510] → PD_high (higher-half: 0xFFFFFFFF80000000) ----
-    mov eax, boot_pd_high
-    or eax, 0b11
-    mov [boot_pdpt + 510 * 8], eax
+    ; 4. Map PD[0-3] to 0-4GB using 2MB huge pages
+    mov edi, boot_pd
+    mov eax, 0 | 0x83         ; Start at 0MB
+    mov ecx, 512 * 4          ; Fill 4 Page Directories
+.fill_pd:
+    mov [edi], eax
+    mov dword [edi + 4], 0    ; Clear upper 32 bits
+    add eax, 0x200000         ; Next 2MB
+    add edi, 8
+    loop .fill_pd
 
-    ; ---- Unified PD fill: 4 PDs × 512 entries each ----
-    ; Maps full 4GB identity using 2MB huge pages
-    ; PD_high mirrors PD0 for higher-half kernel access
-    ;
-    ; Outer loop: ebx = PD index (0..3), using pd_table for base addresses
-    ; Inner loop: ecx = entry index (0..511)
-    ; Physical address = (ebx * 512 + ecx) << 21
-    ; Flags: Present(0) + Writable(1) + HugePage(7) = 0x83
-    ; Kernel PD_high entries also get GLOBAL(8) = 0x183
-
-    xor ebx, ebx             ; PD index = 0
-.fill_pd_outer:
-    mov esi, [pd_table + ebx * 4]  ; ESI = base of current PD
-    xor ecx, ecx             ; entry index = 0
-
-.fill_pd_inner:
-    ; Compute physical page: (ebx * 512 + ecx) * 2MB
-    mov eax, ebx
-    shl eax, 9               ; eax = ebx * 512
-    add eax, ecx             ; eax = ebx * 512 + ecx
-    shl eax, 21              ; eax = physical address (2MB aligned)
-    or eax, 0b10000011       ; Present + Writable + HugePage
-
-    mov [esi + ecx * 8], eax ; Write PD entry
-
-    ; For PD0 (ebx==0): also mirror into boot_pd_high with GLOBAL bit
-    test ebx, ebx
-    jnz .skip_high
-    mov edx, eax
-    or edx, (1 << 8)         ; Add GLOBAL flag for kernel mappings
-    mov [boot_pd_high + ecx * 8], edx
-.skip_high:
-
-    inc ecx
-    cmp ecx, 512
-    jne .fill_pd_inner
-
-    inc ebx
-    cmp ebx, 4
-    jne .fill_pd_outer
-
-    ; ---- Enable PAE (CR4.PAE bit 5) + PGE (CR4.PGE bit 7) ----
-    ; PGE enables GLOBAL bit in page table entries for TLB persistence
+    ; ---- Enable PAE and Long Mode ----
     mov eax, cr4
-    or eax, (1 << 5) | (1 << 7)
+    or eax, 1 << 5 ; PAE
     mov cr4, eax
 
-    ; ---- Load PML4 into CR3 ----
     mov eax, boot_pml4
     mov cr3, eax
 
-    ; ---- Enable Long Mode + NX (EFER.LME bit 8 + EFER.NXE bit 11) ----
-    ; NX enables the No-Execute bit in page tables for W^X enforcement
-    mov ecx, 0xC0000080
+    mov ecx, 0xC0000080 ; EFER
     rdmsr
-    or eax, (1 << 8) | (1 << 11)
+    or eax, 1 << 8 ; LME
     wrmsr
 
-    ; ---- Enable Paging + Protection (CR0.PG | CR0.PE) ----
     mov eax, cr0
-    or eax, (1 << 31) | (1 << 0)
+    or eax, 1 << 31 | 1 << 0 ; PG | PE
     mov cr0, eax
 
-    ; ---- Load 64-bit GDT and far jump to long mode ----
-    lgdt [gdt64.pointer]
-    jmp gdt64.code_segment:long_mode_start
+    ; ---- Transition to 64-bit ----
+    lgdt [gdt64_ptr]
+    jmp gdt64_code:long_mode_start
 
-; =============================================================================
-; 64-bit GDT
-; =============================================================================
 align 8
 gdt64:
-    dq 0                                                    ; Null
-.code_segment equ $ - gdt64
-    dq (1<<43) | (1<<44) | (1<<47) | (1<<53)              ; Code: Exec, Descriptor, Present, 64-bit
-.data_segment equ $ - gdt64
-    dq (1<<44) | (1<<47) | (1<<41)                        ; Data: Descriptor, Present, Writable
-.pointer:
+    dq 0 ; null
+gdt64_code: equ $ - gdt64
+    dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) ; code
+gdt64_data: equ $ - gdt64
+    dq (1 << 44) | (1 << 47) | (1 << 41) ; data
+gdt64_ptr:
     dw $ - gdt64 - 1
-    dq gdt64
+    dd gdt64
 
-; =============================================================================
-; 64-bit Long Mode Entry
-; =============================================================================
-bits 64
+[bits 64]
 long_mode_start:
-    ; Set up data segments
-    mov ax, gdt64.data_segment
+    mov ax, gdt64_data
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
     mov ss, ax
 
-    ; Set up a proper stack in the higher half
+    ; Set up higher-half stack
     mov rsp, stack_top
 
-    ; Jump to Rust _start (higher-half linked)
+    ; Enter Rust
     mov rax, _start
     jmp rax
+
+; =============================================================================
+; Low-Memory Boot Sections (Paging Tables & Temporary Stack)
+; =============================================================================
+section .boot_bss
+align 4096
+boot_pml4:
+    resb 4096
+boot_pdpt:
+    resb 4096
+boot_pd:
+    resb 4096 * 4  ; 4 PDs to cover 4GB if needed
+
+boot_stack_bottom:
+    resb 4096      ; Small temporary stack for 32-bit boot only
+boot_stack_top:
+
+global MULTIBOOT_INFO_PTR
+global MULTIBOOT_MAGIC_VAL
+MULTIBOOT_INFO_PTR:  resq 1
+MULTIBOOT_MAGIC_VAL: resq 1
+
+; =============================================================================
+; Higher-Half Sections (Final Kernel Stack)
+; =============================================================================
+section .stack
+align 4096
+stack_bottom:
+    resb 16384 * 8 ; 128KB stack (High Half)
+stack_top:

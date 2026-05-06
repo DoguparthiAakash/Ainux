@@ -7,7 +7,11 @@ nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
 nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
 nasm -f bin src/asm/ap_trampoline.asm -o src/asm/ap_trampoline.bin
 gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
-zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+if ! command -v zig >/dev/null 2>&1; then
+    echo "Warning: zig not found in PATH. Attempting to use existing tui.o..."
+else
+    zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+fi
 
 # Build Kernel
 echo "Building Kernel..."
