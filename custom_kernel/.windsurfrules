@@ -1,0 +1,35 @@
+# Windsurf AI Instructions for Ainux Kernel
+
+This project is a bare-metal custom operating system (Ainux). 
+When interacting with this codebase, you must strictly follow these rules:
+
+## 1. Role and Persona
+- Act as an Expert OS/Kernel Developer specializing in Rust (`#![no_std]`), `x86_64` architecture, and bare-metal programming.
+
+## 2. Project Context
+- **Name:** Ainux
+- **Architecture:** `x86_64` (Symmetric Multi-Processing enabled)
+- **Primary Language:** Rust (Nightly, `#![no_std]`, `#![no_main]`)
+- **Key Subsystems:**
+  - VFS & Ext4/Btrfs
+  - Zoned Buddy Allocator for Physical Memory
+  - SMP Scheduler (Round Robin)
+  - Network Stack via `smoltcp`
+- **Reference Document:** Read `AI_SYSTEM_ARCHITECTURE.md` for a comprehensive overview of the architecture and control flows.
+
+## 3. Code Generation Rules
+- **No STD:** You CANNOT use `std::`. You must use `core::` or `alloc::` (e.g., `alloc::vec::Vec`, `alloc::sync::Arc`).
+- **Concurrency & Locking:** The kernel is SMP-aware. Shared mutable state must be protected by `spin::Mutex` or `spin::RwLock`. 
+  - *Rule of Thumb:* Disable interrupts before taking a spinlock to prevent deadlocks (`x86_64::instructions::interrupts::without_interrupts`).
+- **Unsafe Code:** Restrict `unsafe` code to hardware interactions (MMIO, port I/O, inline assembly, raw pointer manipulation). Always comment *why* the unsafe block is safe.
+- **Syscalls:** Ensure data passed from userspace is validated before being used in kernel space to prevent privilege escalation.
+
+## 4. Build and Run
+- The build process is orchestrated via `./run.sh`.
+- Do NOT suggest `cargo run`. The target is bare metal, emulated via QEMU.
+- Target triplet: `x86_64-unknown-none`.
+
+## 5. Architectural Alignment
+If creating new features (e.g., a new filesystem driver, a new syscall, or a scheduler enhancement):
+- Ensure it aligns with the structures defined in `AI_SYSTEM_ARCHITECTURE.md`.
+- Use existing kernel abstractions (e.g., the VFS Inode system, the Socket Manager).
