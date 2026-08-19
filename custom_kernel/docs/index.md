@@ -8,7 +8,6 @@ Ainux is a monolithic kernel with a modular driver architecture, written primari
 ## Documentation Contents
 
 ### 1. Architecture Specifics
-*   [AI System Architecture](../AI_SYSTEM_ARCHITECTURE.md): Comprehensive UML diagrams and system structures tailored for AI IDEs and advanced analysis.
 *   [x86_64 Architecture](arch/x86_64.md): Boot process, GDT/IDT, and memory models.
 
 ### 2. Core Subsystems

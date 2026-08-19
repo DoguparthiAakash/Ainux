@@ -1,19 +1,20 @@
-import cv2
-import sys
-import os
+import re
 
-vid_path = "Screen Recording 2026-04-18 225200.mp4"
-if not os.path.exists(vid_path):
-    print("Video not found:", vid_path)
-    sys.exit(1)
+with open("src/shell.rs", "r") as f:
+    content = f.read()
 
-vidcap = cv2.VideoCapture(vid_path)
-total_frames = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-vidcap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total_frames - 5))
-success, image = vidcap.read()
-if success:
-    cv2.imwrite("crash_frame.jpg", image)
-    print("Extracted crash_frame.jpg")
+m = re.search(r"fn execute_command_inner.*?\{(.*?)\n}", content, re.DOTALL)
+if not m:
+    print("execute_command_inner not found")
 else:
-    print("Failed to read frame")
+    body = m.group(1)
+    commands = set()
+    for line in body.split("\n"):
+        match = re.search(r"\"([^\"]+)\"\s*(?:\|\s*\"([^\"]+)\")*\s*=>", line)
+        if match:
+            commands.add(match.group(1))
+            if match.group(2):
+                commands.add(match.group(2))
+    
+    print("Found commands:")
+    print(", ".join(sorted(commands)))

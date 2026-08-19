@@ -7,15 +7,11 @@ nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
 nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
 nasm -f bin src/asm/ap_trampoline.asm -o src/asm/ap_trampoline.bin
 gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
-if ! command -v zig >/dev/null 2>&1; then
-    echo "Warning: zig not found in PATH. Attempting to use existing tui.o..."
-else
-    zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
-fi
+zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
 
 # Build Kernel
 echo "Building Kernel..."
-CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-Tlinker.ld -C link-arg=src/asm/boot.o -C link-arg=src/asm/utils.o -C link-arg=src/c/hardware.o -C link-arg=src/c/tui.o" cargo build --release --target x86_64-unknown-none || { echo "Cargo build failed"; exit 1; }
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000 -C link-arg=-Tlinker.ld -C link-arg=src/asm/boot.o -C link-arg=src/asm/utils.o -C link-arg=src/asm/syscall.o -C link-arg=src/c/hardware.o -C link-arg=src/c/tui.o" cargo build --release --offline --target x86_64-unknown-none || { echo "Cargo build failed"; exit 1; }
 
 # Build ISO
 echo "Building ISO..."

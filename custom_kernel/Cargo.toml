@@ -11,8 +11,6 @@ lazy_static = { version = "1.4", features = ["spin_no_std"] }
 smoltcp = { version = "0.11", default-features = false, features = ["alloc", "log", "proto-ipv4", "proto-igmp", "socket-icmp", "socket-udp", "socket-tcp", "proto-dhcpv4", "medium-ethernet", "socket-dhcpv4"] }
 managed = { version = "0.8", default-features = false }
 bitflags = "2.4"
-wasmi = { version = "0.31", default-features = false }
-
 [build-dependencies]
 cc = "1.0"
 [profile.dev]
@@ -22,3 +20,5 @@ panic = "abort"
 panic = "abort"
 lto = true
 codegen-units = 1
+opt-level = "z"
+strip = true
