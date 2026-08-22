@@ -14,6 +14,8 @@ use smoltcp::socket::AnySocket;
 
 pub mod dns;
 pub mod wifi_80211;
+pub mod unix;
+pub mod inet;
 
 pub struct AinuxDevice;
 
@@ -22,27 +24,31 @@ impl Device for AinuxDevice {
     type TxToken<'a> = AinuxTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let room = crate::process::scheduler::get_current_room();
-        if let Some(r) = room {
-            let mut queue = r.rx_queue.lock();
+        let cell = crate::process::scheduler::get_current_cell();
+        
+        // 1. Check Cell-specific queue
+        {
+            let mut queue = cell.rx_queue.lock();
             if let Some(data) = queue.pop_front() {
-                // If we are the sole owner, we can use the buffer directly.
-                // Otherwise, we must copy it to allow mutation.
                 let buffer = match Arc::try_unwrap(data) {
                     Ok(v) => v,
                     Err(arc) => (*arc).clone(),
                 };
                 return Some((AinuxRxToken { buffer }, AinuxTxToken));
             }
-        } else {
-             // Fallback for non-roomed tasks or root room
-             let mut result = None;
-             RTL8139::receive_packet(|data: &[u8]| {
-                 result = Some((AinuxRxToken { buffer: data.to_vec() }, AinuxTxToken));
-             });
-             return result;
         }
-        None
+
+        // 2. Fallback for Root Cell or hardware-direct tasks
+        let mut result = None;
+        RTL8139::receive_packet(|data: &[u8]| {
+            result = Some((AinuxRxToken { buffer: data.to_vec() }, AinuxTxToken));
+        });
+        if result.is_none() {
+            crate::drivers::net::e1000::receive_packet(|data: &[u8]| {
+                result = Some((AinuxRxToken { buffer: data.to_vec() }, AinuxTxToken));
+            });
+        }
+        result
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
@@ -81,6 +87,7 @@ impl phy::TxToken for AinuxTxToken {
         buffer.resize(len, 0);
         let result = f(&mut buffer);
         RTL8139::send_packet(&buffer);
+        crate::drivers::net::e1000::send_packet(&buffer);
         result
     }
 }
@@ -104,12 +111,12 @@ pub struct NetStack {
 pub static NET_STACK: Mutex<Option<NetStack>> = Mutex::new(None);
 
 pub fn init() {
-    let mut caps = DeviceCapabilities::default();
+    let mut caps = smoltcp::phy::DeviceCapabilities::default();
     caps.max_transmission_unit = 1500;
-    caps.medium = Medium::Ethernet;
+    caps.medium = smoltcp::phy::Medium::Ethernet;
 
     let mut device = AinuxDevice;
-    let config = Config::new(EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into());
+    let config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(smoltcp::wire::EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])));
     
     let mut iface = Interface::new(config, &mut device, Instant::from_millis(0));
     let mut sockets = SocketSet::new(Vec::new());
@@ -142,13 +149,7 @@ pub fn init() {
 
 pub fn poll() {
     crate::cpu::without_interrupts(|| {
-        // 1. Get current room stack
-        let room = crate::process::scheduler::get_current_room();
-        let stack_mutex = if let Some(r) = &room {
-            &r.vnet_stack
-        } else {
-            &NET_STACK
-        };
+        let stack_mutex = &crate::net::NET_STACK;
 
         let mut stack_lock = stack_mutex.lock();
         if let Some(stack) = stack_lock.as_mut() {
@@ -162,7 +163,7 @@ pub fn poll() {
                 if let Some(event) = socket.poll() {
                     match event {
                         dhcpv4::Event::Configured(config) => {
-                            crate::drivers::video::put_str(&alloc::format!("Net: Room DHCP Configured! IP: {}\n", config.address));
+                            crate::drivers::video::put_str(&alloc::format!("Net: Cell DHCP Configured! IP: {}\n", config.address));
                             stack.iface.update_ip_addrs(|addrs| {
                                 addrs.push(IpCidr::Ipv4(config.address)).unwrap();
                             });
@@ -192,8 +193,8 @@ pub struct SocketHandle {
 impl FileHandle for SocketHandle {
     fn read(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         crate::cpu::without_interrupts(|| {
-            let room = crate::process::scheduler::get_current_room();
-            let stack_mutex = if let Some(r) = &room { &r.vnet_stack } else { &NET_STACK };
+            let cell = crate::process::scheduler::get_current_cell();
+            let stack_mutex = &cell.vnet_stack;
             
             let mut stack = stack_mutex.lock();
             if let Some(s) = stack.as_mut() {
@@ -214,8 +215,8 @@ impl FileHandle for SocketHandle {
 
     fn write(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         crate::cpu::without_interrupts(|| {
-            let room = crate::process::scheduler::get_current_room();
-            let stack_mutex = if let Some(r) = &room { &r.vnet_stack } else { &NET_STACK };
+            let cell = crate::process::scheduler::get_current_cell();
+            let stack_mutex = &cell.vnet_stack;
             
             let mut stack = stack_mutex.lock();
             if let Some(s) = stack.as_mut() {
@@ -252,8 +253,8 @@ impl FileHandle for SocketHandle {
 
 pub fn syscall_socket_tcp() -> isize {
     crate::cpu::without_interrupts(|| {
-        let room = crate::process::scheduler::get_current_room();
-        let stack_mutex = if let Some(r) = &room { &r.vnet_stack } else { &NET_STACK };
+        let cell = crate::process::scheduler::get_current_cell();
+        let stack_mutex = &cell.vnet_stack;
         
         let mut stack = stack_mutex.lock();
         if let Some(s) = stack.as_mut() {
@@ -394,13 +395,280 @@ pub fn dispatch_packets() {
     crate::cpu::without_interrupts(|| {
         RTL8139::receive_packet(|data: &[u8]| {
             let shared_data = Arc::new(data.to_vec());
-            let mgr = crate::process::room::ROOM_MANAGER.lock();
-            for room in &mgr.rooms {
-                let mut queue = room.rx_queue.lock();
+            let mgr = crate::process::cell::CELL_MANAGER.lock();
+            for cell in &mgr.cells {
+                let mut queue = cell.rx_queue.lock();
                 if queue.len() < 128 {
                     queue.push_back(shared_data.clone());
                 }
             }
         });
     });
+}
+
+pub fn sys_socket(domain: i32, type_: i32, protocol: i32) -> isize {
+    if domain == 1 { // AF_UNIX
+        crate::net::unix::sys_socket(domain, type_, protocol)
+    } else if domain == 2 { // AF_INET
+        let socket_type = crate::cpu::without_interrupts(|| {
+            let mut net_opt = NET_STACK.lock();
+            if net_opt.is_none() { return None; }
+            let net = net_opt.as_mut().unwrap();
+            
+            if type_ == 1 { // SOCK_STREAM
+                let rx_buffer = smoltcp::socket::tcp::SocketBuffer::new(alloc::vec![0; 65535]);
+                let tx_buffer = smoltcp::socket::tcp::SocketBuffer::new(alloc::vec![0; 65535]);
+                let socket = smoltcp::socket::tcp::Socket::new(rx_buffer, tx_buffer);
+                Some(inet::InetSocketType::Tcp(net.sockets.add(socket)))
+            } else if type_ == 2 { // SOCK_DGRAM
+                let rx_buffer = smoltcp::socket::udp::PacketBuffer::new(alloc::vec![smoltcp::socket::udp::PacketMetadata::EMPTY; 3], alloc::vec![0; 65535]);
+                let tx_buffer = smoltcp::socket::udp::PacketBuffer::new(alloc::vec![smoltcp::socket::udp::PacketMetadata::EMPTY; 3], alloc::vec![0; 65535]);
+                let socket = smoltcp::socket::udp::Socket::new(rx_buffer, tx_buffer);
+                Some(inet::InetSocketType::Udp(net.sockets.add(socket)))
+            } else if type_ == 3 && protocol == 1 { // SOCK_RAW, IPPROTO_ICMP
+                let rx_buffer = smoltcp::socket::icmp::PacketBuffer::new(alloc::vec![smoltcp::socket::icmp::PacketMetadata::EMPTY; 3], alloc::vec![0; 65535]);
+                let tx_buffer = smoltcp::socket::icmp::PacketBuffer::new(alloc::vec![smoltcp::socket::icmp::PacketMetadata::EMPTY; 3], alloc::vec![0; 65535]);
+                let mut socket = smoltcp::socket::icmp::Socket::new(rx_buffer, tx_buffer);
+                socket.bind(smoltcp::socket::icmp::Endpoint::Ident(0)).unwrap();
+                Some(inet::InetSocketType::Icmp(net.sockets.add(socket)))
+            } else {
+                None
+            }
+        });
+        
+        let socket_type = match socket_type {
+            Some(st) => st,
+            None => return -1,
+        };
+        
+        let handle = alloc::sync::Arc::new(inet::InetSocketHandle { 
+            socket_type: spin::Mutex::new(socket_type), 
+            bound_port: core::sync::atomic::AtomicU16::new(0) 
+        });
+        let pid = crate::process::scheduler::get_current_pid();
+        crate::cpu::without_interrupts(|| {
+            let mut tasks = crate::process::scheduler::TASKS.lock();
+            if let Some(task) = &mut tasks[pid] {
+                task.fds.alloc_fd(handle).map(|fd| fd as isize).unwrap_or(-1)
+            } else {
+                -1
+            }
+        })
+    } else {
+        -1
+    }
+}
+
+pub fn sys_connect(fd: usize, addr_ptr: *const u8, addr_len: usize) -> isize {
+    let pid = crate::process::scheduler::get_current_pid();
+    
+    // Check if it's an INET socket
+    let inet_handle_ptr = crate::cpu::without_interrupts(|| {
+        let tasks = crate::process::scheduler::TASKS.lock();
+        if let Some(task) = &tasks[pid] {
+            if let Ok(handle_arc) = task.fds.get_handle(fd) {
+                let ptr = handle_arc.as_inet_socket_ptr();
+                if !ptr.is_null() {
+                    return Some(ptr as *const inet::InetSocketHandle);
+                }
+            }
+        }
+        None
+    });
+    
+    if let Some(handle_ptr) = inet_handle_ptr {
+        let inet_handle = unsafe { &*handle_ptr };
+        let handle_opt = {
+            let lock = inet_handle.socket_type.lock();
+            if let inet::InetSocketType::Tcp(handle) = *lock {
+                Some(handle)
+            } else { None }
+        };
+        if let Some(handle) = handle_opt {
+            // It's TCP. addr_len is actually the port (from libainux sys_connect)
+            let port = addr_len as u16;
+            let mut ip = [0u8; 4];
+            if crate::mm::user::copy_from_user(addr_ptr, &mut ip).is_ok() {
+                let res = crate::cpu::without_interrupts(|| {
+                    let mut net_opt = NET_STACK.lock();
+                    if let Some(net) = net_opt.as_mut() {
+                        let socket = net.sockets.get_mut::<smoltcp::socket::tcp::Socket>(handle);
+                        let remote_endpoint = smoltcp::wire::IpEndpoint::new(
+                            smoltcp::wire::IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), 
+                            port
+                        );
+                        let local_port = 49152 + (crate::drivers::rtc::read_time().seconds as u16) * 10;
+                        if socket.connect(net.iface.context(), remote_endpoint, local_port).is_ok() {
+                            return 0;
+                        }
+                    }
+                    -1
+                });
+                return res;
+            }
+        }
+        return -1;
+    }
+
+    // Fallback to Unix sockets
+    crate::net::unix::sys_connect(fd, addr_ptr, addr_len)
+}
+
+pub fn sys_accept(fd: usize) -> isize {
+    let pid = crate::process::scheduler::get_current_pid();
+    let inet_handle_ptr = crate::cpu::without_interrupts(|| {
+        let tasks = crate::process::scheduler::TASKS.lock();
+        if let Some(task) = &tasks[pid] {
+            if let Ok(handle_arc) = task.fds.get_handle(fd) {
+                let ptr = handle_arc.as_inet_socket_ptr();
+                if !ptr.is_null() {
+                    return Some(ptr as *const inet::InetSocketHandle);
+                }
+            }
+        }
+        None
+    });
+    
+    if let Some(handle_ptr) = inet_handle_ptr {
+        let inet_handle = unsafe { &*handle_ptr };
+        let port = inet_handle.bound_port.load(core::sync::atomic::Ordering::SeqCst);
+        let mut handle_opt = None;
+        {
+            let lock = inet_handle.socket_type.lock();
+            if let inet::InetSocketType::Tcp(handle) = *lock {
+                handle_opt = Some(handle);
+            }
+        }
+        
+        if let Some(handle) = handle_opt {
+            loop {
+                // Check if connection is established
+                let established = crate::cpu::without_interrupts(|| {
+                    if let Some(net) = NET_STACK.lock().as_mut() {
+                        let socket = net.sockets.get_mut::<smoltcp::socket::tcp::Socket>(handle);
+                        if socket.state() == smoltcp::socket::tcp::State::Established {
+                            return true;
+                        }
+                    }
+                    false
+                });
+                
+                if established {
+                    // It is established! 
+                    // To accept more connections, smoltcp needs a NEW socket in Listen state on this port.
+                    // So we create a new one, put it in the socket_type of this LISTENER handle,
+                    // and return a NEW file descriptor pointing to the OLD handle. Wait, no.
+                    // The old handle (which we have an Arc to) is the one established.
+                    // Wait, `InetSocketHandle` is what the fd points to. 
+                    // If we change the listener fd's `socket_type` to a NEW socket that listens,
+                    // and return a NEW fd that points to an `InetSocketHandle` containing the OLD (established) handle?
+                    // YES! That is the correct semantic: the listener keeps its fd, but under the hood gets a new smoltcp socket.
+                    // The returned fd gets the established socket.
+                    
+                    let new_socket_handle = crate::cpu::without_interrupts(|| {
+                        let mut net_opt = NET_STACK.lock();
+                        if let Some(net) = net_opt.as_mut() {
+                            let rx_buffer = smoltcp::socket::tcp::SocketBuffer::new(alloc::vec![0; 65535]);
+                            let tx_buffer = smoltcp::socket::tcp::SocketBuffer::new(alloc::vec![0; 65535]);
+                            let mut socket = smoltcp::socket::tcp::Socket::new(rx_buffer, tx_buffer);
+                            let _ = socket.listen(port);
+                            Some(net.sockets.add(socket))
+                        } else { None }
+                    });
+                    
+                    if let Some(new_handle) = new_socket_handle {
+                        // Swap them
+                        *inet_handle.socket_type.lock() = inet::InetSocketType::Tcp(new_handle);
+                        
+                        // Create new FD for the established socket
+                        let client_inet = alloc::sync::Arc::new(inet::InetSocketHandle {
+                            socket_type: spin::Mutex::new(inet::InetSocketType::Tcp(handle)),
+                            bound_port: core::sync::atomic::AtomicU16::new(port),
+                        });
+                        
+                        let new_fd = crate::cpu::without_interrupts(|| {
+                            let mut tasks = crate::process::scheduler::TASKS.lock();
+                            if let Some(task) = &mut tasks[pid] {
+                                task.fds.alloc_fd(client_inet).map(|f| f as isize).unwrap_or(-1)
+                            } else { -1 }
+                        });
+                        
+                        return new_fd;
+                    }
+                }
+                
+                // Yield to wait for connection
+                crate::process::scheduler::yield_now();
+            }
+        }
+    }
+
+    crate::net::unix::sys_accept(fd)
+}
+
+pub fn sys_bind(fd: usize, addr_ptr: *const u8, addr_len: usize) -> isize {
+    let pid = crate::process::scheduler::get_current_pid();
+    let inet_handle_ptr = crate::cpu::without_interrupts(|| {
+        let tasks = crate::process::scheduler::TASKS.lock();
+        if let Some(task) = &tasks[pid] {
+            if let Ok(handle_arc) = task.fds.get_handle(fd) {
+                let ptr = handle_arc.as_inet_socket_ptr();
+                if !ptr.is_null() {
+                    return Some(ptr as *const inet::InetSocketHandle);
+                }
+            }
+        }
+        None
+    });
+    
+    if let Some(handle_ptr) = inet_handle_ptr {
+        let inet_handle = unsafe { &*handle_ptr };
+        let port = addr_len as u16;
+        inet_handle.bound_port.store(port, core::sync::atomic::Ordering::SeqCst);
+        return 0;
+    }
+    crate::net::unix::sys_bind(fd, addr_ptr, addr_len)
+}
+
+pub fn sys_listen(fd: usize, backlog: i32) -> isize {
+    let pid = crate::process::scheduler::get_current_pid();
+    let inet_handle_ptr = crate::cpu::without_interrupts(|| {
+        let tasks = crate::process::scheduler::TASKS.lock();
+        if let Some(task) = &tasks[pid] {
+            if let Ok(handle_arc) = task.fds.get_handle(fd) {
+                let ptr = handle_arc.as_inet_socket_ptr();
+                if !ptr.is_null() {
+                    return Some(ptr as *const inet::InetSocketHandle);
+                }
+            }
+        }
+        None
+    });
+    
+    if let Some(handle_ptr) = inet_handle_ptr {
+        let inet_handle = unsafe { &*handle_ptr };
+        let port = inet_handle.bound_port.load(core::sync::atomic::Ordering::SeqCst);
+        let mut handle_opt = None;
+        {
+            let lock = inet_handle.socket_type.lock();
+            if let inet::InetSocketType::Tcp(handle) = *lock {
+                handle_opt = Some(handle);
+            }
+        }
+        if let Some(handle) = handle_opt {
+            let res = crate::cpu::without_interrupts(|| {
+                let mut net_opt = NET_STACK.lock();
+                if let Some(net) = net_opt.as_mut() {
+                    let socket = net.sockets.get_mut::<smoltcp::socket::tcp::Socket>(handle);
+                    if socket.listen(port).is_ok() {
+                        return 0;
+                    }
+                }
+                -1
+            });
+            return res;
+        }
+        return -1;
+    }
+    crate::net::unix::sys_listen(fd, backlog)
 }

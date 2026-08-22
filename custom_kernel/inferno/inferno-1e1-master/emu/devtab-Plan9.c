@@ -1,1 +1,0 @@
-#include "devtab-Inferno.c"

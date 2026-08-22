@@ -87,7 +87,17 @@ impl IOService for EHCIController {
         
         // 1. Reset Controller
         self.op_write(USBCMD, 0x02); // HCRESET
-        while self.op_read(USBCMD) & 0x02 != 0 { core::hint::spin_loop(); }
+        
+        // Timeout loop for reset
+        let mut timeout = 100000;
+        while self.op_read(USBCMD) & 0x02 != 0 && timeout > 0 { 
+            core::hint::spin_loop();
+            timeout -= 1;
+        }
+        
+        if timeout == 0 {
+            video::put_str("USB: EHCI Reset Timeout! Continuing anyway...\n");
+        }
         
         // 2. Clear Interrupts and Status
         self.op_write(USBSTS, 0x3F);

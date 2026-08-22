@@ -8,22 +8,20 @@ pub struct HybridAllocator {
 
 unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        
-        // Preferred: High-performance Slab delegation for small objects
-        if let Some(ptr) = crate::mm::slab::alloc_custom(size) {
-            return ptr;
+        // Fallback: Robust Linked List Heap handles everything
+        let ptr = self.heap.alloc(layout);
+        if ptr.is_null() {
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            use core::fmt::Write;
+            let _ = write!(serial, "\nHeap OOM: size={}, align={}\n", layout.size(), layout.align());
         }
-
-        // Fallback: Robust Linked List Heap
-        self.heap.alloc(layout)
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let addr = ptr as usize;
         
         // If the address is below our managed kernel heap, it must be a slab pointer
-        // (Slab pages are allocated from PMM and reside in the direct-mapped physical region)
         if addr < HEAP_START {
             let size = layout.size();
             crate::mm::slab::free_custom(ptr, size);
@@ -52,22 +50,24 @@ impl HybridAllocator {
 #[global_allocator]
 static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 
-pub const HEAP_START: usize = 0xFFFF_9000_0000_0000;
+pub const HEAP_START: usize = 0xFFFF_A000_0000_0000;
 
 pub fn init() {
-    init_custom(32 * 1024 * 1024);
+    init_custom(1 * 1024 * 1024); // 1MB heap default for memory constrained environments
 }
 
 pub fn init_custom(heap_size: usize) {
     let total_mem = crate::mm::pmm::TOTAL_MEMORY.load(core::sync::atomic::Ordering::Relaxed) as usize;
-    // Aim for the requested size, but if memory is extremely low, cap at (total_mem / 4)
-    let actual_size = if total_mem > 0 && total_mem < heap_size * 2 {
+    
+    // Strictly enforce 1MB maximum heap for memory constrained environments
+    let actual_size = if total_mem > 0 && total_mem < (heap_size * 2) {
         total_mem / 4
     } else {
         heap_size
     };
     
-    let heap_size = actual_size.max(1024 * 1024); // at least 1MB
+    // The user strictly requested < 2MB for the kernel heap footprint.
+    let heap_size = actual_size.min(1900 * 1024); // at most 1.9MB
     let pages = (heap_size + 4095) / 4096;
     let mut current_addr = HEAP_START;
     
@@ -136,13 +136,15 @@ pub fn verify_heap() {
     // Drop b -> free
 }
 
-pub fn kmalloc(size: usize, align: usize) -> *mut u8 {
+#[no_mangle]
+pub extern "C" fn kmalloc(size: usize, align: usize) -> *mut u8 {
     use core::alloc::{GlobalAlloc, Layout};
     let layout = Layout::from_size_align(size, align).unwrap();
     unsafe { ALLOCATOR.alloc(layout) }
 }
 
-pub fn kfree(ptr: *mut u8, size: usize, align: usize) {
+#[no_mangle]
+pub extern "C" fn kfree(ptr: *mut u8, size: usize, align: usize) {
     use core::alloc::{GlobalAlloc, Layout};
     let layout = Layout::from_size_align(size, align).unwrap();
     unsafe { ALLOCATOR.dealloc(ptr, layout) }

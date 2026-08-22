@@ -28,6 +28,9 @@ impl SerialPort {
         unsafe {
             let status: u8;
             asm!("in al, dx", out("al") status, in("dx") self.port + 5, options(nomem, nostack, preserves_flags));
+            if status == 0xFF {
+                return false;
+            }
             (status & 0x01) != 0
         }
     }
@@ -51,3 +54,13 @@ impl fmt::Write for SerialPort {
 }
 
 pub static SERIAL: Mutex<SerialPort> = Mutex::new(SerialPort::new(0x3F8));
+
+pub fn print_hex_8(val: u8) {
+    use core::fmt::Write;
+    let _ = write!(SERIAL.lock(), "{:02X}", val);
+}
+
+pub fn print_hex_32(val: u32) {
+    use core::fmt::Write;
+    let _ = write!(SERIAL.lock(), "{:08X}", val);
+}

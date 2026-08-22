@@ -180,7 +180,7 @@ impl RTL8139 {
             let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
             let rx_virt = RTL8139_RX_PHYS + hhdm;
             
-            while (Self::inb(io_base + COMMAND) & 0x01) == 0 {
+            if (Self::inb(io_base + COMMAND) & 0x01) == 0 {
                 let offset = RTL8139_RX_OFFSET;
                 let ptr = (rx_virt + offset as u64) as *const u16;
                 
@@ -188,20 +188,20 @@ impl RTL8139 {
                 let status = header;
                 let len = *ptr.add(1);
 
-                if (status & 1) == 0 { break; } // Packet not OK
+                if (status & 1) == 1 {
+                    let data_ptr = (rx_virt + offset as u64 + 4) as *const u8;
+                    let packet = core::slice::from_raw_parts(data_ptr, len as usize - 4);
+                    
+                    handler(packet);
 
-                let data_ptr = (rx_virt + offset as u64 + 4) as *const u8;
-                let packet = core::slice::from_raw_parts(data_ptr, len as usize - 4);
-                
-                handler(packet);
-
-                // Update offset (aligned to 4 bytes as per RTL8139 spec)
-                let mut new_offset = (offset + len as usize + 4 + 3) & !3;
-                if new_offset >= 8192 {
-                    new_offset %= 8192;
+                    // Update offset (aligned to 4 bytes as per RTL8139 spec)
+                    let mut new_offset = (offset + len as usize + 4 + 3) & !3;
+                    if new_offset >= 8192 {
+                        new_offset %= 8192;
+                    }
+                    RTL8139_RX_OFFSET = new_offset;
+                    Self::outw(io_base + 0x38, (new_offset as i16 - 16) as u16); // CBR
                 }
-                RTL8139_RX_OFFSET = new_offset;
-                Self::outw(io_base + 0x38, (new_offset as i16 - 16) as u16); // CBR
             }
         }
     }

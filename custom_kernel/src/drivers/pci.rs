@@ -22,11 +22,18 @@ fn inl(port: u16) -> u32 {
 }
 
 // PCI Access
-fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+pub fn pci_config_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
     let address = (1 << 31) | ((bus as u32) << 16) | ((slot as u32) << 11) | ((func as u32) << 8) | ((offset as u32) & 0xFC);
     outl(CONFIG_ADDRESS, address);
     inl(CONFIG_DATA)
 }
+
+pub fn pci_config_write(bus: u8, slot: u8, func: u8, offset: u8, val: u32) {
+    let address = (1 << 31) | ((bus as u32) << 16) | ((slot as u32) << 11) | ((func as u32) << 8) | ((offset as u32) & 0xFC);
+    outl(CONFIG_ADDRESS, address);
+    outl(CONFIG_DATA, val);
+}
+
 
 // PCI Device Representation
 #[derive(Debug)]
@@ -81,6 +88,10 @@ pub fn init() {
                     let intr = pci_config_read(bus, slot, 0, 0x3C);
                     let irq_line = (intr & 0xFF) as u8;
                     
+                    // Enable Bus Mastering, Memory Space, and I/O Space in Command Register
+                    let cmd_status = pci_config_read(bus, slot, 0, 0x04);
+                    pci_config_write(bus, slot, 0, 0x04, cmd_status | 0x07); // Bit 0: IO, Bit 1: Memory, Bit 2: Bus Master
+                    
                     // Create IOService
                     let name = format!("PCI {:02x}:{:02x}.0", bus, slot);
                     crate::drivers::video::put_str(&name);
@@ -99,9 +110,19 @@ pub fn init() {
                         irq_line,
                     });
                     
-                    let entry = IORegistryEntry::new(pci_dev);
+                    let entry = IORegistryEntry::new(pci_dev.clone());
                     IORegistryEntry::add_child(&root_entry, &entry);
                     
+                    // Audio Device Detection
+                    if pci_dev.vendor_id == 0x8086 && pci_dev.device_id == 0x2415 {
+                        crate::drivers::audio::ac97::init_device(pci_dev.bus, pci_dev.slot, pci_dev.func);
+                    }
+
+                    // NVIDIA GPU Detection
+                    if pci_dev.vendor_id == 0x10DE {
+                        crate::drivers::drm::nvidia::init_device(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.device_id, pci_dev.bar0);
+                    }
+
                     // Match Drivers (Simulated matching loop)
                     let rtl_driver = Arc::new(crate::drivers::net::rtl8139::RTL8139::new());
                     if rtl_driver.probe(&entry.service) > 0 {
@@ -126,4 +147,5 @@ pub fn init() {
             }
         }
     }
+    crate::drivers::net::e1000::detect_and_init();
 }

@@ -81,25 +81,26 @@ pub fn main() {
 }
 
 fn draw_header() {
-    video::draw_rect_grid(0, 0, 80, 1, TEXT_COLOR, HEADER_BG);
-    video::put_str_at(2, 0, " AINUX METUS ", TEXT_COLOR, ACCENT_COLOR);
-    video::put_str_at(16, 0, "|  Industrial Maturation Layer  |  v1.0  ", TEXT_COLOR, HEADER_BG);
+    video::draw_tui_title_box(0, 0, 80, 24, "", 0x00555555); // Outer border
+    video::draw_rect_grid(1, 1, 78, 1, TEXT_COLOR, HEADER_BG);
+    video::put_str_at(2, 1, " AINUX METUS - TASK MANAGER ", TEXT_COLOR, ACCENT_COLOR);
+    video::put_str_at(30, 1, "|  Advanced System Monitor  |", TEXT_COLOR, HEADER_BG);
     
     // Uptime / Global Stats
     let ticks = crate::process::scheduler::get_ticks();
     let uptime_str = format!("UPTIME: {}s", ticks / 100);
-    video::put_str_at(60, 0, &uptime_str, TEXT_COLOR, HEADER_BG);
+    video::put_str_at(60, 1, &uptime_str, TEXT_COLOR, HEADER_BG);
 }
 
 fn draw_table_header() {
-    let y = 2;
-    video::draw_rect_grid(0, y, 80, 1, 0x00AAAAAA, 0x00333333);
+    let y = 3;
+    video::draw_rect_grid(1, y, 78, 1, 0x00AAAAAA, 0x00333333);
     video::put_str_at(2,  y, "PID", 0x00FFFF00, 0x00333333);
-    video::put_str_at(8,  y, "STATE", 0x00FFFF00, 0x00333333);
-    video::put_str_at(18, y, "PAGES", 0x00FFFF00, 0x00333333);
-    video::put_str_at(28, y, "MEM (KB)", 0x00FFFF00, 0x00333333);
-    video::put_str_at(40, y, "SYSCALLS", 0x00FFFF00, 0x00333333);
-    video::put_str_at(52, y, "CPU %", 0x00FFFF00, 0x00333333);
+    video::put_str_at(7,  y, "STATE", 0x00FFFF00, 0x00333333);
+    video::put_str_at(16, y, "MEM", 0x00FFFF00, 0x00333333);
+    video::put_str_at(26, y, "SYSCALLS", 0x00FFFF00, 0x00333333);
+    video::put_str_at(36, y, "CPU %", 0x00FFFF00, 0x00333333);
+    video::put_str_at(44, y, "CPU BAR", 0x00FFFF00, 0x00333333);
     video::put_str_at(62, y, "SIGNALS", 0x00FFFF00, 0x00333333);
 }
 
@@ -113,22 +114,34 @@ fn draw_task_row(y: usize, task: &crate::process::task::Task, cpu: u32) {
     };
 
     let mem_kb = task.page_count * 4;
+    let mem_str = if mem_kb > 1024 {
+        format!("{}.{} MB", mem_kb / 1024, (mem_kb % 1024) / 102)
+    } else {
+        format!("{} KB", mem_kb)
+    };
+
     let color = if task.state == TaskState::Running { 0x0000FF00 } else { TEXT_COLOR };
 
-    video::put_str_at(2,  y, &format!("{}", task.id), color, BG_COLOR);
-    video::put_str_at(8,  y, state_str, color, BG_COLOR);
-    video::put_str_at(18, y, &format!("{}", task.page_count), color, BG_COLOR);
-    video::put_str_at(28, y, &format!("{} KB", mem_kb), color, BG_COLOR);
-    video::put_str_at(40, y, &format!("{}", task.syscall_count), color, BG_COLOR);
+    video::put_str_at(2,  y, &format!("{:<4}", task.id), color, BG_COLOR);
+    video::put_str_at(7,  y, &format!("{:<8}", state_str), color, BG_COLOR);
+    video::put_str_at(16, y, &format!("{:<8}", mem_str), color, BG_COLOR);
+    video::put_str_at(26, y, &format!("{:<8}", task.syscall_count), color, BG_COLOR);
     
     // CPU Graph-ish
     let cpu_str = format!("{:>3}%", cpu);
-    video::put_str_at(52, y, &cpu_str, if cpu > 50 { 0x00FF0000 } else { color }, BG_COLOR);
+    video::put_str_at(36, y, &cpu_str, if cpu > 50 { 0x00FF0000 } else { color }, BG_COLOR);
+    
+    // CPU Bar (15 chars wide)
+    let bar_len = (cpu * 15 / 100).min(15) as usize;
+    let mut bar_str = String::new();
+    for _ in 0..bar_len { bar_str.push('|'); }
+    for _ in bar_len..15 { bar_str.push(' '); }
+    video::put_str_at(44, y, &format!("[{}]", bar_str), if cpu > 75 { 0x00FF0000 } else if cpu > 25 { 0x00FFFF00 } else { 0x0000FF00 }, BG_COLOR);
     
     video::put_str_at(62, y, &format!("{:#010x}", task.signals), color, BG_COLOR);
 }
 
 fn draw_footer() {
-    video::draw_rect_grid(0, 24, 80, 1, TEXT_COLOR, 0x00444444);
-    video::put_str_at(2, 24, "[Q] Exit  [K] Kill  [M] Metering Details", TEXT_COLOR, 0x00444444);
+    video::draw_rect_grid(1, 23, 78, 1, TEXT_COLOR, 0x00444444);
+    video::put_str_at(2, 23, " [Q] Exit  |  [K] Kill  |  [M] Metering Details ", TEXT_COLOR, 0x00444444);
 }

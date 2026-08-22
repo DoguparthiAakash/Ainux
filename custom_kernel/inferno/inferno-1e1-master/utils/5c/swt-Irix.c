@@ -1,1 +1,0 @@
-#include "swt-posix.c"

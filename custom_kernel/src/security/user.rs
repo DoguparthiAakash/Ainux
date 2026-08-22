@@ -15,8 +15,16 @@ pub struct User {
     pub permissions: u32, // Bitmask
 }
 
+#[derive(Clone, Debug)]
+pub struct Group {
+    pub gid: u32,
+    pub name: String,
+    pub members: Vec<u32>, // UIDs of members
+}
+
 pub struct UserManager {
     users: Vec<User>,
+    groups: Vec<Group>,
     current_uid: u32, // Per-Process/Thread? For now, global session
 }
 
@@ -24,6 +32,7 @@ impl UserManager {
     pub fn new() -> Self {
         let mut um = Self {
             users: Vec::new(),
+            groups: Vec::new(),
             current_uid: 0, // Default to root/admin
         };
         // Default Sovereign User
@@ -71,6 +80,56 @@ impl UserManager {
         true
     }
 
+    pub fn delete_user(&mut self, username: &str) -> bool {
+        if let Some(pos) = self.users.iter().position(|u| u.username == username) {
+            // Cannot delete root
+            if self.users[pos].uid == 0 {
+                return false;
+            }
+            let uid = self.users[pos].uid;
+            self.users.remove(pos);
+            
+            // Remove from groups
+            for g in &mut self.groups {
+                g.members.retain(|&m| m != uid);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn create_group(&mut self, group_name: &str) -> bool {
+        for g in &self.groups {
+            if g.name == group_name { return false; }
+        }
+        
+        let new_gid = self.groups.len() as u32;
+        self.groups.push(Group {
+            gid: new_gid,
+            name: group_name.to_string(),
+            members: Vec::new(),
+        });
+        true
+    }
+
+    pub fn add_user_to_group(&mut self, username: &str, group_name: &str) -> bool {
+        let uid = match self.get_uid_by_name(username) {
+            Some(id) => id,
+            None => return false,
+        };
+        
+        for g in &mut self.groups {
+            if g.name == group_name {
+                if !g.members.contains(&uid) {
+                    g.members.push(uid);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn update_password(&mut self, user: &str, new_pass: &str) -> bool {
         for u in &mut self.users {
             if u.username == user {
@@ -79,5 +138,23 @@ impl UserManager {
             }
         }
         false
+    }
+
+    pub fn get_uid_by_name(&self, username: &str) -> Option<u32> {
+        for u in &self.users {
+            if u.username == username {
+                return Some(u.uid);
+            }
+        }
+        None
+    }
+
+    pub fn get_user_by_name(&self, username: &str) -> Option<User> {
+        for u in &self.users {
+            if u.username == username {
+                return Some(u.clone());
+            }
+        }
+        None
     }
 }

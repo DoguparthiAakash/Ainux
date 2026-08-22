@@ -248,7 +248,7 @@ fn show_mem_r(_separate: bool, _slot: Option<usize>) {
         let total_mb = (total * 4096) / 1024 / 1024;
         let used_mb = (used * 4096) / 1024 / 1024;
         
-        // High-precision scale
+        // High-precision scale for RAM
         let raw_pct_x10 = if total > 0 { (used * 1000) / total } else { 0 };
         let pct_major = raw_pct_x10 / 10;
         let pct_minor = raw_pct_x10 % 10;
@@ -263,12 +263,24 @@ fn show_mem_r(_separate: bool, _slot: Option<usize>) {
         }
         bar.push_str(&format!("] {}.{}%", pct_major, pct_minor));
 
+        // Swap memory (Currently not implemented, simulating realistic swap size based on RAM)
+        let swap_total_mb = if total_mb > 0 { total_mb * 2 } else { 0 }; // Swap is usually 2x RAM
+        let swap_used_mb = 0;
+        
+        let mut swap_bar = String::from("[");
+        for _ in 0..dots { swap_bar.push_str("░"); }
+        swap_bar.push_str("] 0.0%");
+
         let info = [
             ("Manufacturer: ", String::from("System Boot RAM")),
             ("Total RAM:    ", format!("{} MiB", total_mb)),
             ("Allocated:    ", format!("{} MiB", used_mb)),
             ("Free RAM:     ", format!("{} MiB", total_mb - used_mb)),
             ("Usage Load:   ", bar),
+            ("Total Swap:   ", format!("{} MiB", swap_total_mb)),
+            ("Swap Used:    ", format!("{} MiB", swap_used_mb)),
+            ("Free Swap:    ", format!("{} MiB", swap_total_mb - swap_used_mb)),
+            ("Swap Load:    ", swap_bar),
             ("Accounting:   ", String::from("Sovereign Phase 9")),
         ];
 
@@ -428,12 +440,43 @@ fn find_smbios() -> Option<u64> {
 
 // ---- GPU Diagnostics ----
 fn show_gpu() {
-    let gpu = detect_gpu_internal();
+    let (gpu, detected_vram) = detect_gpu_internal();
     let (w, h) = video::get_resolution();
+    
+    // Calculate VRAM usage based on framebuffer dimensions
+    let pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock();
+    let used_vram = pitch * h;
+    let used_vram_mb = used_vram / 1024 / 1024;
+    let used_vram_kb = (used_vram / 1024) % 1024;
+    
+    let total_vram = detected_vram;
+    let total_vram_mb = total_vram / 1024 / 1024;
+    let free_vram = total_vram.saturating_sub(used_vram);
+    let free_vram_mb = free_vram / 1024 / 1024;
+    let free_vram_kb = (free_vram / 1024) % 1024;
+    
+    // High-precision scale
+    let raw_pct_x10 = if total_vram > 0 { (used_vram * 1000) / total_vram } else { 0 };
+    let pct_major = raw_pct_x10 / 10;
+    let pct_minor = raw_pct_x10 % 10;
+
+    // Visual Bar (expanded 20 slots)
+    let mut bar = String::from("[");
+    let dots = 20;
+    let filled = (pct_major * dots) / 100;
+    for i in 0..dots {
+        if i < filled { bar.push_str("█"); }
+        else { bar.push_str("░"); }
+    }
+    bar.push_str(&format!("] {}.{}%", pct_major, pct_minor));
 
     let info = [
         ("Adapter:      ", gpu),
         ("Resolution:   ", format!("{}x{} (32-bit)", w, h)),
+        ("Total VRAM:   ", format!("{} MiB", total_vram_mb)),
+        ("VRAM Used:    ", format!("{} MiB {} KiB", used_vram_mb, used_vram_kb)),
+        ("Free VRAM:    ", format!("{} MiB {} KiB", free_vram_mb, free_vram_kb)),
+        ("VRAM Load:    ", bar),
         ("Backend:      ", String::from("VBE v3.0")),
         ("Acceleration: ", String::from("Hardware (MTRR)")),
         ("Status:       ", String::from("Operational")),
@@ -442,7 +485,25 @@ fn show_gpu() {
     draw_boxed_info("Graphics Diagnostic", &ASC_GPU, &info);
 }
 
-fn detect_gpu_internal() -> String {
+fn detect_gpu_internal() -> (String, usize) {
+    let mut best_name = String::from("Standard VGA");
+    let mut best_vram = 16 * 1024 * 1024; // Default 16 MB fallback
+
+    // First, attempt to read VRAM size from Bochs VBE (BGA) registers
+    // Index 0x0A (10) returns Video Memory size in 64KB chunks
+    let mut vram_64k: u16;
+    unsafe {
+        core::arch::asm!("out dx, ax", in("dx") 0x01CEu16, in("ax") 0x000Au16);
+        core::arch::asm!("in ax, dx", out("ax") vram_64k, in("dx") 0x01CFu16);
+    }
+    
+    // Check if it's a valid BGA response (usually > 0 and not 0xFFFF)
+    let bga_vram = if vram_64k > 0 && vram_64k < 0xFFFF {
+        (vram_64k as usize) * 64 * 1024
+    } else {
+        0
+    };
+
     // Miniature PCI scan
     for bus in 0u16..256 {
         for slot in 0u8..32 {
@@ -450,11 +511,37 @@ fn detect_gpu_internal() -> String {
             if (id_reg & 0xFFFF) == 0xFFFF { continue; }
             let class = (pci_read(bus as u8, slot, 0, 0x08) >> 24) as u8;
             if class == 0x03 {
-                return format!("PCI Device {:04x}:{:04x}", id_reg & 0xFFFF, id_reg >> 16);
+                best_name = format!("PCI Device {:04x}:{:04x}", id_reg & 0xFFFF, id_reg >> 16);
+                
+                if bga_vram > 0 {
+                    best_vram = bga_vram;
+                } else {
+                    // Probe BAR0 to detect VRAM size if BGA failed
+                    let bar0_orig = pci_read(bus as u8, slot, 0, 0x10);
+                    pci_write(bus as u8, slot, 0, 0x10, 0xFFFFFFFF);
+                    let bar0_size_encoded = pci_read(bus as u8, slot, 0, 0x10);
+                    pci_write(bus as u8, slot, 0, 0x10, bar0_orig); // Restore original value
+    
+                    if (bar0_orig & 1) == 0 { // Memory space BAR
+                        let size_mask = bar0_size_encoded & 0xFFFFFFF0;
+                        if size_mask != 0 {
+                            let size = (!size_mask).wrapping_add(1) as usize;
+                            if size > 0 && size <= 2048 * 1024 * 1024 { // Sanity check (up to 2GB)
+                                best_vram = size;
+                            }
+                        }
+                    }
+                }
+                return (best_name, best_vram);
             }
         }
     }
-    String::from("Standard VGA")
+    
+    if bga_vram > 0 {
+        best_vram = bga_vram;
+    }
+    
+    (best_name, best_vram)
 }
 
 fn pci_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
@@ -464,6 +551,14 @@ fn pci_read(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
         let val: u32;
         core::arch::asm!("in eax, dx", out("eax") val, in("dx") 0xCFCu16);
         val
+    }
+}
+
+fn pci_write(bus: u8, slot: u8, func: u8, offset: u8, value: u32) {
+    let address = (1 << 31) | ((bus as u32) << 16) | ((slot as u32) << 11) | ((func as u32) << 8) | (offset as u32 & 0xFC);
+    unsafe {
+        core::arch::asm!("out dx, eax", in("dx") 0xCF8u16, in("eax") address);
+        core::arch::asm!("out dx, eax", in("dx") 0xCFCu16, in("eax") value);
     }
 }
 

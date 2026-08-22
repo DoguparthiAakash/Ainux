@@ -52,10 +52,17 @@ const char* pci_get_device_name(uint16_t vendor_id, uint16_t device_id) {
         switch (device_id) {
             case 0x1237: return "440FX Host Bridge";
             case 0x7000: return "PIIX3 ISA Bridge";
-            case 0x7010: return "PIIX3 IDE Interface"; // If visible
+            case 0x7010: return "PIIX3 IDE Interface";
             case 0x100E: return "E1000 Ethernet";
             case 0x7113: return "PIIX4 Power Management";
             case 0x29C0: return "Q35 Host Bridge";
+            case 0x0166: return "Ivy Bridge Graphics Controller";
+            case 0x0412: return "Haswell Integrated Graphics";
+            case 0x1912: return "Skylake Integrated Graphics";
+            case 0x5912: return "Kaby Lake Integrated Graphics";
+            case 0x3E92: return "Coffee Lake Integrated Graphics";
+            case 0x9BC5: return "Comet Lake Integrated Graphics";
+            case 0x4692: return "Alder Lake-S GT1 Graphics";
             default: return "Intel Device";
         }
     } else if (vendor_id == 0x1234) {

@@ -1,6 +1,0 @@
-# Generic x86 BSP
-
-link
-	devfloppy		dma pci
-	devata		dma pci
-

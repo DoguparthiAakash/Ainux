@@ -1,4 +1,0 @@
-load tk;
-tk taskbar 'mdb' > /dev/null;
-echo ' ';
-mdb /n/rdbg/mem;

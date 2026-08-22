@@ -1,85 +1,121 @@
-// =============================================================================
-// Ainux Interrupt Descriptor Table (IDT) — Safe & Diagnostic
-// =============================================================================
-
 use core::arch::{asm, naked_asm};
 use core::mem::size_of;
 
-// IDT Entry Structure
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct IdtEntry {
     offset_low: u16,
     selector: u16,
     ist: u8,
-    types_attr: u8,
+    flags: u8,
     offset_mid: u16,
     offset_high: u32,
-    zero: u32,
+    reserved: u32,
 }
 
 impl IdtEntry {
-    pub fn new(offset: u64, selector: u16, types_attr: u8) -> Self {
+    fn missing() -> Self {
         Self {
-            offset_low: offset as u16,
-            selector,
-            ist: 0,
-            types_attr,
-            offset_mid: (offset >> 16) as u16,
-            offset_high: (offset >> 32) as u32,
-            zero: 0,
+            offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0
         }
     }
 
-    pub fn new_ist(offset: u64, selector: u16, types_attr: u8, ist: u8) -> Self {
-        let mut entry = Self::new(offset, selector, types_attr);
-        entry.ist = ist & 0x07;
-        entry
+    fn new(handler: u64, selector: u16, flags: u8) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector,
+            ist: 0,
+            flags,
+            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+            reserved: 0,
+        }
+    }
+
+    /// Create an IDT entry with a specific IST index (1-7)
+    fn new_with_ist(handler: u64, selector: u16, flags: u8, ist_index: u8) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector,
+            ist: ist_index & 0x7,
+            flags,
+            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFFFFFF) as u32,
+            reserved: 0,
+        }
     }
 }
-
-#[repr(C, packed)]
-pub struct IdtPointer {
-    limit: u16,
-    base: u64,
-}
-
-static mut IDT: Idt = Idt {
-    entries: [IdtEntry {
-        offset_low: 0,
-        selector: 0,
-        ist: 0,
-        types_attr: 0,
-        offset_mid: 0,
-        offset_high: 0,
-        zero: 0,
-    }; 256],
-};
 
 #[repr(C, align(16))]
 struct Idt {
     entries: [IdtEntry; 256],
 }
 
+#[repr(C, packed)]
+struct IdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+static mut IDT: Idt = Idt {
+    entries: [IdtEntry { offset_low: 0, selector: 0, ist: 0, flags: 0, offset_mid: 0, offset_high: 0, reserved: 0 }; 256]
+};
+
 pub fn init() {
     unsafe {
-        // Exceptions (0-31)
-        IDT.entries[0] = IdtEntry::new(exc_divide_error as u64, 0x08, 0x8E);
-        IDT.entries[3] = IdtEntry::new(exc_breakpoint as u64, 0x08, 0x8E);
-        IDT.entries[6] = IdtEntry::new(exc_invalid_opcode as u64, 0x08, 0x8E);
-        IDT.entries[8] = IdtEntry::new_ist(exc_double_fault as u64, 0x08, 0x8E, 1);
-        IDT.entries[13] = IdtEntry::new(exc_gpf as u64, 0x08, 0x8E);
-        IDT.entries[14] = IdtEntry::new(exc_page_fault as u64, 0x08, 0x8E);
+        // Divide-by-Zero (INT0) - No Error Code
+        let div_handler = divide_error_handler as u64;
+        IDT.entries[0] = IdtEntry::new(div_handler, 0x08, 0x8E);
 
-        // IRQs (32-47)
-        IDT.entries[32] = IdtEntry::new(irq_timer as u64, 0x08, 0x8E);
-        IDT.entries[33] = IdtEntry::new(irq_keyboard as u64, 0x08, 0x8E);
-        IDT.entries[44] = IdtEntry::new(irq_mouse as u64, 0x08, 0x8E);
-        IDT.entries[43] = IdtEntry::new(irq_net as u64, 0x08, 0x8E);
+        // Breakpoint (INT3) - No Error Code
+        let bp_handler = breakpoint_handler as u64;
+        IDT.entries[3] = IdtEntry::new(bp_handler, 0x08, 0x8E);
 
-        // Stub remaining IRQs
-        for i in 34..43 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
-        for i in 45..48 { IDT.entries[i] = IdtEntry::new(irq_stub as u64, 0x08, 0x8E); }
+        // Invalid Opcode (INT6) - No Error Code
+        let ud_handler = invalid_opcode_handler as u64;
+        IDT.entries[6] = IdtEntry::new(ud_handler, 0x08, 0x8E);
+
+        // Double Fault (INT8) - Has Error Code, uses IST1 for fault isolation
+        let df_handler = double_fault_handler as u64;
+        IDT.entries[8] = IdtEntry::new_with_ist(df_handler, 0x08, 0x8E, 1);
+
+        // General Protection Fault (INT13) - Has Error Code, uses IST2
+        let gp_handler = gp_fault_handler as u64;
+        IDT.entries[13] = IdtEntry::new_with_ist(gp_handler, 0x08, 0x8E, 2);
+
+        // Page Fault (INT14) - Has Error Code, uses IST2 for fault isolation from user mode
+        let pf_handler = page_fault_handler as u64;
+        IDT.entries[14] = IdtEntry::new_with_ist(pf_handler, 0x08, 0x8E, 2);
+        
+        // IRQ0: Timer (32)
+        let timer_handler = timer_handler_addr();
+        IDT.entries[32] = IdtEntry::new(timer_handler, 0x08, 0x8E);
+
+        // IRQ1: Keyboard (32 + 1 = 33)
+        let kb_handler = crate::drivers::keyboard::keyboard_handler_addr();
+        IDT.entries[33] = IdtEntry::new(kb_handler, 0x08, 0x8E);
+
+        // IRQ12: Mouse (44)
+        let mouse_handler = crate::drivers::mouse::mouse_handler_addr();
+        IDT.entries[44] = IdtEntry::new(mouse_handler, 0x08, 0x8E);
+
+        // IRQ11: RTL8139 (32 + 11 = 43)
+        let net_handler = rtl8139_handler_addr();
+        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+
+        // IRQ11: RTL8139 (32 + 11 = 43)
+        let net_handler = rtl8139_handler_addr();
+        IDT.entries[43] = IdtEntry::new(net_handler, 0x08, 0x8E);
+
+        // Fill ALL remaining IRQ vectors (32-47)
+        let stub = irq_stub_handler_addr();
+        for vec in 32..=47 {
+            // Skip vectors with real handlers
+            if vec == 32 || vec == 33 || vec == 43 || vec == 44 {
+                continue;
+            }
+            IDT.entries[vec] = IdtEntry::new(stub, 0x08, 0x8E);
+        }
 
         let idt_ptr = IdtPointer {
             limit: (size_of::<Idt>() - 1) as u16,
@@ -90,101 +126,121 @@ pub fn init() {
     }
 }
 
-// =============================================================================
-// ASSEMBLY STUBS (Conditional swapgs + Register Save)
-// =============================================================================
-
-macro_rules! interrupt_stub {
+// MACRO for Exception with Error Code
+macro_rules! exception_err_handler {
     ($name:ident, $rust_handler:ident) => {
         #[unsafe(naked)]
         extern "C" fn $name() {
-            unsafe {
-                naked_asm!(
-                    "push 0", // Dummy Error Code
-                    "push r15", "push r14", "push r13", "push r12",
-                    "push r11", "push r10", "push r9", "push r8",
-                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
-                    "push rbx",
-
-                    "mov rax, [rsp + 136]", // CS at [rsp + 17*8]
-                    "and rax, 3",
-                    "cmp rax, 3",
-                    "jne 2f",
-                    "swapgs",
-                    "2:",
-
-                    "mov rdi, rsp",
-                    "call {}",
-
-                    "mov rax, [rsp + 136]",
-                    "and rax, 3",
-                    "cmp rax, 3",
-                    "jne 3f",
-                    "swapgs",
-                    "3:",
-
-                    "pop rbx",
-                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
-                    "pop r8", "pop r9", "pop r10", "pop r11",
-                    "pop r12", "pop r13", "pop r14", "pop r15",
-                    "add rsp, 8", // Pop dummy error code
-                    "iretq",
-                    sym $rust_handler
-                );
-            }
+            naked_asm!(
+                "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+                "mov rdi, [rsp + 72]", // Error Code is at RSP + 9*8 = 72
+                "mov rsi, [rsp + 80]", // RIP is at RSP + 72 + 8 = 80
+                "call {}",
+                "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+                "add rsp, 8", // Pop error code
+                "iretq",
+                sym $rust_handler
+            );
         }
-    };
+    }
 }
 
-macro_rules! interrupt_stub_err {
-    ($name:ident, $rust_handler:ident) => {
-        #[unsafe(naked)]
-        extern "C" fn $name() {
-            unsafe {
-                naked_asm!(
-                    // Error code already pushed by CPU
-                    "push r15", "push r14", "push r13", "push r12",
-                    "push r11", "push r10", "push r9", "push r8",
-                    "push rbp", "push rdi", "push rsi", "push rdx", "push rcx", "push rax",
-                    "push rbx",
-
-                    "mov rax, [rsp + 136]",
-                    "and rax, 3",
-                    "cmp rax, 3",
-                    "jne 2f",
-                    "swapgs",
-                    "2:",
-
-                    "mov rdi, rsp",
-                    "call {}",
-
-                    "mov rax, [rsp + 136]",
-                    "and rax, 3",
-                    "cmp rax, 3",
-                    "jne 3f",
-                    "swapgs",
-                    "3:",
-
-                    "pop rbx",
-                    "pop rax", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
-                    "pop r8", "pop r9", "pop r10", "pop r11",
-                    "pop r12", "pop r13", "pop r14", "pop r15",
-                    "add rsp, 8", // Pop real error code
-                    "iretq",
-                    sym $rust_handler
-                );
-            }
-        }
-    };
+#[unsafe(naked)]
+extern "C" fn breakpoint_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "call rust_breakpoint_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "iretq"
+    );
 }
 
-// Common structure for Rust exception handlers to receive
+// -- Exception Handlers (No Error Code) --
+
+#[unsafe(naked)]
+extern "C" fn divide_error_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+        "call rust_divide_error_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "iretq"
+    );
+}
+
+#[unsafe(naked)]
+extern "C" fn invalid_opcode_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "mov rdi, [rsp + 72]", // RIP at RSP + 9*8
+        "call rust_invalid_opcode_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "iretq"
+    );
+}
+
+exception_err_handler!(double_fault_handler, rust_double_fault_handler);
+exception_err_handler!(gp_fault_handler, rust_gp_fault_handler);
+
+#[no_mangle]
+extern "C" fn rust_divide_error_handler(rip: u64) {
+    unsafe {
+        print_serial("DIVIDE BY ZERO at RIP: ");
+        print_hex(rip);
+        print_serial("\n");
+    }
+    loop {}
+}
+
+#[no_mangle]
+extern "C" fn rust_invalid_opcode_handler(rip: u64) {
+    unsafe {
+        print_serial("INVALID OPCODE at RIP: ");
+        print_hex(rip);
+        print_serial("\n");
+    }
+    loop {}
+}
+
+#[no_mangle]
+extern "C" fn rust_breakpoint_handler() {
+    unsafe { print_serial("INT3\n"); }
+}
+
+#[no_mangle]
+extern "C" fn rust_double_fault_handler(_err: u64) {
+    // Running on IST1 stack — safe even with corrupted kernel stack
+    unsafe {
+        print_serial("DOUBLE FAULT (IST1)\n");
+    }
+    loop {}
+}
+
+#[no_mangle]
+extern "C" fn rust_gp_fault_handler(err: u64, rip: u64) {
+    unsafe { 
+        print_serial("GP FAULT at RIP: ");
+        print_hex(rip);
+        print_serial(" Error Code: ");
+        print_hex(err);
+        print_serial("\n");
+    }
+    loop {}
+}
+
 #[repr(C)]
-pub struct InterruptFrame {
-    pub rbx: u64,
-    pub rax: u64, pub rcx: u64, pub rdx: u64, pub rsi: u64, pub rdi: u64, pub rbp: u64,
-    pub r8: u64,  pub r9: u64,  pub r10: u64, pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
-    pub err_code: u64,
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionContext {
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
+    pub err: u64,
     pub rip: u64,
     pub cs: u64,
     pub rflags: u64,
@@ -192,146 +248,59 @@ pub struct InterruptFrame {
     pub ss: u64,
 }
 
-interrupt_stub!(exc_divide_error, rust_exc_divide_error);
-interrupt_stub!(exc_breakpoint, rust_exc_breakpoint);
-interrupt_stub!(exc_invalid_opcode, rust_exc_invalid_opcode);
-interrupt_stub_err!(exc_double_fault, rust_exc_double_fault);
-interrupt_stub_err!(exc_gpf, rust_exc_gpf);
-interrupt_stub_err!(exc_page_fault, rust_exc_page_fault);
-
-interrupt_stub!(irq_timer, rust_irq_timer);
-interrupt_stub!(irq_keyboard, rust_irq_keyboard);
-interrupt_stub!(irq_mouse, rust_irq_mouse);
-interrupt_stub!(irq_net, rust_irq_net);
-interrupt_stub!(irq_stub, rust_irq_stub);
-
-// =============================================================================
-// RUST HANDLERS
-// =============================================================================
-
-#[no_mangle]
-extern "C" fn rust_exc_divide_error(frame: &InterruptFrame) {
-    unsafe {
-        print_serial("\n!!! EXCEPTION: DIVIDE BY ZERO !!!\n");
-        dump_frame(frame);
-        loop { asm!("hlt"); }
-    }
+#[unsafe(naked)]
+extern "C" fn page_fault_handler() {
+    naked_asm!(
+        "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+        "mov rdi, rsp", // Pass the pointer to the saved context
+        "call rust_page_fault_handler",
+        "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+        "add rsp, 8", // pop error code
+        "iretq"
+    );
 }
 
 #[no_mangle]
-extern "C" fn rust_exc_breakpoint(frame: &InterruptFrame) {
-    unsafe {
-        print_serial("\n[Breakpoint] RIP: "); print_hex(frame.rip);
+extern "C" fn rust_page_fault_handler(ctx: *const ExceptionContext) {
+    let cr2: u64;
+    unsafe { 
+        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); 
+        let c = &*ctx;
+        print_serial("PAGE FAULT at CR2=");
+        print_hex(cr2);
+        print_serial(" Err=");
+        print_hex(c.err);
+        print_serial(" RIP=");
+        print_hex(c.rip);
+        print_serial(" RSP=");
+        print_hex(c.rsp);
+        print_serial(" CS="); print_hex(c.cs);
+        print_serial(" SS="); print_hex(c.ss);
+        print_serial(" RFLAGS="); print_hex(c.rflags);
         print_serial("\n");
+        print_serial("RAX="); print_hex(c.rax); print_serial(" RBX=???"); print_serial(" RCX="); print_hex(c.rcx); print_serial(" RDX="); print_hex(c.rdx); print_serial("\n");
+        print_serial("RSI="); print_hex(c.rsi); print_serial(" RDI="); print_hex(c.rdi); print_serial(" R8="); print_hex(c.r8); print_serial(" R9="); print_hex(c.r9); print_serial("\n");
+        print_serial("TSS.rsp0="); print_hex(crate::cpu::gdt::TSS.rsp0);
+        print_serial(" TSS.ist1="); print_hex(crate::cpu::gdt::TSS.ist1);
+        print_serial(" TSS.ist2="); print_hex(crate::cpu::gdt::TSS.ist2);
+        print_serial("\n");
+        // Decode error code bits
+        if c.err & 1 != 0 { print_serial(" [PRESENT]"); }
+        if c.err & 2 != 0 { print_serial(" [WRITE]"); } else { print_serial(" [READ]"); }
+        if c.err & 4 != 0 { print_serial(" [USER]"); } else { print_serial(" [KERNEL]"); }
+        if c.err & 8 != 0 { print_serial(" [RSVD]"); }
+        if c.err & 16 != 0 { print_serial(" [IFETCH]"); }
+        print_serial("\n");
+        // Hang
+        loop {}
     }
-}
-
-#[no_mangle]
-extern "C" fn rust_exc_invalid_opcode(frame: &InterruptFrame) {
-    unsafe {
-        print_serial("\n!!! EXCEPTION: INVALID OPCODE !!!\n");
-        dump_frame(frame);
-        loop { asm!("hlt"); }
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_exc_double_fault(frame: &InterruptFrame) {
-    unsafe {
-        print_serial("\n!!! EXCEPTION: DOUBLE FAULT (IST1) !!!\n");
-        dump_frame(frame);
-        
-        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
-        print_serial("  CR2: "); print_hex(cr2);
-        
-        let cr3: u64; asm!("mov {}, cr3", out(reg) cr3);
-        print_serial("  CR3: "); print_hex(cr3);
-        print_serial("\nCPU HALTED.\n");
-        loop { asm!("hlt"); }
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_exc_gpf(frame: &InterruptFrame) {
-    unsafe {
-        print_serial("\n!!! EXCEPTION: GENERAL PROTECTION FAULT !!!\n");
-        dump_frame(frame);
-        loop { asm!("hlt"); }
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_exc_page_fault(frame: &InterruptFrame) {
-    unsafe {
-        let cr2: u64; asm!("mov {}, cr2", out(reg) cr2);
-        let gs_base: u64;
-        let low: u32; let high: u32;
-        asm!("rdmsr", in("rcx") 0xC0000101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
-        gs_base = ((high as u64) << 32) | (low as u64);
-
-        print_serial("\n!!! EXCEPTION: PAGE FAULT !!!\n");
-        print_serial("  CR2: "); print_hex(cr2);
-        print_serial("  GS_BASE: "); print_hex(gs_base);
-        dump_frame(frame);
-        loop { asm!("hlt"); }
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_irq_timer(_frame: &InterruptFrame) {
-    unsafe {
-        crate::cpu::pic::notify_eoi(0);
-        crate::process::scheduler::tick();
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_irq_keyboard(_frame: &InterruptFrame) {
-    unsafe {
-        crate::drivers::keyboard::rust_keyboard_handler();
-        crate::cpu::pic::notify_eoi(1);
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_irq_mouse(_frame: &InterruptFrame) {
-    unsafe {
-        crate::drivers::mouse::rust_mouse_handler();
-        crate::cpu::pic::notify_eoi(12);
-    }
-}
-
-#[no_mangle]
-extern "C" fn rust_irq_net(_frame: &InterruptFrame) {
-    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
-    crate::net::dispatch_packets();
-    unsafe { crate::cpu::pic::notify_eoi(11); }
-}
-
-#[no_mangle]
-extern "C" fn rust_irq_stub(_frame: &InterruptFrame) {
-    unsafe { crate::cpu::pic::notify_eoi(0); }
-}
-
-// =============================================================================
-// UTILITIES
-// =============================================================================
-
-unsafe fn dump_frame(f: &InterruptFrame) {
-    print_serial("  RIP: "); print_hex(f.rip);
-    print_serial("  CS: "); print_hex(f.cs);
-    print_serial("  ERR: "); print_hex(f.err_code);
-    print_serial("\n  RSP: "); print_hex(f.rsp);
-    print_serial("  SS: "); print_hex(f.ss);
-    print_serial("\n  RAX: "); print_hex(f.rax);
-    print_serial(" RBX: "); print_hex(f.rbx);
-    print_serial("\n");
 }
 
 pub unsafe fn print_hex(mut n: u64) {
     let hex = b"0123456789ABCDEF";
-    let mut buf = [0u8; 18];
-    buf[0] = b'0'; buf[1] = b'x';
+    let mut buf = [0u8; 18]; // 0x + 16 digits
+    buf[0] = b'0';
+    buf[1] = b'x';
     for i in 0..16 {
         buf[17 - i] = hex[(n & 0xF) as usize];
         n >>= 4;
@@ -341,8 +310,139 @@ pub unsafe fn print_hex(mut n: u64) {
     }
 }
 
-pub unsafe fn print_serial(s: &str) {
-    for b in s.bytes() {
+#[unsafe(naked)]
+pub unsafe extern "C" fn timer_handler_wrapper() {
+    core::arch::naked_asm!(
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        
+        // Pass a pointer to the saved registers as the first argument (rdi)
+        "mov rdi, rsp",
+        "call rust_timer_handler",
+        
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        
+        "iretq"
+    );
+}
+
+#[no_mangle]
+extern "C" fn debug_timer_stack(rsp: *const u64) {
+    unsafe {
+        let cs = *rsp.add(1);
+        if cs != 0x23 {
+            return; // Only care about User Mode
+        }
+        
+        let rip = *rsp;
+        let rflags = *rsp.add(2);
+        let rsp_val = *rsp.add(3);
+        let ss = *rsp.add(4);
+        
+        crate::cpu::idt::print_serial("IRETQ STACK (RET TO USER):\nRIP: ");
+        crate::cpu::idt::print_hex(rip);
+        crate::cpu::idt::print_serial("\nCS: ");
+        crate::cpu::idt::print_hex(cs);
+        crate::cpu::idt::print_serial("\nRFLAGS: ");
+        crate::cpu::idt::print_hex(rflags);
+        crate::cpu::idt::print_serial("\nRSP: ");
+        crate::cpu::idt::print_hex(rsp_val);
+        crate::cpu::idt::print_serial("\nSS: ");
+        crate::cpu::idt::print_hex(ss);
+        crate::cpu::idt::print_serial("\n");
+        
+        // Let's also check if SS is a valid user descriptor.
+        if (cs & 3) == 3 && ss != 0x1B {
+            crate::cpu::idt::print_serial("CRITICAL: SS is NOT 0x1B!\n");
+        }
+    }
+}
+
+
+fn timer_handler_addr() -> u64 {
+    timer_handler_wrapper as u64
+}
+
+#[no_mangle]
+extern "C" fn rust_timer_handler() {
+    unsafe {
+        crate::cpu::pic::notify_eoi(0);
+        crate::process::scheduler::tick();
+    }
+}
+
+unsafe fn print_serial(s: &str) {
+     for b in s.bytes() {
         asm!("out dx, al", in("dx") 0x3F8, in("al") b, options(nomem, nostack, preserves_flags));
+     }
+}
+
+// Stub handler for unhandled IRQs — just sends EOI
+#[unsafe(naked)]
+extern "C" fn irq_stub_handler_wrapper() {
+    naked_asm!(
+        "push rax",
+        "call rust_irq_stub_handler",
+        "pop rax",
+        "iretq"
+    );
+}
+
+fn irq_stub_handler_addr() -> u64 {
+    irq_stub_handler_wrapper as u64
+}
+
+#[unsafe(naked)]
+extern "C" fn rtl8139_handler() {
+    unsafe {
+        naked_asm!(
+            "push rax", "push rcx", "push rdx", "push rsi", "push rdi", "push r8", "push r9", "push r10", "push r11",
+            "call rust_rtl8139_handler",
+            "pop r11", "pop r10", "pop r9", "pop r8", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+            "iretq"
+        );
+    }
+}
+
+#[no_mangle]
+extern "C" fn rust_rtl8139_handler() {
+    crate::drivers::net::rtl8139::RTL8139::handle_interrupt();
+    crate::net::dispatch_packets();
+    unsafe { crate::cpu::pic::notify_eoi(11); } // IRQ11
+}
+
+pub fn rtl8139_handler_addr() -> u64 { rtl8139_handler as u64 }
+
+#[no_mangle]
+extern "C" fn rust_irq_stub_handler() {
+    unsafe {
+        crate::cpu::pic::notify_eoi(0);
     }
 }

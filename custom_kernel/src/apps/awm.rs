@@ -1,44 +1,50 @@
-
-use alloc::vec::Vec;
 use crate::gui::compositor::Compositor;
 use crate::gui::window::Window;
-use crate::gui::graphics::Graphics;
+use crate::drivers::keyboard;
+use crate::drivers::video;
 
 pub fn cmd_awm(_args: &[&str]) {
     // 1. Initialize Compositor
     Compositor::init();
+    
+    // 2. Clear Screen
+    video::clear();
+    
+    // 3. Create Default Windows
+    let screen_w = *video::FRAMEBUFFER_WIDTH.lock();
+    let screen_h = *video::FRAMEBUFFER_HEIGHT.lock();
 
-    // 2. Create Premium Windows
-    let mut win1 = Window::new(1, 100, 100, 600, 400, "Ainux System Dashboard");
-    // Draw some mock content for win1
-    let w1 = win1.width - 2;
-    let h1 = win1.height - 35;
-    // Draw a "CPU Usage" bar
-    Graphics::draw_text(&mut win1.content, w1, 20, 20, "CPU Usage: [||||||||||      ] 50%", 0xFF9ECE6A);
-    Graphics::draw_text(&mut win1.content, w1, 20, 40, "Memory:    [||||||          ] 30%", 0xFF7AA2F7);
-    Graphics::draw_text(&mut win1.content, w1, 20, 80, "Welcome to the Silk Titanium Desktop.", 0xFFC0CAF5);
+    // Shell Window
+    let mut shell_win = Window::new(1, 50, 50, 400, 300, "System Shell");
+    shell_win.fill_content(0xFF1E1E1E); // Dark Grey
+    Compositor::add_window(shell_win);
 
-    let mut win2 = Window::new(2, 450, 150, 400, 300, "Terminal");
-    let w2 = win2.width - 2;
-    Graphics::draw_text(&mut win2.content, w2, 10, 10, "ainux@kernel:~$ _", 0xFFFFFFFF);
+    // Metrics Window
+    let mut metrics_win = Window::new(2, 500, 100, 250, 150, "Kernel Metrics");
+    metrics_win.fill_content(0xFF2D2D2D);
+    Compositor::add_window(metrics_win);
 
-    let mut win3 = Window::new(3, 200, 300, 300, 200, "Network");
-    let w3 = win3.width - 2;
-    Graphics::draw_text(&mut win3.content, w3, 10, 10, "Interface: eth0", 0xFF7DCFFF);
-    Graphics::draw_text(&mut win3.content, w3, 10, 30, "Status: Connected", 0xFF9ECE6A);
+    video::put_str("awm: Desktop Environment Started. Press ESC to exit.\n");
 
-    Compositor::add_window(win1);
-    Compositor::add_window(win2);
-    Compositor::add_window(win3);
-
-    // 3. Render Loop
+    // 4. Main Event Loop
     loop {
         // Redraw Desktop
         Compositor::render();
+        
+        // Handle Global Keys
+        if let Some(c) = keyboard::pop_char() {
+             if c == '\x1B' { // ESC
+                 break;
+             }
+             // Routing to active window would happen here
+        }
 
-        // 4. Update Loop Delay (approx 60 FPS)
-        for _ in 0..500_000 {
+        // Wait for next frame (cap at ~60fps)
+        for _ in 0..1_000_000 {
              core::hint::spin_loop();
         }
     }
+
+    video::clear();
+    video::put_str("awm: Desktop Environment Exited.\n");
 }

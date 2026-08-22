@@ -1,4 +1,0 @@
-$MPEG		your_mpeg_server
-$SIGNER		invece
-$FILESERVER	invece
-$MAILSERVER	your_mailserver_for_mux_pop3_client

@@ -2,6 +2,7 @@ use core::arch::{asm, naked_asm};
 use crate::cpu::pic::notify_eoi;
 use spin::Mutex;
 use core::option::Option;
+use crate::klog;
 
 const BUFFER_SIZE: usize = 128;
 
@@ -27,6 +28,8 @@ impl RingBuffer {
             self.data[self.write_pos] = c;
             self.write_pos = (self.write_pos + 1) % BUFFER_SIZE;
             self.count += 1;
+            // Trace pushed characters for debugging UI stalls
+            klog!("KBD+{}\n", c as u32);
         }
     }
 
@@ -35,6 +38,8 @@ impl RingBuffer {
             let c = self.data[self.read_pos];
             self.read_pos = (self.read_pos + 1) % BUFFER_SIZE;
             self.count -= 1;
+            // Trace popped characters for debugging UI stalls
+            klog!("KBD-{}\n", c as u32);
             Some(c)
         } else {
             None
@@ -83,12 +88,31 @@ pub const KEY_SCROLL: char = '\u{E011}';
 pub const KEY_PAUSE: char = '\u{E012}';
 pub const KEY_MENU: char = '\u{E013}';
 
+unsafe fn wait_write_timeout() -> bool {
+    let mut timeout = 100_000u32;
+    while (inb(0x64) & 2) != 0 {
+        timeout -= 1;
+        if timeout == 0 { return false; }
+    }
+    true
+}
+
+unsafe fn wait_read_timeout() -> bool {
+    let mut timeout = 100_000u32;
+    while (inb(0x64) & 1) == 0 {
+        timeout -= 1;
+        if timeout == 0 { return false; }
+    }
+    true
+}
+
+// Keep non-timeout versions for use from IRQ handler (they should be fast)
 unsafe fn wait_write() {
-    while (inb(0x64) & 2) != 0 {}
+    wait_write_timeout();
 }
 
 unsafe fn wait_read() {
-    while (inb(0x64) & 1) == 0 {}
+    wait_read_timeout();
 }
 
 unsafe fn outb(port: u16, val: u8) {
@@ -103,16 +127,23 @@ unsafe fn inb(port: u16) -> u8 {
 
 pub fn init() {
     unsafe {
-        // Explicitly ENABLE scanning for the keyboard
-        // Wait for buffer to be empty
-        wait_write();
-        outb(0x60, 0xF4); // Enable Scanning
-        
-        // Wait for acknowledgment (0xFA) to clear the buffer
-        // Note: bit 0 of 0x64 must be 1 for a successful read.
-        wait_read();
-        let _ack = inb(0x60); 
-        
+        // Flush any stale bytes from the PS/2 output buffer
+        let mut flush = 0;
+        while (inb(0x64) & 1) != 0 && flush < 16 {
+            let _ = inb(0x60);
+            flush += 1;
+        }
+
+        // Send 0xF4 (Enable Scanning) with write-buffer timeout
+        if wait_write_timeout() {
+            outb(0x60, 0xF4);
+            // Wait for 0xFA ACK — but don't hang if VirtualBox doesn't send it
+            if wait_read_timeout() {
+                let _ack = inb(0x60);
+            }
+        }
+
+        // Always unmask IRQ1 regardless of ACK result
         crate::cpu::pic::unmask_irq(1);
     }
 }
@@ -125,6 +156,19 @@ pub fn pop_char() -> Option<char> {
         core::arch::asm!("sti", options(nomem, nostack));
     }
     result
+}
+
+pub fn has_char() -> bool {
+    KEY_BUFFER.lock().count > 0
+}
+
+pub fn get_char() -> char {
+    loop {
+        if let Some(c) = pop_char() {
+            return c;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 // Helpers for apps
@@ -164,7 +208,7 @@ extern "C" fn keyboard_handler() {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_keyboard_handler() {
+extern "C" fn rust_keyboard_handler() {
     unsafe {
         let status = inb(0x64);
         if (status & 1) == 0 {

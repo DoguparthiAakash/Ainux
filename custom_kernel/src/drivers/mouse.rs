@@ -75,8 +75,10 @@ fn update_position(dx: i8, dy: i8, buttons: u8) {
         MOUSE_Y -= dy as isize; 
         MOUSE_BUTTONS = buttons;
 
-        let w = (*video::FRAMEBUFFER_WIDTH.lock() as isize).max(80 * 8);
-        let h = (*video::FRAMEBUFFER_HEIGHT.lock() as isize).max(25 * 12);
+        let w = if let Some(fw) = video::FRAMEBUFFER_WIDTH.try_lock() { *fw as isize } else { 1024 };
+        let h = if let Some(fh) = video::FRAMEBUFFER_HEIGHT.try_lock() { *fh as isize } else { 768 };
+        let w = w.max(80 * 8);
+        let h = h.max(25 * 12);
 
         if MOUSE_X < 0 { MOUSE_X = 0; }
         if MOUSE_Y < 0 { MOUSE_Y = 0; }
@@ -166,7 +168,7 @@ static mut MOUSE_CYCLE: u8 = 0;
 static mut MOUSE_BYTE: [u8; 3] = [0; 3];
 
 #[no_mangle]
-pub extern "C" fn rust_mouse_handler() {
+extern "C" fn rust_mouse_handler() {
     unsafe {
         let byte = inb(0x60);
         
@@ -196,4 +198,4 @@ pub extern "C" fn rust_mouse_handler() {
 
         notify_eoi(12);
     }
-}
+}

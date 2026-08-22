@@ -8,6 +8,7 @@ pub mod acpi;
 pub mod apic;
 pub mod smp;
 pub mod cpuid;
+pub mod amd;
 pub mod percpu;
 
 pub fn interrupts_enabled() -> bool {

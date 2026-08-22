@@ -40,7 +40,7 @@ struct TaskSnap {
     priority:    u8,
     syscall_cnt: u64,
     canary_ok:   bool,
-    room_id:     usize,
+    cell_id:     usize,
 }
 
 impl TaskSnap {
@@ -48,7 +48,7 @@ impl TaskSnap {
         Self {
             id: 0, state: TaskState::Free, cpu_ticks: 0,
             total_cycles: 0, page_count: 0, priority: 0,
-            syscall_cnt: 0, canary_ok: true, room_id: 0,
+            syscall_cnt: 0, canary_ok: true, cell_id: 0,
         }
     }
 }
@@ -74,7 +74,7 @@ fn collect_snapshots() -> (usize, [TaskSnap; MAX_TASKS]) {
                     priority:     t.priority,
                     syscall_cnt:  t.syscall_count,
                     canary_ok:    t.canary == crate::process::task::STACK_CANARY_MAGIC,
-                    room_id:      t.room.id,
+                    cell_id:      t.cell.id,
                 };
                 count += 1;
             }
@@ -185,7 +185,7 @@ fn draw_processes(snaps: &[TaskSnap; MAX_TASKS], count: usize, selected: usize) 
     fill(0, 2, W, 1, C_HEADER_BG);
     text( 0, 2, " PID ", C_HEADER_FG, C_HEADER_BG);
     text( 5, 2, " State   ", C_HEADER_FG, C_HEADER_BG);
-    text(14, 2, " Room ", C_HEADER_FG, C_HEADER_BG);
+    text(14, 2, " Cell ", C_HEADER_FG, C_HEADER_BG);
     text(20, 2, " Pri ", C_HEADER_FG, C_HEADER_BG);
     text(25, 2, " CPU Ticks     ", C_HEADER_FG, C_HEADER_BG);
     text(40, 2, " Mem (KB)  ", C_HEADER_FG, C_HEADER_BG);
@@ -230,8 +230,8 @@ fn draw_processes(snaps: &[TaskSnap; MAX_TASKS], count: usize, selected: usize) 
         };
         text(5, y, state_str, state_fg, bg);
 
-        // Room
-        text(14, y, fmt_u64(s.room_id as u64, &mut buf), fg, bg);
+        // Cell
+        text(14, y, fmt_u64(s.cell_id as u64, &mut buf), fg, bg);
 
         // Priority
         text(20, y, fmt_u64(s.priority as u64, &mut buf), fg, bg);

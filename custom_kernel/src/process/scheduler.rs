@@ -1,4 +1,5 @@
 use core::arch::{asm, naked_asm};
+use alloc::sync::Arc;
 use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
@@ -31,10 +32,11 @@ pub fn init() {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         // Initialize Task 0 as the current running kernel task
-        let root_room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
-        let mut task0 = Task::new_free(root_room.clone());
+        let root_cell = crate::process::cell::CELL_MANAGER.lock().cells.first().cloned().expect("No root cell");
+        let mut task0 = Task::new_free(root_cell.clone());
         task0.id = 0;
         task0.state = TaskState::Running;
+        task0.name = alloc::string::String::from("kernel");
         tasks[0] = Some(task0);
         // Task 0 is running, not ready
         clear_ready(0);
@@ -54,7 +56,20 @@ pub fn tick() {
     
     // Account CPU Time (Mature Metering)
     let current_tsc = crate::cpu::cpuid::rdtsc();
+    let current_ticks = get_ticks();
     let mut tasks = TASKS.lock();
+    
+    // Wake up sleeping tasks
+    for i in 1..MAX_TASKS {
+        if let Some(task) = &mut tasks[i] {
+            if task.state == TaskState::Waiting && task.sleep_ticks > 0 && current_ticks >= task.sleep_ticks {
+                task.sleep_ticks = 0;
+                task.state = TaskState::Ready;
+                set_ready(i);
+            }
+        }
+    }
+
     let current_pid = crate::cpu::smp::get_current_pid();
     if let Some(task) = &mut tasks[current_pid] {
         if task.state == TaskState::Running {
@@ -122,44 +137,41 @@ pub fn get_current_pid() -> usize {
     crate::cpu::smp::get_current_pid()
 }
 
-pub fn update_current_task_fuel(consumed: u64) {
-    let pid = get_current_pid();
-    let mut tasks = TASKS.lock();
-    if let Some(task) = &mut tasks[pid] {
-        task.wasm_fuel = task.wasm_fuel.saturating_sub(consumed);
-        task.cpu_time_ticks += consumed / 1000;
-    }
+pub fn get_current_cell_context() -> Arc<crate::process::cell::ExecutionCell> {
+    get_current_cell()
 }
 
-pub fn get_current_room() -> Option<alloc::sync::Arc<crate::process::room::RoomContext>> {
-    let pid = get_current_pid();
+pub fn get_current_cell() -> Arc<crate::process::cell::ExecutionCell> {
     let tasks = TASKS.lock();
-    tasks[pid].as_ref().map(|t| t.room.clone())
+    let current_pid = crate::cpu::smp::get_current_pid();
+    tasks[current_pid].as_ref().expect("No current task").cell.clone()
 }
 
-pub fn spawn_kernel_task(func: u64) -> usize {
+pub fn spawn_kernel_task(func: u64, name: &str) -> usize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                // Root tasks go to Root Room
-                let room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
+                // Root tasks go to Root Cell
+                let cell = crate::process::cell::CELL_MANAGER.lock().cells.first().cloned().expect("No root cell");
 
-                let mut task = Task::new_free(room);
+                let mut task = Task::new_free(cell);
                 task.id = i;
                 task.state = TaskState::Ready;
+                task.name = alloc::string::String::from(name);
+
+                tasks[i] = Some(task);
+                let task_ref = tasks[i].as_mut().unwrap();
 
                 // Setup Stack
-                let stack_top = task.stack.as_ptr() as u64 + 16384;
+                let stack_top = task_ref.stack.as_ptr() as u64 + 16384;
                 let mut sp = stack_top & !0xF;
                 unsafe {
-                    sp -= 8;
-                    *(sp as *mut u64) = kernel_thread_entry as u64; 
+                    sp -= 8; *(sp as *mut u64) = kernel_thread_entry as u64; // ret
                 }
-                task.context.rsp = sp;
-                task.context.r12 = func; 
+                task_ref.context.rsp = sp;
+                task_ref.context.r12 = func;
                 
-                tasks[i] = Some(task);
                 set_ready(i);
                 return i;
             }
@@ -168,25 +180,23 @@ pub fn spawn_kernel_task(func: u64) -> usize {
     })
 }
 
-pub fn spawn(func: extern "C" fn()) {
-    spawn_kernel_task(func as u64);
+pub fn spawn(func: extern "C" fn(), name: &str) {
+    spawn_kernel_task(func as u64, name);
 }
 
+#[unsafe(naked)]
 pub extern "C" fn kernel_thread_entry() {
     unsafe {
-        // Enable Interrupts!
-        core::arch::asm!("sti");
-        
-        // Get function from R12
-        let func: extern "C" fn();
-        core::arch::asm!("mov {}, r12", out(reg) func);
-        
-        // Call it
-        func();
+        core::arch::naked_asm!(
+            "sti",
+            "mov rax, r12",
+            "call rax",
+            "mov rdi, 0",
+            "call {}",
+            "ud2",
+            sym exit_current_task
+        );
     }
-    
-    // Exit
-    exit_current_task(0);
 }
 
 pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
@@ -204,16 +214,17 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
         // 2. Find free slot
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                // Inherit Room
-                let room = if let Some(current) = &tasks[current_pid] {
-                    current.room.clone()
+                // Inherit Cell
+                let cell = if let Some(current) = &tasks[current_pid] {
+                    current.cell.clone()
                 } else {
-                    crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room")
+                    crate::process::cell::CELL_MANAGER.lock().cells.first().cloned().expect("No root cell")
                 };
 
-                let mut task = Task::new_free(room);
+                let mut task = Task::new_free(cell);
                 task.id = i;
                 task.state = TaskState::Ready;
+                task.name = alloc::format!("{}-child", tasks[current_pid].as_ref().unwrap().name);
                 task.cr3 = cr3; // Shared Memory
                 task.caps = caps; // Inherit Caps
                 task.fds = fds; // Clone FDs 
@@ -221,15 +232,15 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
                 task.userspace_stack_top = stack_ptr;
                 
                 // Setup Kernel Stack for Return to User
-                let kstack_top = task.stack.as_ptr() as u64 + 4096;
+                let kstack_top = task.stack.as_ptr() as u64 + 16384;
                 let mut sp = kstack_top & !0xF;
                 unsafe {
                     sp -= 8;
-                    *(sp as *mut u64) = kernel_shim_entry as u64;
+                    *(sp as *mut u64) = kernel_shim_entry as u64; // ret
                 }
                 task.context.rsp = sp;
-                task.context.r12 = entry;   // Shim R12 -> RIP
-                task.context.r13 = stack_ptr; // Shim R13 -> RSP
+                task.context.r12 = entry; // Set r12 so kernel_shim_entry can retrieve it
+                task.context.r13 = stack_ptr; // Set r13 so kernel_shim_entry can retrieve it
                 
                 tasks[i] = Some(task);
                 set_ready(i);
@@ -240,30 +251,46 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
     })
 }
 
-pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
+pub fn spawn_user(rip: u64, rsp: u64, cr3: u64, name: &str) -> usize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                // Assign Root Room by default for user spawn (can be moved later)
-                let root_room = crate::process::room::ROOM_MANAGER.lock().rooms.first().cloned().expect("No root room");
-                let mut task = Task::new_free(root_room);
+                // Assign Root Cell by default for user spawn (can be moved later)
+                let root_cell = crate::process::cell::CELL_MANAGER.lock().cells.first().cloned().expect("No root cell");
+                let mut task = Task::new_free(root_cell);
                 task.id = i;
                 task.state = TaskState::Ready;
+                task.name = alloc::string::String::from(name);
                 task.cr3 = cr3;
                 task.userspace_stack_top = rsp;
+                task.parent_id = Some(crate::process::scheduler::get_current_pid());
                 
-                let kstack_top = task.stack.as_ptr() as u64 + 16384;
+                tasks[i] = Some(task);
+                let task_ref = tasks[i].as_mut().unwrap();
+
+                let kstack_top = task_ref.stack.as_ptr() as u64 + 16384;
                 let mut sp = kstack_top & !0xF;
                 unsafe {
                     sp -= 8;
-                    *(sp as *mut u64) = kernel_shim_entry as u64;
+                    *(sp as *mut u64) = kernel_shim_entry as u64; // ret
                 }
-                task.context.rsp = sp;
-                task.context.r12 = rip;
-                task.context.r13 = rsp;
+                task_ref.context.rsp = sp;
+                task_ref.context.r12 = rip;
+                task_ref.context.r13 = rsp;
                 
-                tasks[i] = Some(task);
+                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                use core::fmt::Write;
+                let _ = write!(serial, "DEBUG spawn_user [PID {}]: task.stack.as_ptr()={:#x}, kstack_top={:#x}, sp={:#x}\n", i, task_ref.stack.as_ptr() as u64, kstack_top, sp);
+                
+                unsafe {
+                    let gdt_ptr = crate::cpu::gdt::GDT.as_ptr() as *const u64;
+                    let desc = *gdt_ptr.add(3);
+                    let _ = write!(serial, "GDT[3] = {:#018x}\n", desc);
+                    let desc4 = *gdt_ptr.add(4);
+                    let _ = write!(serial, "GDT[4] = {:#018x}\n", desc4);
+                }
+
                 set_ready(i);
                 return i;
             }
@@ -273,20 +300,15 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64) -> usize {
 }
 
 #[unsafe(naked)]
-pub unsafe extern "C" fn kernel_shim_entry() {
+pub extern "C" fn kernel_shim_entry() {
     unsafe {
         core::arch::naked_asm!(
-            "mov rdi, r12", // user rip
-            "mov rsi, r13", // user rsp
-            "call enter_userspace_rust",
-            "1: jmp 1b"
+            "mov rdi, r12",
+            "mov rsi, r13",
+            "jmp {}",
+            sym crate::cpu::userspace::enter_userspace
         );
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn enter_userspace_rust(rip: u64, rsp: u64) {
-    crate::cpu::userspace::enter_userspace(rip, rsp);
 }
 
 pub fn schedule() {
@@ -294,90 +316,95 @@ pub fn schedule() {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
 
-        let next_pid = pick_next_task_internal(&mut tasks, current_pid);
-        
-        if let Some(next) = next_pid {
-            if next == current_pid {
-                return;
-            }
-            
-            // Switch
-            let old_pid = current_pid;
-            crate::cpu::smp::set_current_pid(next);
-            let current_tsc = crate::cpu::cpuid::rdtsc();
-
-            // Safety: we know old_pid != next_pid.
-            let tasks_ptr = tasks.as_mut_ptr();
-            let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
-            
-            // Security: Check Stack Canary
-            if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
-                panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
-            }
-            
-            // Account final cycles for old task
-            if old_task.last_tsc != 0 {
-                old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
-            }
-            old_task.last_tsc = 0; // Clear on deschedule
-
-            let next_task = unsafe { (*tasks_ptr.add(next)).as_mut().unwrap() };
-            next_task.state = TaskState::Running;
-            next_task.last_tsc = current_tsc; // Mark start on reschedule
-            clear_ready(next);
-
-            if old_task.state == TaskState::Running {
-                old_task.state = TaskState::Ready;
-                set_ready(old_pid);
-            }
-            
-            // Switch CR3
-            let next_cr3 = next_task.cr3;
-            if next_cr3 != 0 {
-                unsafe {
-                     core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
-                }
-            }
-            
-            // Update TSS RSP0 and per-cpu PRCB
-            let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
-            
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            use core::fmt::Write;
-            if next == 2 { // Only log for the user task to reduce spam
-                let _ = write!(serial, "[Sched] Switching to Task {} (KStack: {:#x})\n", next, kstack_top);
-            }
-
-            unsafe {
-                crate::cpu::gdt::set_kernel_stack(kstack_top);
-                crate::cpu::percpu::set_kernel_stack(kstack_top);
-            }
-            
-            // Maturation: Final pointers for switch
-            let old_task_ptr = &mut old_task.context as *mut Context;
-            let next_task_ptr = &next_task.context as *const Context;
-            
-            drop(tasks); 
-            
-            unsafe {
-                __switch(old_task_ptr, next_task_ptr);
-            }
+        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
+            next
         } else {
-            // IDLE: Drop lock then halt
-            drop(tasks);
-            unsafe {
-                core::arch::asm!("sti; hlt");
-            }
+             if let Some(task) = &tasks[current_pid] {
+                 if task.state == TaskState::Running {
+                     return; // The current task is the only one runnable. Keep running it.
+                 }
+             }
+             // IDLE STRATEGY: Reduce host CPU load
+             crate::cpu::smp::set_current_pid(0);
+             drop(tasks);
+             unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)); }
+             return;
+        };
+        
+        crate::cpu::smp::set_current_pid(next_pid);
+        if next_pid == current_pid {
             return;
         }
+    
+    // Switch
+    let old_pid = current_pid;
+    crate::cpu::smp::set_current_pid(next_pid);
+
+    let current_tsc = crate::cpu::cpuid::rdtsc();
+    
+    // Safety: we know old_pid != next_pid.
+    let tasks_ptr = tasks.as_mut_ptr();
+    let old_task = unsafe { (*tasks_ptr.add(old_pid)).as_mut().unwrap() };
+    
+    // Security: Check Stack Canary
+    if old_task.canary != crate::process::task::STACK_CANARY_MAGIC {
+        panic!("FATAL: Kernel Stack Corruption detected in Task {} (Canary Mismatch)", old_pid);
+    }
+    
+    // Account final cycles for old task
+    if old_task.last_tsc != 0 {
+        old_task.total_cycles += current_tsc.wrapping_sub(old_task.last_tsc);
+    }
+    old_task.last_tsc = 0; // Clear on deschedule
+
+    let next_task = unsafe { (*tasks_ptr.add(next_pid)).as_mut().unwrap() };
+
+    next_task.state = TaskState::Running;
+    next_task.last_tsc = current_tsc; // Mark start on reschedule
+    clear_ready(next_pid);
+
+    if old_task.state == TaskState::Running {
+        old_task.state = TaskState::Ready;
+        set_ready(old_pid);
+    }
+    
+    // Switch CR3
+    let next_cr3 = next_task.cr3;
+    if next_cr3 != 0 {
+        unsafe {
+             core::arch::asm!("mov cr3, {}", in(reg) next_cr3);
+        }
+    } else {
+        unsafe {
+             let kernel_cr3 = crate::mm::vmm::KERNEL_PML4.load(core::sync::atomic::Ordering::Relaxed) as u64;
+             core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+        }
+    }
+    
+    // Update TSS RSP0
+    let kstack_top = next_task.stack.as_ptr() as u64 + next_task.stack.len() as u64;
+    unsafe {
+        crate::cpu::gdt::set_kernel_stack(kstack_top);
+        crate::cpu::syscall::set_syscall_kernel_stack(kstack_top);
+    }
+    
+    // Maturation: Final pointers for switch
+    let old_task_ptr = &mut old_task.context as *mut Context;
+    let next_task_ptr = &next_task.context as *const Context;
+    
+    drop(tasks); 
+    
+    unsafe {
+        __switch(old_task_ptr, next_task_ptr);
+    }
     });
 }
 
 fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize) -> Option<usize> {
-    // 1. Get current Room Strategy
+    // 1. Get current Cell Strategy
     if let Some(task) = &tasks[current] {
-        let room = &task.room;
-        let strategy = room.strategy.lock().clone();
+        let cell = &task.cell;
+        let strategy = cell.strategy.lock().clone();
         if let Some(next) = strategy.pick_next(tasks, current) {
             if let Some(task) = &tasks[next] {
                 if task.state == TaskState::Ready {
@@ -411,8 +438,12 @@ pub fn yield_now() {
 pub unsafe fn set_current_sleep(target_ticks: u64) {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
-        if let Some(task) = &mut tasks[crate::cpu::smp::get_current_pid()] {
+        let current_pid = crate::cpu::smp::get_current_pid();
+        if let Some(task) = &mut tasks[current_pid] {
             task.sleep_ticks = target_ticks;
+            if target_ticks > 0 {
+                task.state = TaskState::Waiting;
+            }
         }
     });
 }
@@ -434,21 +465,42 @@ pub fn process_pipe() -> (isize, isize) {
 }
 
 pub fn process_open(path: &str, flags: u32) -> isize {
-    if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
-        if let Ok(handle) = inode.open(flags) {
-            return crate::cpu::without_interrupts(|| {
-                let mut tasks = TASKS.lock();
-                let current_pid = crate::cpu::smp::get_current_pid();
-                if let Some(task) = &mut tasks[current_pid] {
-                    if let Some(fd) = task.fds.alloc_fd(handle) {
-                        return fd as isize;
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "process_open: path='{}', flags={:#x}\n", path, flags);
+
+    match crate::fs::vfs::resolve_path(path) {
+        Ok(inode) => {
+            match inode.open(flags) {
+                Ok(handle) => {
+                    let fd = crate::cpu::without_interrupts(|| {
+                        let mut tasks = TASKS.lock();
+                        let current_pid = crate::cpu::smp::get_current_pid();
+                        if let Some(task) = &mut tasks[current_pid] {
+                            task.fds.alloc_fd(handle)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(fd) = fd {
+                        let _ = write!(serial, "process_open: '{}' -> fd={}\n", path, fd);
+                        fd as isize
+                    } else {
+                        let _ = write!(serial, "process_open: '{}' -> EMFILE (fd table full)\n", path);
+                        -24 // EMFILE
                     }
                 }
-                -1
-            });
+                Err(e) => {
+                    let _ = write!(serial, "process_open: inode.open('{}') failed: {:?}\n", path, e);
+                    -13 // EACCES
+                }
+            }
+        }
+        Err(e) => {
+            let _ = write!(serial, "process_open: resolve_path('{}') failed: {:?}\n", path, e);
+            -2 // ENOENT
         }
     }
-    -1
 }
 
 pub fn process_mkdir(path: &str) -> isize {
@@ -580,24 +632,60 @@ pub fn exit_current_task(exit_code: isize) {
 }
 
 pub fn wait_pid(pid: usize) -> isize {
+    sys_wait4(pid as isize, 0, 0, 0)
+}
+
+pub fn sys_wait4(target_pid: isize, status_ptr: u64, options: i32, _rusage_ptr: u64) -> isize {
+    let current_pid = crate::cpu::smp::get_current_pid();
     loop {
+        let mut child_found = false;
+        let mut reaped_pid = -1;
+        let mut exit_code = 0;
+        
         let res = crate::cpu::without_interrupts(|| {
             let mut tasks = TASKS.lock();
-            if let Some(child) = &tasks[pid] {
-                if child.state == TaskState::Zombie {
-                    let code = child.exit_code;
-                    tasks[pid] = None; // Reap
-                    return Some(code);
+            for i in 0..MAX_TASKS {
+                if i != current_pid {
+                    if let Some(task) = &tasks[i] {
+                        if task.parent_id == Some(current_pid) {
+                            if target_pid <= 0 || target_pid as usize == i {
+                                child_found = true;
+                                if task.state == TaskState::Zombie {
+                                    reaped_pid = i as isize;
+                                    exit_code = task.exit_code;
+                                    tasks[i] = None;
+                                    return Some((reaped_pid, exit_code));
+                                }
+                            }
+                        }
+                    }
                 }
-            } else {
-                return Some(-1);
             }
-            None
+            
+            if child_found && (options & 1) != 0 {
+                return Some((0, 0)); // WNOHANG
+            }
+            
+            if child_found {
+                if let Some(parent) = &mut tasks[current_pid] {
+                    parent.state = TaskState::Waiting;
+                }
+                clear_ready(current_pid);
+                None // Block
+            } else {
+                Some((-1, 0)) // ECHILD
+            }
         });
         
-        if let Some(code) = res {
-            return code;
+        if let Some((pid, code)) = res {
+            if pid > 0 && status_ptr != 0 && crate::mm::user::validate_user_ptr(status_ptr, 4) {
+                let status_val = ((code & 0xFF) << 8) as u32;
+                unsafe { *(status_ptr as *mut u32) = status_val; }
+            }
+            return pid;
         }
+        
+        // Blocked, yield
         yield_now();
     }
 }
@@ -607,8 +695,8 @@ pub fn kill_task(pid: usize) -> isize {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
         
-        let current_room_id = if let Some(t) = &tasks[current_pid] {
-            t.room.id
+        let current_cell_id = if let Some(t) = &tasks[current_pid] {
+            t.cell.id
         } else {
             0
         };
@@ -616,10 +704,10 @@ pub fn kill_task(pid: usize) -> isize {
         if pid == 0 { return -1; } 
         
         if let Some(target) = &mut tasks[pid] {
-            let target_room_id = target.room.id;
+            let target_cell_id = target.cell.id;
             
-            // SECURITY: Only allow kill if same room or caller is ROOT (0)
-            if current_room_id != 0 && current_room_id != target_room_id {
+            // SECURITY: Only allow kill if same cell or caller is ROOT (0)
+            if current_cell_id != 0 && current_cell_id != target_cell_id {
                 return -1; // Permission Denied
             }
 
@@ -641,8 +729,8 @@ pub fn print_task_list() {
     {
         let tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
-        let current_room_id = if let Some(t) = &tasks[current_pid] {
-            t.room.id
+        let current_cell_id = if let Some(t) = &tasks[current_pid] {
+            t.cell.id
         } else {
             0
         };
@@ -650,10 +738,10 @@ pub fn print_task_list() {
         crate::drivers::video::put_str("PID  State    CPU Ticks\n");
         for i in 0..MAX_TASKS {
             if let Some(task) = &tasks[i] {
-                let target_room_id = task.room.id;
+                let target_cell_id = task.cell.id;
 
-                // SOVEREIGN FILTER: Non-root rooms only see their own peers
-                if current_room_id != 0 && target_room_id != current_room_id {
+                // SOVEREIGN FILTER: Non-root cells only see their own peers
+                if current_cell_id != 0 && target_cell_id != current_cell_id {
                     continue;
                 }
 
@@ -786,4 +874,324 @@ pub fn detect_starvation() {
 
 pub fn detect_priority_inversion() {
      // Stub
+}
+
+#[repr(C)]
+pub struct SyscallState {
+    pub a1: u64,
+    pub a2: u64,
+    pub a3: u64,
+    pub a4: u64,
+    pub a5: u64,
+    pub a6: u64,
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub rbx: u64,
+    pub rbp: u64,
+    pub r11: u64,
+    pub rcx: u64,
+    pub user_rsp: u64,
+}
+
+pub fn sys_fork(state: *const SyscallState) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let current_pid = crate::cpu::smp::get_current_pid();
+        
+        let (cr3, caps, fds, cell, pgid, sid, cwd, environ) = if let Some(current) = &tasks[current_pid] {
+            (
+                current.cr3, 
+                current.caps.clone(), 
+                current.fds.clone(), 
+                current.cell.clone(),
+                current.pgid,
+                current.sid,
+                current.cwd.clone(),
+                current.environ.clone()
+            )
+        } else {
+            return -1;
+        };
+
+        for i in 0..MAX_TASKS {
+            if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
+                // Duplicate address space
+                let new_cr3 = unsafe { crate::mm::vmm::clone_address_space(cr3) };
+                if new_cr3 == 0 {
+                    return -1; // OOM
+                }
+                
+                let mut task = Task::new_free(cell);
+                task.id = i;
+                task.state = TaskState::Ready;
+                task.name = alloc::format!("{}-child", tasks[current_pid].as_ref().unwrap().name);
+                task.cr3 = new_cr3;
+                task.caps = caps;
+                task.fds = fds;
+                task.parent_id = Some(current_pid);
+                task.pgid = pgid;
+                task.sid = sid;
+                task.cwd = cwd;
+                task.environ = environ;
+                
+                // Copy SyscallState to child's stack
+                let kstack_top = task.stack.as_ptr() as u64 + 16384;
+                let mut sp = kstack_top & !0xF;
+                unsafe {
+                    sp -= core::mem::size_of::<SyscallState>() as u64;
+                    core::ptr::copy_nonoverlapping(state, sp as *mut SyscallState, 1);
+                    
+                    // Push return address for __switch (jump to syscall_sysret_shim)
+                    sp -= 8;
+                    *(sp as *mut u64) = crate::cpu::syscall::syscall_sysret_shim as u64;
+                }
+                
+                task.context.rsp = sp;
+                
+                tasks[i] = Some(task);
+                set_ready(i);
+                
+                return i as isize; // Return child PID to parent
+            }
+        }
+        -1
+    })
+}
+
+pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut SyscallState) -> isize {
+    let mut len = 0;
+    while len < 256 {
+        let mut b = [0u8; 1];
+        if crate::mm::user::copy_from_user((path_ptr + len) as *const u8, &mut b).is_err() {
+            return -14; // EFAULT
+        }
+        if b[0] == 0 { break; }
+        len += 1;
+    }
+    let mut path_buf = alloc::vec![0u8; len as usize];
+    crate::mm::user::copy_from_user(path_ptr as *const u8, &mut path_buf).unwrap();
+    let path = core::str::from_utf8(&path_buf).unwrap_or("");
+    
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
+        let new_cr3 = crate::mm::vmm::create_address_space();
+        if new_cr3 == 0 { return -12; } // ENOMEM
+        
+        if let Ok(entry) = crate::process::loader::load_elf(inode, new_cr3) {
+            let stack_base = 0x00007FFFFFFFE000u64;
+            let stack_pages = 256u64;
+            for p in 0..stack_pages {
+                let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                unsafe { crate::mm::vmm::map_page_in_pml4(new_cr3, stack_base - (p * 4096), frame, 0x07); }
+            }
+            let stack_top = stack_base + 4096;
+            let initial_sp = crate::process::loader::setup_user_stack(new_cr3, stack_top, entry);
+            
+            crate::cpu::without_interrupts(|| {
+                let mut tasks = TASKS.lock();
+                let current_pid = crate::cpu::smp::get_current_pid();
+                if let Some(task) = &mut tasks[current_pid] {
+                    // Only memory leaks the old cr3 for now, no free logic yet
+                    task.cr3 = new_cr3;
+                    task.name = alloc::string::String::from(path);
+                    unsafe { core::arch::asm!("mov cr3, {}", in(reg) new_cr3); }
+                }
+            });
+            
+            unsafe {
+                (*state).rcx = entry;
+                (*state).user_rsp = initial_sp;
+            }
+            return 0; // returns 0 to the new process through rax
+        }
+    }
+    -2 // ENOENT
+}
+pub fn sys_exit(code: isize) {
+    let pid = get_current_pid();
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[pid] {
+            task.state = TaskState::Zombie;
+            task.exit_code = code;
+            
+            // Wake up parent if waiting
+            if let Some(parent_id) = task.parent_id {
+                if let Some(parent) = &mut tasks[parent_id] {
+                    if parent.state == TaskState::Waiting {
+                        parent.state = TaskState::Ready;
+                        set_ready(parent_id);
+                    }
+                    parent.pending_signals |= 1 << 17; // SIGCHLD (17 on Linux)
+                }
+            }
+        }
+        clear_ready(pid);
+    });
+    // Yield the CPU
+    unsafe { core::arch::asm!("int 0x20"); } // Or schedule()
+    loop {}
+}
+
+pub fn process_dup(oldfd: usize) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[get_current_pid()] {
+            if let Some(newfd) = task.fds.dup(oldfd) {
+                return newfd as isize;
+            }
+        }
+        -1
+    })
+}
+
+pub fn process_dup2(oldfd: usize, newfd: usize) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[get_current_pid()] {
+            if let Some(res_fd) = task.fds.dup2(oldfd, newfd) {
+                return res_fd as isize;
+            }
+        }
+        -1
+    })
+}
+
+pub fn process_getcwd(buf: &mut [u8]) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[get_current_pid()] {
+            let cwd_bytes = task.cwd.as_bytes();
+            if buf.len() < cwd_bytes.len() + 1 {
+                return -1; // ERANGE
+            }
+            buf[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
+            buf[cwd_bytes.len()] = 0; // null-terminate
+            return cwd_bytes.len() as isize + 1;
+        }
+        -1
+    })
+}
+
+pub fn process_chdir(path: &str) -> isize {
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
+        if let Ok(stat) = inode.stat() {
+            if stat.file_type == crate::fs::vfs::FileType::Directory {
+                crate::cpu::without_interrupts(|| {
+                    let mut tasks = TASKS.lock();
+                    if let Some(task) = &mut tasks[get_current_pid()] {
+                        task.cwd = alloc::string::String::from(path);
+                    }
+                });
+                return 0;
+            }
+        }
+    }
+    -1 // ENOENT or ENOTDIR
+}
+
+pub fn get_parent_pid(pid: usize) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[pid] {
+            if let Some(ppid) = task.parent_id {
+                return ppid as isize;
+            }
+        }
+        -1
+    })
+}
+
+pub fn process_stat(path: &str, stat_out: &mut crate::fs::vfs::CStat) -> isize {
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
+        if let Ok(f_stat) = inode.stat() {
+            stat_out.st_ino = inode.inode_num() as u64;
+            stat_out.st_mode = f_stat.mode as u32;
+            if f_stat.file_type == crate::fs::vfs::FileType::Directory {
+                stat_out.st_mode |= 0o040000; // S_IFDIR
+            } else if f_stat.file_type == crate::fs::vfs::FileType::File {
+                stat_out.st_mode |= 0o100000; // S_IFREG
+            }
+            stat_out.st_uid = f_stat.uid as u32;
+            stat_out.st_gid = f_stat.gid as u32;
+            stat_out.st_size = f_stat.size as i64;
+            stat_out.st_blksize = 4096;
+            stat_out.st_blocks = (f_stat.size as i64 + 511) / 512;
+            stat_out.st_mtime = f_stat.mtime as i64;
+            return 0;
+        }
+    }
+    -1
+}
+
+pub fn process_fstat(fd: usize, stat_out: &mut crate::fs::vfs::CStat) -> isize {
+    // Currently our FileHandle doesn't directly expose stat, but if it's open, 
+    // we would normally query its inode. For simplicity in this basic kernel,
+    // we return a dummy successful stat for open FDs. 
+    // (Or we can extend FileHandle to return FileStat).
+    // Let's implement a dummy stat for now.
+    let is_valid = crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        if let Some(task) = &mut tasks[get_current_pid()] {
+            task.fds.get_entry(fd).is_some()
+        } else {
+            false
+        }
+    });
+    
+    if is_valid {
+        stat_out.st_mode = 0o100000 | 0o666; // S_IFREG | rw-rw-rw-
+        stat_out.st_size = 0;
+        stat_out.st_blksize = 4096;
+        0
+    } else {
+        -1 // EBADF
+    }
+}
+
+pub fn sys_get_tasks(buf_ptr: u64, buf_len: usize) -> isize {
+    let mut out_str = alloc::string::String::new();
+    out_str.push_str("PID  Name            State    CPU Ticks\n");
+    
+    let current_pid = get_current_pid();
+    let current_cell_id = {
+        let tasks = TASKS.lock();
+        if let Some(t) = &tasks[current_pid] {
+            t.cell.id
+        } else {
+            0
+        }
+    };
+    
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        for i in 0..MAX_TASKS {
+            if let Some(task) = &tasks[i] {
+                if current_cell_id != 0 && task.cell.id != current_cell_id {
+                    continue;
+                }
+                
+                let state_str = match task.state {
+                    TaskState::Running => "Running",
+                    TaskState::Ready => "Ready  ",
+                    TaskState::Waiting => "Waiting",
+                    TaskState::Free => "Free   ",
+                    TaskState::Zombie => "Zombie ",
+                };
+                
+                let line = alloc::format!("{:<4} {:<15} {:<8} {}\n", task.id, task.name, state_str, task.cpu_time_ticks);
+                out_str.push_str(&line);
+            }
+        }
+    });
+    
+    let bytes = out_str.as_bytes();
+    let copy_len = core::cmp::min(bytes.len(), buf_len);
+    
+    if crate::mm::user::copy_to_user(buf_ptr as *mut u8, &bytes[..copy_len]).is_err() {
+        return -1;
+    }
+    
+    copy_len as isize
 }

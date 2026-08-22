@@ -1,7 +1,0 @@
-</$objtype/mkfile
-
-TARG=deliver
-OFILES=	deliver.$O\
-
-BIN=../bin/$objtype
-</sys/src/cmd/mkone

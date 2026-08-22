@@ -76,6 +76,17 @@ pub struct Fadt {
     pub flags: u32,
 }
 
+// ---- TPM2 (Trusted Platform Module) ----
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct Tpm2Table {
+    pub header: AcpiHeader,
+    pub flags: u16,
+    pub control_area_addr: u64,
+    pub start_method: u32,
+}
+
 // ---- MADT (Multiple APIC Description Table) ----
 
 #[repr(C, packed)]
@@ -149,6 +160,7 @@ pub struct AcpiState {
     pub smi_cmd: u32,
     pub acpi_enable_val: u8,
     pub shutdown_ready: bool,
+    pub tpm2_addr: u64,
 }
 
 impl AcpiState {
@@ -166,6 +178,7 @@ impl AcpiState {
             smi_cmd: 0,
             acpi_enable_val: 0,
             shutdown_ready: false,
+            tpm2_addr: 0,
         }
     }
 }
@@ -332,6 +345,19 @@ pub fn init() {
             }
         }
 
+        // ---- Parse TPM2 for Hardware Trust Module ----
+        if let Some(tpm2_ptr) = find_table(rsdt, b"TPM2") {
+            let tpm2 = tpm2_ptr as *const Tpm2Table;
+            let caa = core::ptr::read_unaligned(core::ptr::addr_of!((*tpm2).control_area_addr));
+            let _ = write!(serial, "ACPI: TPM 2.0 Hardware Trust Module detected at {:#x}\n", tpm2_ptr as usize);
+            let _ = write!(serial, "ACPI: TPM 2.0 Control Area Address: {:#x}\n", caa);
+            
+            let mut state = ACPI.lock();
+            state.tpm2_addr = tpm2_ptr as u64;
+        } else {
+            let _ = write!(serial, "ACPI: TPM 2.0 not found.\n");
+        }
+
         let state = ACPI.lock();
         let _ = write!(serial, "ACPI: Detected {} CPU(s), LAPIC at {:#x}\n",
             state.cpu_count, state.local_apic_addr);
@@ -446,4 +472,20 @@ pub fn power_off() {
             core::arch::asm!("hlt");
         }
     }
+}
+
+/// Get the current battery percentage (0-100).
+/// Currently a mock implementation as DSDT AML parsing is not yet implemented.
+pub fn get_battery_percentage() -> u8 {
+    // In a real OS, we would execute the _BST (Battery Status) method 
+    // inside the DSDT using an AML interpreter. 
+    100 // Simulated: 100%
+}
+
+/// Get the current CPU temperature in Celsius.
+/// Currently a mock implementation.
+pub fn get_temperature() -> u8 {
+    // In a real OS, we would execute the _TMP (Temperature) method 
+    // inside the DSDT thermal zone using an AML interpreter.
+    45 // Simulated: 45°C
 }

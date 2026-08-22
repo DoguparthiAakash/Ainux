@@ -5,6 +5,7 @@ use spin::Mutex;
 pub type ArcInode = Arc<dyn Inode>;
 pub type ArcHandle = Arc<dyn FileHandle>;
 
+#[derive(Debug, Clone)]
 pub struct Mount {
     pub path: String,
     pub fs: Arc<dyn FileSystem>,
@@ -29,6 +30,29 @@ pub struct FileStat {
     pub mtime: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CStat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_nlink: u64,
+    pub st_mode: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub __pad0: i32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+    pub __unused: [i64; 3],
+}
+
 // Result type for VFS operations
 pub type VfsResult<T> = Result<T, VfsError>;
 
@@ -46,11 +70,11 @@ pub enum VfsError {
     AlreadyExists,
 }
 
-pub trait FileSystem: Send + Sync {
+pub trait FileSystem: Send + Sync + core::fmt::Debug {
     fn root_inode(&self) -> Arc<dyn Inode>;
 }
 
-pub trait Inode: Send + Sync + crate::object::KernelObject {
+pub trait Inode: Send + Sync + crate::object::KernelObject + core::fmt::Debug {
     fn inode_num(&self) -> u32;
     fn stat(&self) -> VfsResult<FileStat>;
     fn lookup(&self, name: &str) -> VfsResult<Arc<dyn Inode>>;
@@ -67,30 +91,6 @@ pub trait Inode: Send + Sync + crate::object::KernelObject {
     fn link(&self, name: &str, inode: Arc<dyn Inode>) -> VfsResult<()>;
     fn chmod(&self, mode: u16) -> VfsResult<()>;
     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()>;
-    fn parent(&self) -> VfsResult<ArcInode>; // Step 7.2: Upward traversal
-}
-
-pub fn is_descendant_of(root: ArcInode, target: ArcInode) -> bool {
-    let mut current = target.clone();
-    let root_id = root.id();
-    
-    loop {
-        if current.id() == root_id {
-            return true;
-        }
-        
-        // Try to go up
-        match current.parent() {
-            Ok(p) => {
-                if p.id() == current.id() {
-                    // Reached the real root of the FS
-                    return false;
-                }
-                current = p;
-            }
-            Err(_) => return false,
-        }
-    }
 }
 
 pub trait FileHandle: Send + Sync + core::fmt::Debug {
@@ -98,6 +98,28 @@ pub trait FileHandle: Send + Sync + core::fmt::Debug {
     fn write(&self, buf: &[u8], offset: u64) -> VfsResult<usize>;
     fn truncate(&self) -> VfsResult<()>;
     fn close(&self) -> VfsResult<()>;
+    
+    fn ioctl(&self, _request: u64, _arg: u64) -> VfsResult<u64> {
+        Err(VfsError::NotImplemented)
+    }
+    
+    fn mmap(&self, _offset: u64, _size: usize) -> VfsResult<Option<u64>> {
+        Ok(None)
+    }
+    
+    fn poll(&self, _events: u32) -> VfsResult<u32> {
+        Ok(0)
+    }
+    
+    // Hack for downcasting Unix Domain Sockets without full Any trait integration
+    fn as_unix_socket_ptr(&self) -> *const () {
+        core::ptr::null()
+    }
+    
+    // Hack for downcasting Inet Sockets
+    fn as_inet_socket_ptr(&self) -> *const () {
+        core::ptr::null()
+    }
 }
 
 pub static ROOT: Mutex<Option<Arc<dyn Inode>>> = Mutex::new(None);
@@ -119,25 +141,21 @@ pub fn mount(path: &str, fs: Arc<dyn FileSystem>) {
 }
 
 pub fn resolve_path(path: &str) -> VfsResult<ArcInode> {
-    // SECURITY: Use the current task's Room Root if available
-    let task_root = if let Some(room) = crate::process::scheduler::get_current_room() {
-        room.get_root_inode()
-    } else {
-        root()
-    };
+    // SECURITY: Use the current task's Execution Cell Namespace
+    let cell = crate::process::scheduler::get_current_cell();
+    let ns = cell.namespace.lock();
+    let cell_root = ns.root.clone();
 
-    // Check mounts first (longest prefix match)
-    let mounts = MOUNTS.lock();
+    // 1. Check Cell-Local Mounts (Longest Prefix Match)
     let mut best_match: Option<&Mount> = None;
-    
-    for m in mounts.iter() {
+    for m in ns.mounts.iter() {
         if path.starts_with(&m.path) {
             if best_match.is_none() || m.path.len() > best_match.unwrap().path.len() {
                 best_match = Some(m);
             }
         }
     }
-    
+
     if let Some(m) = best_match {
         let rel_path = &path[m.path.len()..];
         let rel_path = rel_path.trim_start_matches('/');
@@ -146,9 +164,31 @@ pub fn resolve_path(path: &str) -> VfsResult<ArcInode> {
         }
         return recursive_lookup(m.fs.root_inode(), rel_path);
     }
-    
-    // Default to the task-local root
-    recursive_lookup(task_root, path)
+
+    // 2. Fallback to Global Mounts if not root-restricted
+    // In a strict Sovereign environment, we might skip this.
+    {
+        let global_mounts = MOUNTS.lock();
+        let mut g_best: Option<&Mount> = None;
+        for m in global_mounts.iter() {
+            if path.starts_with(&m.path) {
+                if g_best.is_none() || m.path.len() > g_best.unwrap().path.len() {
+                    g_best = Some(m);
+                }
+            }
+        }
+        if let Some(m) = g_best {
+            let rel_path = &path[m.path.len()..];
+            let rel_path = rel_path.trim_start_matches('/');
+            if rel_path.is_empty() {
+                 return Ok(m.fs.root_inode());
+            }
+            return recursive_lookup(m.fs.root_inode(), rel_path);
+        }
+    }
+
+    // Default to the cell-local root
+    recursive_lookup(cell_root, path)
 }
 
 fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {

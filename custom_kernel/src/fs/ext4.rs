@@ -122,6 +122,7 @@ use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[derive(Debug)]
 pub struct Ext4FileSystem {
     inner: Arc<Ext4FsInner>,
 }
@@ -442,6 +443,13 @@ impl Inode for Ext4Inode {
         // Simplified: Read direct blocks.
         // Assuming linear directory (no H-tree).
         
+        {
+            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+            use core::fmt::Write;
+            let flags = self.disk_inode.flags;
+            let _ = write!(serial, "EXT4 LOOKUP: name={} inode={} flags={:#x}\n", name, self.inode_num, flags);
+        }
+
         let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
         
         // Iterate over blocks (Only direct blocks 0-11 for now)
@@ -682,42 +690,6 @@ impl Inode for Ext4Inode {
                 Err(e)
             }
         }
-    }
-
-    fn parent(&self) -> VfsResult<vfs::ArcInode> {
-        if (self.disk_inode.mode & 0x4000) == 0 {
-            return Err(VfsError::NotADirectory);
-        }
-        
-        // Read block 0 to find ".."
-        let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
-        let block_id = self.disk_inode.block[0];
-        if block_id == 0 { return Err(VfsError::IOError); }
-        self.fs.read_block(block_id, &mut buf);
-        
-        // ".." is usually the second entry (offset 12 if "." is 12 bytes)
-        // Let's iterate just to be safe.
-        let mut offset = 0;
-        while offset < buf.len() {
-            let entry_ptr = unsafe { buf.as_ptr().add(offset) as *const DirEntry2 };
-            let entry = unsafe { *entry_ptr };
-            if entry.rec_len == 0 { break; }
-            
-            let header_size = core::mem::size_of::<DirEntry2>();
-            let name_slice = unsafe { core::slice::from_raw_parts(buf.as_ptr().add(offset + header_size), entry.name_len as usize) };
-            if let Ok(name) = core::str::from_utf8(name_slice) {
-                if name == ".." {
-                    let parent_inode = self.fs.read_inode(entry.inode)?;
-                    return Ok(Arc::new(Ext4Inode {
-                        fs: self.fs.clone(),
-                        inode_num: entry.inode,
-                        disk_inode: parent_inode,
-                    }));
-                }
-            }
-            offset += entry.rec_len as usize;
-        }
-        Err(VfsError::NotFound)
     }
 }
 
@@ -997,15 +969,31 @@ impl FileHandle for Ext4File {
         
         let block_size = self.fs.block_size;
         let start_block = (offset / block_size) as usize;
-        // let start_offset = (offset % block_size) as usize; // inside block
         
         // Simplified: Read one block at a time.
-        // Does not handle cross-block reads efficiently or Indirect blocks yet.
+        // Does not handle cross-block reads efficiently.
         
-        // Verify direct block range
-        if start_block >= 12 { return Err(VfsError::IOError); } // TODO: Indirect
-        
-        let block_id = self.inode.block[start_block];
+        let block_id = if start_block < 12 {
+            self.inode.block[start_block]
+        } else {
+            let indirect_block = self.inode.block[12];
+            if indirect_block == 0 {
+                0
+            } else {
+                let mut ind_buf = alloc::vec![0u8; block_size as usize];
+                self.fs.read_block(indirect_block, &mut ind_buf);
+                let pointers_per_block = (block_size / 4) as usize;
+                let ind_index = start_block - 12;
+                if ind_index < pointers_per_block {
+                    let ptr = ind_buf.as_ptr() as *const u32;
+                    unsafe { *ptr.add(ind_index) }
+                } else {
+                    crate::drivers::video::put_str("Ext4: Read exceeded singly indirect block!\n");
+                    return Err(VfsError::IOError); // Doubly-indirect not supported yet
+                }
+            }
+        };
+
         if block_id == 0 {
             // Sparse? Return 0s
             for b in &mut buf[0..read_len] { *b = 0; }
@@ -1181,7 +1169,7 @@ impl Ext4FileSystem {
         }
         
         if !ata::write_sectors(&ata_buf, 2, 2) { 
-            crate::drivers::video::put_str("Failed to write SB!\n");
+            crate::drivers::video::put_str("MKFS: Failed to write to IDE drive (Drive not found or SATA used instead of IDE).\n");
             return false; 
         }
         
@@ -1227,9 +1215,24 @@ impl Ext4FileSystem {
         
         // 3. Bitmaps (LBA 6, 7 for Block Bitmap | LBA 8, 9 for Inode Bitmap)
         // Clear them (all free except reserved)
-        let mut zero_buf = alloc::vec![0u16; 512];
-        ata::write_sectors(&zero_buf, 6, 2); // Block Bitmap
-        ata::write_sectors(&zero_buf, 8, 2); // Inode Bitmap
+        let mut block_bitmap_buf = alloc::vec![0u16; 512];
+        let mut inode_bitmap_buf = alloc::vec![0u16; 512];
+        
+        unsafe {
+            let bb_ptr = block_bitmap_buf.as_mut_ptr() as *mut u8;
+            // Mark blocks 0 to 20 as used (SB, BGDT, Bitmaps, Inode Table, Root Dir)
+            *bb_ptr.add(0) = 0xFF; // blocks 0-7
+            *bb_ptr.add(1) = 0xFF; // blocks 8-15
+            *bb_ptr.add(2) = 0x1F; // blocks 16-20 (0b0001_1111)
+            
+            let ib_ptr = inode_bitmap_buf.as_mut_ptr() as *mut u8;
+            // Mark inodes 1 to 10 as used (1-10)
+            *ib_ptr.add(0) = 0xFF; // inodes 1-8
+            *ib_ptr.add(1) = 0x03; // inodes 9-10 (0b0000_0011)
+        }
+        
+        ata::write_sectors(&block_bitmap_buf, 6, 2); // Block Bitmap
+        ata::write_sectors(&inode_bitmap_buf, 8, 2); // Inode Bitmap
         
         // 4. Inode Table (Starts LBA 10. We need to write Inode 2)
         // Inode 2 is Root.

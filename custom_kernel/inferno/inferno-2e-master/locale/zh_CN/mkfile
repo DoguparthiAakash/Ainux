@@ -1,9 +1,0 @@
-<../../mkconfig
-
-DIRS=\
-	appl\
-	fonts\
-	services\
-	usr\
-
-<$ROOT/mkfiles/mksubdirs

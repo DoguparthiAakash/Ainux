@@ -9,8 +9,6 @@ pub struct PRCB {
     pub current_pid: usize,
     pub stack_top: u64,
     pub total_ticks: u64,
-    pub kernel_stack: u64,
-    pub temp_rsp: u64,
 }
 
 impl PRCB {
@@ -22,14 +20,11 @@ impl PRCB {
             current_pid: 0,
             stack_top: 0,
             total_ticks: 0,
-            kernel_stack: 0,
-            temp_rsp: 0,
         }
     }
 
-    pub fn init(&mut self, addr: u64, id: u32) {
+    pub fn init(&mut self, addr: u64) {
         self.self_ptr = addr;
-        self.cpu_id = id;
     }
 }
 
@@ -55,12 +50,6 @@ pub fn get_current_cpu_id() -> usize {
     id as usize
 }
 
-pub fn set_kernel_stack(stack: u64) {
-    unsafe {
-        core::arch::asm!("mov gs:[40], {}", in(reg) stack, options(nostack, nomem, preserves_flags));
-    }
-}
-
 /// Sets the GS_BASE MSR to point to this CPU's PRCB
 pub unsafe fn write_gs_base(addr: u64) {
     let low = (addr & 0xFFFFFFFF) as u32;
@@ -69,20 +58,6 @@ pub unsafe fn write_gs_base(addr: u64) {
     core::arch::asm!(
         "wrmsr",
         in("rcx") 0xC0000101u32,
-        in("rax") low,
-        in("rdx") high,
-        options(nostack, preserves_flags)
-    );
-}
-
-/// Sets the KERNEL_GS_BASE MSR
-pub unsafe fn write_kernel_gs_base(addr: u64) {
-    let low = (addr & 0xFFFFFFFF) as u32;
-    let high = (addr >> 32) as u32;
-    // MSR_KERNEL_GS_BASE = 0xC0000102
-    core::arch::asm!(
-        "wrmsr",
-        in("rcx") 0xC0000102u32,
         in("rax") low,
         in("rdx") high,
         options(nostack, preserves_flags)

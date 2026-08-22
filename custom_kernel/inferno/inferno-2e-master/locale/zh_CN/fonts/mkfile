@@ -1,7 +1,0 @@
-<../../../mkconfig
-
-DIRS=\
-	lucm\
-	pelm\
-
-<$ROOT/mkfiles/mksubdirs

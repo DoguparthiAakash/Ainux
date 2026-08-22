@@ -83,28 +83,24 @@ pub extern "C" fn ap_entry() -> ! {
         );
     }
 
-    // Initialize this AP's PRCB for per-cpu storage before GDT/IDT init
-    unsafe {
-        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
-        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr, cpu_num as u32);
-        crate::cpu::percpu::write_gs_base(prcb_addr);
-        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
-    }
-    
     // Load the BSP's GDT (without touching TSS/LTR to avoid GP fault).
     // The trampoline's GDT is in the 0x8000 page which may be overwritten
     // when the next AP boots, so we must switch to the kernel's permanent GDT.
-    unsafe { crate::cpu::gdt::init_ap(cpu_num as usize); }
-    
+    crate::cpu::gdt::init_ap();
+
     // Load the shared IDT so fault handlers work on this core.
     crate::cpu::idt::init();
-    
+
+    // Initialize this AP's PRCB for per-cpu storage
+    unsafe {
+        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_num as usize);
+        crate::cpu::percpu::CPUS[cpu_num as usize].init(prcb_addr);
+        crate::cpu::percpu::write_gs_base(prcb_addr);
+    }
+
     // Signal that this AP is online.
     AP_READY.store(true, Ordering::SeqCst);
 
-    // Start scheduling
-    crate::process::scheduler::schedule();
-    
     loop {
         unsafe { asm!("hlt", options(nomem, nostack)); }
     }

@@ -1,3 +1,0 @@
-# Webget/Webgrab user configuration
-httpproxy=mh.proxy.lucent.com:8000/
-noproxy=lucent.com,bell-labs.com

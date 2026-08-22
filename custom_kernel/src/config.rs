@@ -12,12 +12,7 @@ pub struct SystemConfig {
     pub ip_address: String,
     pub gateway: String,
     pub dns: String,
-    pub theme_bg: u32,
-    pub theme_fg: u32,
-    pub theme_accent: u32,
-    pub theme_root: u32,
-    pub theme_dialog_bg: u32,
-    pub theme_sel: u32,
+    pub theme_color: u32,
 }
 
 impl Default for SystemConfig {
@@ -27,12 +22,7 @@ impl Default for SystemConfig {
             ip_address: String::from("10.0.2.15"),
             gateway: String::from("10.0.2.2"),
             dns: String::from("8.8.8.8"),
-            theme_bg: 0x1A1B26,
-            theme_fg: 0xC0CAF5,
-            theme_accent: 0x7AA2F7,
-            theme_root: 0x9ECE6A,
-            theme_dialog_bg: 0x16161E,
-            theme_sel: 0x2F334D,
+            theme_color: 0x0000AAFF,
         }
     }
 }
@@ -71,17 +61,6 @@ pub fn load() {
             }
         }
     }
-
-    // Sync to THEME
-    if let Some(config) = CONFIG.lock().as_ref() {
-        let mut theme = crate::drivers::video::THEME.lock();
-        theme.bg = config.theme_bg;
-        theme.fg = config.theme_fg;
-        theme.accent = config.theme_accent;
-        theme.root = config.theme_root;
-        theme.dialog_bg = config.theme_dialog_bg;
-        theme.sel = config.theme_sel;
-    }
 }
 
 pub fn save() {
@@ -101,10 +80,8 @@ pub fn save() {
             let _ = handle.truncate();
             if let Some(config) = CONFIG.lock().as_ref() {
                 let data = format!(
-                    "hostname={}\nip={}\ngateway={}\ndns={}\ntheme_bg={}\ntheme_fg={}\ntheme_accent={}\ntheme_root={}\ntheme_dialog_bg={}\ntheme_sel={}\n",
-                    config.hostname, config.ip_address, config.gateway, config.dns, 
-                    config.theme_bg, config.theme_fg, config.theme_accent, config.theme_root,
-                    config.theme_dialog_bg, config.theme_sel
+                    "hostname={}\nip={}\ngateway={}\ndns={}\ntheme={}\n",
+                    config.hostname, config.ip_address, config.gateway, config.dns, config.theme_color
                 );
                 let _ = handle.write(data.as_bytes(), 0);
             }
@@ -122,12 +99,11 @@ fn parse_config(s: &str) {
                     "ip" => config.ip_address = String::from(parts[1]),
                     "gateway" => config.gateway = String::from(parts[1]),
                     "dns" => config.dns = String::from(parts[1]),
-                    "theme_bg" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_bg = val; },
-                    "theme_fg" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_fg = val; },
-                    "theme_accent" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_accent = val; },
-                    "theme_root" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_root = val; },
-                    "theme_dialog_bg" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_dialog_bg = val; },
-                    "theme_sel" => if let Ok(val) = parts[1].parse::<u32>() { config.theme_sel = val; },
+                    "theme" => {
+                        if let Ok(val) = u32::from_str_radix(parts[1], 10) {
+                            config.theme_color = val;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -138,16 +114,4 @@ fn parse_config(s: &str) {
 pub fn reset_to_defaults() {
     let mut config = CONFIG.lock();
     *config = Some(SystemConfig::default());
-}
-
-pub fn sync_from_theme() {
-    let theme = crate::drivers::video::THEME.lock();
-    if let Some(config) = CONFIG.lock().as_mut() {
-        config.theme_bg = theme.bg;
-        config.theme_fg = theme.fg;
-        config.theme_accent = theme.accent;
-        config.theme_root = theme.root;
-        config.theme_dialog_bg = theme.dialog_bg;
-        config.theme_sel = theme.sel;
-    }
 }

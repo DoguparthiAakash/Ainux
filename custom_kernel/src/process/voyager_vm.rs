@@ -102,6 +102,12 @@ impl VoyagerVM {
                     break;
                 }
             }
+            
+            // Check for signals (Ctrl+C = 2, Ctrl+Z = 20)
+            if crate::process::scheduler::check_current_signal(2) || crate::process::scheduler::check_current_signal(20) {
+                video::put_str("\nVM: Interrupted by signal.\n");
+                break;
+            }
         }
     }
 }

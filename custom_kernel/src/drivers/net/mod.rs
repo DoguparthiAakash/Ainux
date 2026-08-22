@@ -6,3 +6,4 @@ pub mod ralink_regs;
 pub mod mt7601u;
 pub mod manager;
 pub mod security;
+pub mod e1000;

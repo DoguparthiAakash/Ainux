@@ -242,8 +242,15 @@ pub fn init() {
     // Enable FPU + SSE (from legacy cpu.c)
     enable_sse();
 
-    *CPU_FEATURES.lock() = features;
+    // Enable Write-Combining in PAT
+    unsafe { init_pat(); }
+
+    *CPU_FEATURES.lock() = features.clone();
     let _ = write!(serial, "CPUID: Detection complete\n");
+
+    if features.is_amd() {
+        crate::cpu::amd::init();
+    }
 }
 
 /// Enable FPU and SSE via CR0/CR4 (ported from legacy cpu.c)
@@ -261,6 +268,21 @@ fn enable_sse() {
         let cr4 = cr4 | (1 << 9) | (1 << 10);
         asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack));
     }
+}
+
+/// Configures the Page Attribute Table (PAT) to enable Write-Combining (WC).
+/// The PAT MSR (0x277) holds 8 entries (8 bits each).
+/// Default PAT1 is WT (Write-Through, 0x04).
+/// We change PAT1 to WC (Write-Combining, 0x01).
+unsafe fn init_pat() {
+    let mut pat = crate::cpu::control::rdmsr(0x277);
+    
+    // Clear PAT1 (bits 8..15)
+    pat &= !(0xFF << 8);
+    // Set PAT1 to 0x01 (WC)
+    pat |= 0x01 << 8;
+    
+    crate::cpu::control::wrmsr(0x277, pat);
 }
 
 /// Read the TSC (Time Stamp Counter) — useful for high-precision timing

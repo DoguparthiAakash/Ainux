@@ -60,7 +60,7 @@ pub fn main() {
                         }
                     }
                 }
-                '\x1B' => { video::clear(); return; }, // ESC
+                '\x1B' | '\x08' | '\x7F' => { video::clear(); return; }, // ESC/Backspace/Delete
                 _ => { dirty = false; }
             }
         }
@@ -135,8 +135,26 @@ fn wifi_scan_menu() {
     
     // THE REAL BRIDGE: In QEMU, the Ethernet card IS the network.
     // We report it as an available secure bridge.
-    options.push(String::from("QEMU Virtual Network   [WPA3] Signal: 100%"));
-    options.push(String::from("Atheros_Hardware_Probe [Scan] Signal: -dBm"));
+    options.push(String::from("QEMU Virtual Network   [WPA3] Signal: -45 dBm"));
+
+    let ath_lock = atheros::GLOBAL_ATHEROS.lock();
+    if let Some(ath) = &*ath_lock {
+        // Force a hardware refresh to simulate "Real Wi-Fi Signals" scanning
+        ath.refresh_networks();
+        let nets = ath.available_networks.lock();
+        for net in nets.iter() {
+            let dbm = (net.signal as i32 / 2) - 100;
+            let sec_str = match net.security {
+                crate::drivers::net::security::SecurityLevel::Open => "Open",
+                crate::drivers::net::security::SecurityLevel::WEP => "WEP",
+                crate::drivers::net::security::SecurityLevel::WPA2_PSK => "WPA2",
+                crate::drivers::net::security::SecurityLevel::WPA3_SAE => "WPA3",
+            };
+            options.push(format!("{:<22} [{}] Signal: {} dBm", net.ssid, sec_str, dbm));
+        }
+    } else {
+        options.push(String::from("Atheros_Hardware_Probe [Scan] Signal: -dBm"));
+    }
 
     let mut dialog = Dialog {
         title: " Available Secure Networks ",

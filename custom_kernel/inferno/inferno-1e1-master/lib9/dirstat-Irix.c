@@ -1,1 +1,0 @@
-#include "dirstat-posix.c"

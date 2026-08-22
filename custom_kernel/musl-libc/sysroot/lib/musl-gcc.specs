@@ -1,0 +1,32 @@
+%rename cpp_options old_cpp_options
+
+*cpp_options:
+-nostdinc -isystem /mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/include -isystem include%s %(old_cpp_options)
+
+*cc1:
+%(cc1_cpu) -nostdinc -isystem /mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/include -isystem include%s
+
+*link_libgcc:
+-L/mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/lib -L .%s
+
+*libgcc:
+libgcc.a%s %:if-exists(libgcc_eh.a%s)
+
+*startfile:
+%{!shared: /mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/lib/Scrt1.o} /mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/lib/crti.o crtbeginS.o%s
+
+*endfile:
+crtendS.o%s /mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/lib/crtn.o
+
+*link:
+-dynamic-linker /lib/ld-musl-x86_64.so.1 -nostdlib %{shared:-shared} %{static:-static} %{rdynamic:-export-dynamic}
+
+*esp_link:
+
+
+*esp_options:
+
+
+*esp_cpp_options:
+
+

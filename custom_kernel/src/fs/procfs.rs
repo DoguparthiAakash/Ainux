@@ -6,6 +6,7 @@ use spin::Mutex;
 use crate::fs::vfs::{FileSystem, Inode, FileHandle, FileStat, FileType, VfsResult, VfsError};
 use crate::alloc::string::ToString;
 
+#[derive(Debug)]
 pub struct ProcFileSystem;
 
 impl FileSystem for ProcFileSystem {
@@ -93,6 +94,22 @@ impl Inode for ProcDirInode {
                 return Ok(inode.clone());
             }
         }
+        
+        // Try parsing as PID
+        if let Ok(pid) = name.parse::<usize>() {
+            let exists = crate::cpu::without_interrupts(|| {
+                let tasks = crate::process::scheduler::TASKS.lock();
+                if pid < crate::process::scheduler::MAX_TASKS && tasks[pid].is_some() {
+                    true
+                } else {
+                    false
+                }
+            });
+            if exists {
+                return Ok(Arc::new(ProcPidDirInode { pid }));
+            }
+        }
+        
         Err(VfsError::NotFound)
     }
     fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> {
@@ -106,6 +123,16 @@ impl Inode for ProcDirInode {
         for (n, _) in &self.entries {
             names.push(n.clone());
         }
+        
+        crate::cpu::without_interrupts(|| {
+            let tasks = crate::process::scheduler::TASKS.lock();
+            for (pid, t) in tasks.iter().enumerate() {
+                if t.is_some() {
+                    names.push(format!("{}", pid));
+                }
+            }
+        });
+        
         Ok(names)
     }
     fn mkdir(&self, _name: &str) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::PermissionDenied) }
@@ -115,7 +142,6 @@ impl Inode for ProcDirInode {
     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
-    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
 }
 
 impl Inode for ProcFileInode {
@@ -169,7 +195,6 @@ impl Inode for ProcFileInode {
     fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
-    fn parent(&self) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotFound) }
 }
 
 #[derive(Debug)]
@@ -194,4 +219,90 @@ impl FileHandle for ProcFileHandle {
     fn write(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> { Err(VfsError::PermissionDenied) }
     fn truncate(&self) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
     fn close(&self) -> VfsResult<()> { Ok(()) }
+}
+
+#[derive(Debug)]
+pub struct ProcPidDirInode {
+    pid: usize,
+}
+
+impl crate::object::KernelObject for ProcPidDirInode {
+    fn name(&self) -> String { format!("proc-{}", self.pid) }
+    fn id(&self) -> usize { 0x3000 + self.pid }
+    fn object_type(&self) -> &'static str { "Directory" }
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &'static str> { Ok(crate::object::ObjectSnapshot { data: Vec::new(), related_handles: Vec::new() }) }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &'static str> { Ok(()) }
+}
+
+impl Inode for ProcPidDirInode {
+    fn inode_num(&self) -> u32 { (0x3000 + self.pid) as u32 }
+    fn stat(&self) -> VfsResult<FileStat> {
+        Ok(FileStat { size: 0, file_type: FileType::Directory, mode: 0o555, uid: 0, gid: 0, mtime: 0 })
+    }
+    fn lookup(&self, name: &str) -> VfsResult<Arc<dyn Inode>> {
+        if name == "status" || name == "cmdline" || name == "cwd" {
+            return Ok(Arc::new(ProcPidFileInode { pid: self.pid, file_type: String::from(name) }));
+        }
+        Err(VfsError::NotFound)
+    }
+    fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> { Err(VfsError::IsADirectory) }
+    fn create(&self, _n: &str, _t: FileType) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::PermissionDenied) }
+    fn read_dir(&self) -> VfsResult<Vec<String>> {
+        Ok(alloc::vec![String::from("status"), String::from("cmdline"), String::from("cwd")])
+    }
+    fn mkdir(&self, _name: &str) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::PermissionDenied) }
+    fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn remove_dir(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn rename(&self, _old: &str, _p: Arc<dyn Inode>, _new: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+}
+
+#[derive(Debug)]
+pub struct ProcPidFileInode {
+    pid: usize,
+    file_type: String,
+}
+
+impl crate::object::KernelObject for ProcPidFileInode {
+    fn name(&self) -> String { format!("proc-{}-{}", self.pid, self.file_type) }
+    fn id(&self) -> usize { 0x4000 + self.pid }
+    fn object_type(&self) -> &'static str { "File" }
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &'static str> { Ok(crate::object::ObjectSnapshot { data: Vec::new(), related_handles: Vec::new() }) }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &'static str> { Ok(()) }
+}
+
+impl Inode for ProcPidFileInode {
+    fn inode_num(&self) -> u32 { (0x4000 + self.pid) as u32 }
+    fn stat(&self) -> VfsResult<FileStat> {
+        Ok(FileStat { size: 0, file_type: FileType::File, mode: 0o444, uid: 0, gid: 0, mtime: 0 })
+    }
+    fn lookup(&self, _name: &str) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::NotADirectory) }
+    fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> {
+        let mut content = String::new();
+        crate::cpu::without_interrupts(|| {
+            let tasks = crate::process::scheduler::TASKS.lock();
+            if let Some(task) = &tasks[self.pid] {
+                if self.file_type == "status" {
+                    content = format!("Name:\t{}\nState:\t{:?}\nPid:\t{}\nPPid:\t{}\n", task.name, task.state, task.id, task.parent_id.unwrap_or(0));
+                } else if self.file_type == "cmdline" {
+                    content = format!("{}\0", task.name);
+                } else if self.file_type == "cwd" {
+                    content = format!("{}\n", task.cwd);
+                }
+            }
+        });
+        if content.is_empty() { return Err(VfsError::NotFound); }
+        Ok(Arc::new(ProcFileHandle { content: content.into_bytes(), offset: Mutex::new(0) }))
+    }
+    fn create(&self, _n: &str, _t: FileType) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::PermissionDenied) }
+    fn read_dir(&self) -> VfsResult<Vec<String>> { Err(VfsError::NotADirectory) }
+    fn mkdir(&self, _name: &str) -> VfsResult<Arc<dyn Inode>> { Err(VfsError::PermissionDenied) }
+    fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn remove_dir(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn rename(&self, _old: &str, _p: Arc<dyn Inode>, _new: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn link(&self, _n: &str, _i: Arc<dyn Inode>) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chmod(&self, _m: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chown(&self, _u: u16, _g: u16) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
 }

@@ -10,7 +10,7 @@
 #define PIT_CH1 0x41
 #define PIT_CH2 0x42
 
-static uint64_t ticks = 0;
+static volatile uint64_t ticks = 0;
 
 void timer_init(uint32_t frequency) {
     // The value we send to the PIT is the value to divide it's input clock
@@ -46,7 +46,7 @@ void timer_sleep(uint32_t ms) {
     /* 100 Hz assumed */
     uint64_t target = start + ms / 10;
     while(ticks < target) {
-        __asm__("hlt");
+        __asm__ volatile ("hlt" : : : "memory");
     }
 }
 

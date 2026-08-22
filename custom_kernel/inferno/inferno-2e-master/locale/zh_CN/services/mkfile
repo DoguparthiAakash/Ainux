@@ -1,7 +1,0 @@
-<../../../mkconfig
-
-DIRS=\
-	config\
-	webget\
-
-<$ROOT/mkfiles/mksubdirs

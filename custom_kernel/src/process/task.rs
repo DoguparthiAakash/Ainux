@@ -56,17 +56,23 @@ pub struct Task {
     pub signals: u32,
     pub syscall_count: u64,
     pub canary: u64,
-    pub room: Arc<crate::process::room::RoomContext>,
+    pub pgid: usize,
+    pub sid: usize,
+    pub signal_mask: u64,
+    pub pending_signals: u64,
+    pub cwd: alloc::string::String,
+    pub environ: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+    pub cell: Arc<crate::process::cell::ExecutionCell>,
     pub handle_table: Mutex<HandleTable>,
-    
-    // --- Phase 7: Wasm Orchestration ---
-    pub wasm_fuel: u64,
-    pub wasm_state: Option<alloc::sync::Arc<Mutex<crate::wasm::WasmProcessState>>>,
+    pub name: alloc::string::String,
+    pub sigactions: [crate::process::signal::SigAction; 64],
+    pub brk: u64,
+    pub mmap_base: u64,
 }
 
 impl KernelObject for Task {
     fn name(&self) -> alloc::string::String {
-        alloc::format!("task-{}", self.id)
+        self.name.clone()
     }
     fn id(&self) -> usize {
         self.id
@@ -106,7 +112,7 @@ impl KernelObject for Task {
 pub const STACK_CANARY_MAGIC: u64 = 0xDEADC0DE_FEEDFACE;
 
 impl Task {
-    pub fn new_free(room: Arc<crate::process::room::RoomContext>) -> Self {
+    pub fn new_free(cell: Arc<crate::process::cell::ExecutionCell>) -> Self {
         Self {
             id: 0,
             context: Context { rsp:0, r15:0, r14:0, r13:0, r12:0, rbx:0, rbp:0, rip:0 },
@@ -128,10 +134,18 @@ impl Task {
             signals: 0,
             syscall_count: 0,
             canary: STACK_CANARY_MAGIC,
-            room,
+            pgid: 0,
+            sid: 0,
+            signal_mask: 0,
+            pending_signals: 0,
+            cwd: alloc::string::String::from("/"),
+            environ: alloc::vec::Vec::new(),
+            cell,
             handle_table: Mutex::new(HandleTable::new()),
-            wasm_fuel: 0,
-            wasm_state: None,
+            name: alloc::string::String::from("unknown"),
+            sigactions: [crate::process::signal::SigAction::default(); 64],
+            brk: 0x0000000040000000, // Reasonable start for heap
+            mmap_base: 0x0000700000000000,
         }
     }
 }

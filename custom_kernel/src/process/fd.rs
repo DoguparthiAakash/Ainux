@@ -29,7 +29,8 @@ impl FileDescriptorTable {
     
     
     pub fn alloc_fd(&mut self, handle: Arc<dyn FileHandle>) -> Option<usize> {
-        for (i, slot) in self.files.iter_mut().enumerate() {
+        // fd 0, 1, 2 are reserved for stdin, stdout, stderr
+        for (i, slot) in self.files.iter_mut().enumerate().skip(3) {
             if slot.is_none() {
                 *slot = Some(FileDescriptor { handle, offset: 0 });
                 return Some(i);
@@ -60,6 +61,33 @@ impl FileDescriptorTable {
     pub fn free_fd(&mut self, fd: usize) {
         if fd < self.files.len() {
             self.files[fd] = None;
+        }
+    }
+    
+    pub fn dup(&mut self, oldfd: usize) -> Option<usize> {
+        if let Some(entry) = self.get_entry(oldfd) {
+            for (i, slot) in self.files.iter_mut().enumerate().skip(3) {
+                if slot.is_none() {
+                    *slot = Some(entry);
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+    
+    pub fn dup2(&mut self, oldfd: usize, newfd: usize) -> Option<usize> {
+        if newfd >= MAX_FDS {
+            return None;
+        }
+        if oldfd == newfd {
+            return Some(newfd);
+        }
+        if let Some(entry) = self.get_entry(oldfd) {
+            self.files[newfd] = Some(entry);
+            Some(newfd)
+        } else {
+            None
         }
     }
 }

@@ -1,8 +1,92 @@
 use alloc::vec::Vec;
 use crate::mm::vmm;
-use core::fmt::Write;
 use crate::fs::vfs::{self, ArcInode, FileType};
 
+/// Translate a user virtual address to a kernel-writable pointer via page table walk + HHDM.
+unsafe fn user_virt_to_hhdm_ptr(cr3: u64, vaddr: u64) -> Option<*mut u8> {
+    let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let pml4 = core::slice::from_raw_parts((cr3 + hhdm) as *const u64, 512);
+    let p4i = ((vaddr >> 39) & 0x1FF) as usize;
+    if pml4[p4i] & 1 == 0 { return None; }
+    let pdpt = core::slice::from_raw_parts(((pml4[p4i] & 0x000FFFFFFFFFF000) + hhdm) as *const u64, 512);
+    let p3i = ((vaddr >> 30) & 0x1FF) as usize;
+    if pdpt[p3i] & 1 == 0 { return None; }
+    let pd = core::slice::from_raw_parts(((pdpt[p3i] & 0x000FFFFFFFFFF000) + hhdm) as *const u64, 512);
+    let p2i = ((vaddr >> 21) & 0x1FF) as usize;
+    if pd[p2i] & 1 == 0 { return None; }
+    let pt = core::slice::from_raw_parts(((pd[p2i] & 0x000FFFFFFFFFF000) + hhdm) as *const u64, 512);
+    let p1i = ((vaddr >> 12) & 0x1FF) as usize;
+    if pt[p1i] & 1 == 0 { return None; }
+    let frame = pt[p1i] & 0x000FFFFFFFFFF000;
+    let offset = vaddr & 0xFFF;
+    Some((frame + hhdm + offset) as *mut u8)
+}
+
+/// Write a u64 to a user virtual address via HHDM.
+unsafe fn write_user_u64(cr3: u64, vaddr: u64, val: u64) {
+    if let Some(ptr) = user_virt_to_hhdm_ptr(cr3, vaddr) {
+        (ptr as *mut u64).write_unaligned(val);
+    }
+}
+
+/// Set up the initial user stack per the System V AMD64 ABI.
+/// Returns the initial RSP value (user virtual address).
+///
+/// Stack layout (growing downward from stack_top):
+///   AT_NULL (0, 0)      -- end of auxv
+///   AT_ENTRY (entry)    -- auxv
+///   AT_PAGESZ (4096)    -- auxv  
+///   NULL                -- end of envp
+///   NULL                -- end of argv
+///   argv[0] ptr         -- points to program name string
+///   argc = 1
+///   [program name string "ainux" at a known location above]
+pub fn setup_user_stack(cr3: u64, stack_top: u64, entry: u64) -> u64 {
+    // We'll build the stack from the top, pushing downward.
+    // First, write the program name string near the top.
+    let prog_name = b"ainux\0";
+    let string_addr = stack_top - 64; // place string here
+    unsafe {
+        for (i, &byte) in prog_name.iter().enumerate() {
+            if let Some(ptr) = user_virt_to_hhdm_ptr(cr3, string_addr + i as u64) {
+                *ptr = byte;
+            }
+        }
+    }
+
+    // Now build the stack frame below the string area.
+    // Stack must be 16-byte aligned at _start entry.
+    let mut sp = stack_top - 128; // leave room for string
+    sp &= !0xF; // 16-byte align
+
+    // Push items bottom-up (we write from low to high, but sp points to lowest)
+    // Layout at sp:
+    //   sp+0:  argc (1)
+    //   sp+8:  argv[0] (pointer to program name)
+    //   sp+16: NULL (argv terminator)
+    //   sp+24: NULL (envp terminator)
+    //   sp+32: AT_PAGESZ (6)
+    //   sp+40: 4096
+    //   sp+48: AT_ENTRY (9)
+    //   sp+56: entry
+    //   sp+64: AT_NULL (0)
+    //   sp+72: 0
+
+    unsafe {
+        write_user_u64(cr3, sp,      1);              // argc = 1
+        write_user_u64(cr3, sp + 8,  string_addr);    // argv[0]
+        write_user_u64(cr3, sp + 16, 0);              // argv terminator
+        write_user_u64(cr3, sp + 24, 0);              // envp terminator
+        write_user_u64(cr3, sp + 32, 6);              // AT_PAGESZ
+        write_user_u64(cr3, sp + 40, 4096);           // page size value
+        write_user_u64(cr3, sp + 48, 9);              // AT_ENTRY
+        write_user_u64(cr3, sp + 56, entry);          // entry point
+        write_user_u64(cr3, sp + 64, 0);              // AT_NULL
+        write_user_u64(cr3, sp + 72, 0);              // AT_NULL value
+    }
+
+    sp
+}
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct ElfHeader {
@@ -42,15 +126,36 @@ pub struct ProgramHeader {
 }
 
 pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
-    let handle = inode.open(0).map_err(|_| ())?;
+    let handle = match inode.open(0) {
+        Ok(h) => h,
+        Err(_) => {
+            {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "ELF LOAD ERROR: open failed\n");
+}
+            return Err(());
+        }
+    };
+    
     let mut header = ElfHeader::default();
     let header_ptr = &mut header as *mut _ as *mut u8;
     let header_slice = unsafe { core::slice::from_raw_parts_mut(header_ptr, core::mem::size_of::<ElfHeader>()) };
     
-    handle.read(header_slice, 0).map_err(|_| ())?;
+    if let Err(_) = handle.read(header_slice, 0) {
+        crate::drivers::video::put_str("ELF LOAD ERROR: read header failed\n");
+        return Err(());
+    }
 
     if header.magic != [0x7f, b'E', b'L', b'F'] {
+        crate::drivers::video::put_str("ELF LOAD ERROR: invalid magic\n");
         return Err(()); // Not an ELF
+    }
+
+    let mut load_bias = 0u64;
+    if header.e_type == 3 { // ET_DYN (PIE)
+        let rand = crate::lib::prng::get_random_u64();
+        load_bias = 0x100000000 + (rand & 0x3FFFFFFFF000);
     }
 
     // Parse Program Headers
@@ -60,79 +165,178 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
         let ph_slice = unsafe { core::slice::from_raw_parts_mut(ph_ptr, core::mem::size_of::<ProgramHeader>()) };
         
         let offset = header.phoff + (i as u64 * header.phentsize as u64);
-        handle.read(ph_slice, offset).map_err(|_| ())?;
+        if let Err(_) = handle.read(ph_slice, offset) {
+            {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "ELF LOAD ERROR: read program header failed\n");
+}
+            return Err(());
+        }
 
         if ph.p_type == 1 { // PT_LOAD
              // Map segment in memory
-             // For simple functional kernel, we allocate pages and copy data
-             let pages = (ph.p_memsz + 4095) / 4096;
-              for p in 0..pages {
-                 let virt = ph.p_vaddr + (p * 4096);
+             let memsz = ph.p_memsz;
+             let vaddr = ph.p_vaddr + load_bias;
+             let offset_in_page = vaddr & 0xFFF;
+             let pages = (memsz + offset_in_page + 4095) / 4096;
+             
+             let mut page_flags = 0x05; // Present, User
+             if ph.p_flags & 2 != 0 {
+                 page_flags |= 0x02; // Writable
+             }
+             
+             for p in 0..pages {
+                 let virt = (vaddr & !0xFFF) + (p * 4096);
                  let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
                  unsafe {
-                     crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, 0x07); // Present, Write, User
-                     if p * 4096 < ph.p_filesz {
-                         let to_copy = core::cmp::min(4096, ph.p_filesz - (p * 4096));
-                         let mut buf = alloc::vec![0u8; 4096];
-                         handle.read(&mut buf[..to_copy as usize], ph.p_offset + (p * 4096)).unwrap();
-                         
-                         // Use HHDM to copy data into the frame
-                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
+                     crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, page_flags);
+                     let hhdm_offset = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+                     let phys_ptr = (frame + hhdm_offset) as *mut u8;
+                     core::ptr::write_bytes(phys_ptr, 0, 4096);
+                     
+                     // Compute how many bytes from the file should go into this page
+                     // For the first page, we start at `offset_in_page`.
+                     // For subsequent pages, we start at 0.
+                     let dest_offset = if p == 0 { offset_in_page } else { 0 };
+                     let mut file_offset_for_page = ph.p_offset;
+                     if p > 0 {
+                         file_offset_for_page += (p * 4096) - offset_in_page;
+                     }
+                     
+                     // Determine how many bytes we can actually read from the file for this page
+                     let mut bytes_to_read = 4096 - dest_offset;
+                     
+                     // Make sure we don't read past the end of the file segment
+                     if file_offset_for_page >= ph.p_offset + ph.p_filesz {
+                         bytes_to_read = 0;
+                     } else if file_offset_for_page + bytes_to_read > ph.p_offset + ph.p_filesz {
+                         bytes_to_read = (ph.p_offset + ph.p_filesz) - file_offset_for_page;
+                     }
+                     
+                     if bytes_to_read > 0 {
+                         let mut bytes_read = 0;
+                         while bytes_read < bytes_to_read {
+                             let mut chunk = alloc::vec![0u8; (bytes_to_read - bytes_read) as usize];
+                             match handle.read(&mut chunk, file_offset_for_page + bytes_read) {
+                                 Ok(n) if n > 0 => {
+                                     core::ptr::copy_nonoverlapping(
+                                         chunk.as_ptr(),
+                                         phys_ptr.add(dest_offset as usize + bytes_read as usize),
+                                         n
+                                     );
+                                     bytes_read += n as u64;
+                                 },
+                                 Ok(_) => break, // EOF reached early
+                                 Err(_) => {
+                                     crate::drivers::video::put_str("ELF LOAD ERROR: IOError on read!\n");
+                                     return Err(());
+                                 }
+                             }
+                         }
                      }
                  }
              }
         }
     }
 
-    Ok(header.entry)
+    Ok(header.entry + load_bias)
+}
+
+pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState) -> Result<(), ()> {
+    match crate::shell::find_inode(path) {
+        Ok(inode) => {
+            let cr3 = crate::mm::vmm::create_address_space();
+            if cr3 == 0 { return Err(()); }
+            
+            match load_elf(inode, cr3) {
+                Ok(entry) => {
+                    let stack_base = 0x00007FFFFFFFE000u64;
+                    let stack_pages = 256u64;
+                    for p in 0..stack_pages {
+                        let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                        unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_base - (p * 4096), frame, 0x07); }
+                    }
+                    
+                    let stack_top = stack_base + 4096;
+                    let initial_sp = setup_user_stack(cr3, stack_top, entry);
+                    
+                    unsafe {
+                        (*state).rcx = entry;
+                        (*state).user_rsp = initial_sp;
+                    }
+                    
+                    let pid = crate::process::scheduler::get_current_pid();
+                    crate::cpu::without_interrupts(|| {
+                        let mut tasks = crate::process::scheduler::TASKS.lock();
+                        if let Some(task) = &mut tasks[pid] {
+                            task.cr3 = cr3;
+                            unsafe {
+                                core::arch::asm!("mov cr3, {}", in(reg) cr3);
+                            }
+                        }
+                    });
+                    
+                    Ok(())
+                },
+                Err(_) => Err(())
+            }
+        },
+        Err(_) => Err(())
+    }
 }
 
 pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
-    if let Ok(inode) = crate::shell::find_inode(path) {
-        unsafe {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            let _ = write!(serial, "[Loader] Found inode for {}\n", path);
-        }
-        let cr3 = crate::mm::vmm::create_address_space();
-        if cr3 == 0 { return Err(()); }
-        unsafe {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            let _ = write!(serial, "[Loader] Address space created: {:#x}\n", cr3);
-        }
-        
-        if let Ok(entry) = load_elf(inode, cr3) {
-            unsafe {
-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                let _ = write!(serial, "[Loader] ELF segments loaded. Entry: {:#x}\n", entry);
-            }
-            // Allocate a user stack (1MB)
-            let stack_top = 0x00007FFFFFFFF000;
-            let stack_pages = 256;
-            for p in 0..stack_pages {
-                let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
-                unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
-            }
-            unsafe {
-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                let _ = write!(serial, "[Loader] User stack allocated.\n");
+    match crate::shell::find_inode(path) {
+        Ok(inode) => {
+            let cr3 = crate::mm::vmm::create_address_space();
+            if cr3 == 0 { 
+                {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "ELF LOAD ERROR: create_address_space failed\n");
+}
+                return Err(()); 
             }
             
-            let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
-            return Ok(pid);
-        } else {
-            unsafe {
-                let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                let _ = write!(serial, "loader: load_elf failed for path: {}\n", path);
+            match load_elf(inode, cr3) {
+                Ok(entry) => {
+                    // Allocate a user stack (1MB)
+                    let stack_base = 0x00007FFFFFFFE000u64; // top page
+                    let stack_pages = 256u64;
+                    for p in 0..stack_pages {
+                        let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                        unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_base - (p * 4096), frame, 0x07); }
+                    }
+                    
+                    // Build the initial user stack (System V ABI)
+                    // musl _start expects: [argc, argv[0], NULL, envp NULL, auxv AT_NULL]
+                    // We write from the top of the stack downward using HHDM.
+                    let stack_top = stack_base + 4096; // 0x7FFFFFFFFFFF000 + 0x1000
+                    let initial_sp = setup_user_stack(cr3, stack_top, entry);
+                    
+                    let pid = crate::process::scheduler::spawn_user(entry, initial_sp, cr3, path);
+                    return Ok(pid);
+                },
+                Err(_) => {
+                    {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "ELF LOAD ERROR: load_elf returned Err(())\n");
+}
+                    return Err(());
+                }
             }
-        }
-    } else {
-        unsafe {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            let _ = write!(serial, "loader: find_inode failed for path: {}\n", path);
+        },
+        Err(_) => {
+            {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "ELF LOAD ERROR: find_inode failed\n");
+}
+            return Err(());
         }
     }
-    Err(())
 }
 
 #[repr(C, packed)]
@@ -182,14 +386,14 @@ pub fn load_alo(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
                  let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
                  unsafe {
                      crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, 0x07); // Present, Write, User
+                     let hhdm_offset = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+                     let phys_ptr = (frame + hhdm_offset) as *mut u8;
+                     core::ptr::write_bytes(phys_ptr, 0, 4096);
                      if p * 4096 < seg.size {
                          let to_copy = core::cmp::min(4096, seg.size - (p * 4096));
                          let mut buf = alloc::vec![0u8; 4096];
                          handle.read(&mut buf[..to_copy as usize], seg.offset + (p * 4096)).unwrap();
-                         
-                         // Use HHDM to copy data into the frame
-                         let dest_virt = crate::mm::vmm::phys_to_virt(frame);
-                         core::ptr::copy_nonoverlapping(buf.as_ptr(), dest_virt as *mut u8, to_copy as usize);
+                         core::ptr::copy_nonoverlapping(buf.as_ptr(), phys_ptr, to_copy as usize);
                      }
                  }
              }
@@ -213,7 +417,7 @@ pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
             }
             
-            let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3);
+            let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3, path);
             return Ok(pid);
         }
     }

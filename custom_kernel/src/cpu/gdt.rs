@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // Segment Selectors
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
-pub const USER_DATA: u16 = 0x18 | 3;
-pub const USER_CODE: u16 = 0x20 | 3;
+pub const USER_DATA: u16 = 0x18 | 3;  // Must come BEFORE User Code for SYSRET
+pub const USER_CODE: u16 = 0x20 | 3;  // SYSRET loads CS = base+16
 pub const TSS_SELECTOR: u16 = 0x28;
 
 #[repr(C, packed)]
@@ -42,8 +42,19 @@ impl Tss {
     }
 }
 
+// Global TSS Instance
+#[no_mangle]
+pub static mut TSS: Tss = Tss::new();
+
 // IST stack sizes (8KB each — enough for fault handlers)
 const IST_STACK_SIZE: usize = 8192;
+
+// IST stack storage (statically allocated, page-aligned)
+#[repr(C, align(4096))]
+struct IstStack([u8; IST_STACK_SIZE]);
+
+static mut IST1_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+static mut IST2_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -69,50 +80,54 @@ impl GdtDescriptor {
     }
 }
 
-// Per-CPU state to ensure SMP safety
-struct CpuState {
-    gdt: [GdtDescriptor; 7],
-    tss: Tss,
-    ist1: [u8; IST_STACK_SIZE],
-}
-
-static mut CPU_STATES: [CpuState; crate::cpu::percpu::MAX_CPUS] = [const { 
-    CpuState {
-        gdt: [
-            GdtDescriptor::new(0, 0, 0, 0),
-            GdtDescriptor::new(0, 0xFFFFFFFF, 0x9B, 0xA0), // 1: Kernel Code (G=1, L=1)
-            GdtDescriptor::new(0, 0xFFFFFFFF, 0x93, 0x80), // 2: Kernel Data (G=1)
-            GdtDescriptor::new(0, 0xFFFFFFFF, 0xF3, 0x80), // 3: User Data 64 (G=1)
-            GdtDescriptor::new(0, 0xFFFFFFFF, 0xFB, 0xA0), // 4: User Code 64 (G=1, L=1)
-            GdtDescriptor::new(0, 0, 0, 0),
-            GdtDescriptor::new(0, 0, 0, 0),
-        ],
-        tss: Tss::new(),
-        ist1: [0; IST_STACK_SIZE],
-    }
-}; crate::cpu::percpu::MAX_CPUS];
-
 #[repr(C, packed)]
 struct GdtPointer {
     limit: u16,
     base: u64,
 }
 
+// GDT Table (7 entries: Null, KC, KD, UC, UD, TSS_Low, TSS_High)
+pub static mut GDT: [GdtDescriptor; 7] = [
+    // 0: Null
+    GdtDescriptor::new(0, 0, 0, 0),
+    // 1: Kernel Code
+    GdtDescriptor::new(0, 0, 0x9A, 0x20),
+    // 2: Kernel Data
+    GdtDescriptor::new(0, 0, 0x92, 0x00),
+    // 3: User Data (Access 0xF3: Present, Ring 3, Data, Writable, Accessed) — MUST be before User Code for SYSRET
+    GdtDescriptor { limit_low: 0xFFFF, base_low: 0, base_middle: 0, access: 0xF3, granularity: 0xCF, base_high: 0 },
+    // 4: User Code (Access 0xFB: Present, Ring 3, Code, Readable, Accessed)
+    GdtDescriptor { limit_low: 0xFFFF, base_low: 0, base_middle: 0, access: 0xFB, granularity: 0xAF, base_high: 0 },
+    // 5: TSS Low (will be filled in init)
+    GdtDescriptor::new(0, 0, 0, 0),
+    // 6: TSS High (will be filled in init)
+    GdtDescriptor::new(0, 0, 0, 0),
+];
+
 // Helper to write TSS Descriptor (16 bytes)
-unsafe fn set_tss_descriptor(gdt: &mut [GdtDescriptor; 7], index: usize, tss: &Tss) {
+unsafe fn set_tss_descriptor(index: usize, tss: &'static Tss) {
     let base = tss as *const _ as u64;
     let limit = (size_of::<Tss>() - 1) as u64;
     
-    gdt[index] = GdtDescriptor {
+    // Low Descriptor (Standard GDT layout)
+    // Type 0x89 (Present, Ring 0, System, 64-bit TSS Available)
+    // Wait, Type 9 for 64-bit TSS Available? 
+    // AMD64 Vol 2: System-Segment Descriptor (Type 9 = Available 64-bit TSS)
+    // Access byte: Present(1) | DPL(00) | S(0) | Type(1001) = 10001001 = 0x89?
+    // If we want it available.
+    
+    GDT[index] = GdtDescriptor {
         limit_low: (limit & 0xFFFF) as u16,
         base_low: (base & 0xFFFF) as u16,
         base_middle: ((base >> 16) & 0xFF) as u8,
         access: 0x89, 
-        granularity: ((limit >> 16) & 0x0F) as u8,
+        granularity: ((limit >> 16) & 0x0F) as u8, // No granularity flags for TSS usually?
         base_high: ((base >> 24) & 0xFF) as u8,
     };
     
-    gdt[index + 1] = GdtDescriptor {
+    // High Descriptor (Extension)
+    // Base 63:32, Reserved, Zero
+    GDT[index + 1] = GdtDescriptor {
         limit_low: (base >> 32) as u16,
         base_low: (base >> 48) as u16,
         base_middle: 0,
@@ -122,68 +137,71 @@ unsafe fn set_tss_descriptor(gdt: &mut [GdtDescriptor; 7], index: usize, tss: &T
     };
 }
 
-pub unsafe fn init_ap(cpu_id: usize) {
-    let state = &mut CPU_STATES[cpu_id];
-        
+pub fn init() {
+    unsafe {
         // Setup IST stacks in TSS for fault isolation
-        let ist1_top = state.ist1.as_ptr() as u64 + IST_STACK_SIZE as u64;
-        state.tss.ist1 = ist1_top;
+        // IST1 = Double Fault stack (prevents triple fault on corrupted RSP)
+        // IST2 = NMI stack (NMI can arrive at any time, needs dedicated stack)
+        let ist1_top = IST1_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+        let ist2_top = IST2_STACK.0.as_ptr() as u64 + IST_STACK_SIZE as u64;
+        TSS.ist1 = ist1_top;
+        TSS.ist2 = ist2_top;
 
-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-        use core::fmt::Write;
-        let _ = write!(serial, "GDT: CPU {} IST1_TOP: {:#x}\n", cpu_id, ist1_top);
-
-        // Setup TSS Descriptor in per-CPU GDT at index 5
-        set_tss_descriptor(&mut state.gdt, 5, &state.tss);
+        // Setup TSS Descriptor
+        set_tss_descriptor(5, &TSS);
 
         let gdt_ptr = GdtPointer {
             limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
-            base: state.gdt.as_ptr() as u64,
+            base: GDT.as_ptr() as u64,
         };
 
+        // Load GDT
         asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+
+        // Reload Segments
+        load_segments();
         
-        // Load Segment Registers
-        asm!(
-            "push {0}",
-            "lea {1}, [rip + 2f]",
-            "push {1}",
-            "retfq",
-            "2:",
-            "mov ds, {2:x}",
-            "mov es, {2:x}",
-            "mov fs, {2:x}",
-            "mov gs, {2:x}",
-            "mov ss, {2:x}",
-            in(reg) KERNEL_CODE as u64,
-            out(reg) _,
-            in(reg) KERNEL_DATA as u16,
-            options(preserves_flags)
-        );
-
-        // Load TSS
-        asm!("ltr {0:x}", in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
-
-        // CRITICAL: We must set GS_BASE AFTER loading the GS segment register.
-        // Loading the GS selector (mov gs, ax) reloads the base from the GDT,
-        // which clears any base set by WRMSR.
-        let prcb_addr = crate::cpu::percpu::get_prcb_addr(cpu_id);
-        crate::cpu::percpu::CPUS[cpu_id].init(prcb_addr, cpu_id as u32);
-        crate::cpu::percpu::write_gs_base(prcb_addr);
-        crate::cpu::percpu::write_kernel_gs_base(prcb_addr);
-}
-
-pub unsafe fn init() {
-    init_ap(0);
-}
-
-pub fn load_segments() {
-    // This is now integrated into init() via retfq
+        // Load Task Register (TSS)
+        asm!("ltr ax", in("ax") TSS_SELECTOR, options(nostack, preserves_flags));
+    }
 }
 
 pub fn set_kernel_stack(stack_top: u64) {
-    let cpu_id = crate::cpu::percpu::get_current_cpu_id();
     unsafe {
-        CPU_STATES[cpu_id].tss.rsp0 = stack_top;
+        TSS.rsp0 = stack_top;
     }
 }
+
+/// Load the BSP's GDT on an Application Processor.
+/// Does NOT touch TSS or load TR — avoids GP fault from "busy" TSS descriptor.
+/// APs are parked and never do ring transitions, so TSS is not needed.
+pub fn init_ap() {
+    unsafe {
+        let gdt_ptr = GdtPointer {
+            limit: (size_of::<[GdtDescriptor; 7]>() - 1) as u16,
+            base: GDT.as_ptr() as u64,
+        };
+        asm!("lgdt [{}]", in(reg) &gdt_ptr, options(nostack));
+        load_segments();
+    }
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn load_segments() {
+    naked_asm!(
+        "push 0x08",        // Push code segment
+        "lea rax, [rip + 1f]", // Push return address
+        "push rax",
+        "retfq",            // Far return to reload CS
+        "1:",
+        "mov ax, 0x10",      // Load data segment
+        "mov ds, ax",
+        "mov es, ax",
+        // NOTE: fs and gs intentionally NOT reloaded here.
+        // Reloading them would zero FS_BASE/GS_BASE MSRs on AMD64,
+        // destroying per-CPU state pointers.
+        "mov ss, ax",
+        "ret",
+    );
+}
+

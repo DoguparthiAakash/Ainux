@@ -103,6 +103,7 @@ impl SlabCache {
     }
 
     pub fn free(&self, ptr: *mut u8) {
+        let _lock = self.slabs.lock();
         // Simple return to free list (we assume the pointer is valid)
         let page_base = (ptr as usize & !(PAGE_SIZE - 1)) as *mut u8;
         let header = unsafe { &mut *(page_base as *mut SlabHeader) };

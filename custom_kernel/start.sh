@@ -21,7 +21,7 @@ qemu-system-x86_64 \
     -cdrom ainux.iso \
     -boot d \
     -serial stdio \
-    -drive file=disk2.img,format=raw,index=0,media=disk \
+    -drive file=disk4.img,format=raw,index=0,media=disk \
     $ACCEL \
     -net nic,model=rtl8139 \
     -net user

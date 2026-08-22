@@ -12,6 +12,9 @@ pub struct RtcTime {
     pub year: usize,
 }
 
+use core::sync::atomic::{AtomicI32, Ordering};
+pub static TIMEZONE_OFFSET_HOURS: AtomicI32 = AtomicI32::new(0);
+
 pub fn init() {
     // RTC is always present on x86, no init needed. 
     // Kept for API compatibility.
@@ -101,6 +104,21 @@ pub fn read_time() -> RtcTime {
     // Convert year to full year (assume 20xx)
     let full_year = 2000 + t.year;
     t.year = full_year;
+
+    // Apply Timezone Offset
+    let offset = TIMEZONE_OFFSET_HOURS.load(Ordering::Relaxed);
+    if offset != 0 {
+        let mut h = t.hours as i32 + offset;
+        if h < 0 {
+            h += 24;
+            // Simplistic day wrap (doesn't handle month/year boundaries properly, good enough for toy OS)
+            if t.day > 1 { t.day -= 1; }
+        } else if h >= 24 {
+            h -= 24;
+            t.day += 1; // Simplistic day wrap
+        }
+        t.hours = h as u8;
+    }
     
     t
 }

@@ -1,1 +1,0 @@
-#include "getuser-posix.c"

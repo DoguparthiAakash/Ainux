@@ -280,6 +280,9 @@ void cmd_view(char *filename) {
     int drag_ox = 0, drag_oy = 0, drag_sx = 0, drag_sy = 0;
     uint32_t desktop_color = 0x101010; /* Dark Mode */
     int exit_loop = 0;
+
+    uint64_t last_frame_ticks = timer_get_ticks();
+
     
     while(!exit_loop) {
         for(size_t i=0; i<screen_w*screen_h; i++) framebuffer[i] = desktop_color;
@@ -324,8 +327,23 @@ void cmd_view(char *filename) {
         
         if (is_video) {
              if (vid_playing) {
-                 frame_idx++;
-                 if (frame_idx >= vid_hdr->frames) frame_idx = 0;
+                 uint64_t current_ticks = timer_get_ticks();
+                 uint32_t fps = (vid_hdr && vid_hdr->fps > 0) ? vid_hdr->fps : 30;
+                 uint64_t delay_ticks = 100 / fps;
+                 if (delay_ticks == 0) delay_ticks = 1;
+                 
+                 if (current_ticks - last_frame_ticks >= delay_ticks) {
+                     frame_idx++;
+                     if (frame_idx >= vid_hdr->frames) frame_idx = 0;
+                     last_frame_ticks += delay_ticks;
+                     
+                     if (current_ticks - last_frame_ticks > delay_ticks) {
+                         // Prevent bursting by clamping accumulated lag
+                         last_frame_ticks = current_ticks - delay_ticks;
+                     }
+                 }
+             } else {
+                 last_frame_ticks = timer_get_ticks();
              }
              curr_pixels = vid_frames + (frame_idx * vid_frame_size);
              draw_rect_buf(ctx, cty, ctw, cth, 0x000000); /* BG */
@@ -337,61 +355,100 @@ void cmd_view(char *filename) {
             int row_size = (img_bpp == 3) ? (img_w * 3) : (((img_w * img_bpp * 8 + 31) / 32) * 4);
             if (is_video) row_size = img_w * 3;
 
-            for (int y = 0; y < abs_h; y++) {
-                int sc_y_start = (y * zoom) / 100;
-                int sc_y_end = ((y + 1) * zoom) / 100;
-                int draw_y = cty + pan_y + sc_y_start;
-                int p_h = sc_y_end - sc_y_start;
-                if (p_h < 1) p_h = 1;
-
-                if (draw_y >= cty + cth) break; 
-                if (draw_y + p_h <= cty) continue; 
+            if (zoom == 100) {
+                /* Fast path for 1:1 scale (Original Size) */
+                int start_y = 0, start_x = 0;
+                int end_y = abs_h, end_x = img_w;
                 
-                int vis_y = draw_y;
-                int vis_h = p_h;
-                if (vis_y < cty) { vis_h -= (cty - vis_y); vis_y = cty; }
-                if (vis_y + vis_h > cty + cth) vis_h = (cty + cth) - vis_y;
-                if (vis_h <= 0) continue;
+                if (cty + pan_y < cty) start_y = cty - (cty + pan_y);
+                if (cty + pan_y + abs_h > cty + cth) end_y = cth - pan_y;
+                if (ctx + pan_x < ctx) start_x = ctx - (ctx + pan_x);
+                if (ctx + pan_x + img_w > ctx + ctw) end_x = ctw - pan_x;
                 
-                int src_y = top_down ? y : (abs_h - 1 - y);
-                uint8_t *row = curr_pixels + (src_y * row_size);
+                if (start_y < 0) start_y = 0; if (start_y > abs_h) start_y = abs_h;
+                if (end_y < 0) end_y = 0; if (end_y > abs_h) end_y = abs_h;
+                if (start_x < 0) start_x = 0; if (start_x > img_w) start_x = img_w;
+                if (end_x < 0) end_x = 0; if (end_x > img_w) end_x = img_w;
                 
-                for (int x = 0; x < img_w; x++) {
-                    int sc_x_start = (x * zoom) / 100;
-                    int sc_x_end = ((x + 1) * zoom) / 100;
-                    int draw_x = ctx + pan_x + sc_x_start;
-                    int p_w = sc_x_end - sc_x_start;
-                    if (p_w < 1) p_w = 1;
-                    
-                    if (draw_x >= ctx + ctw) break;
-                    if (draw_x + p_w <= ctx) continue;
-                    
-                    int vis_x = draw_x;
-                    int vis_w = p_w;
-                    if (vis_x < ctx) { vis_w -= (ctx - vis_x); vis_x = ctx; }
-                    if (vis_x + vis_w > ctx + ctw) vis_w = (ctx + ctw) - vis_x;
-                    if (vis_w <= 0) continue;
-                    
-                    uint8_t *px = &row[x * 3];
-                    if (!is_video && img_bpp==4) px = &row[x*4];
-                    else if (!is_video && img_bpp==3) px = &row[x*3];
-                    
-                    uint32_t color = 0;
-                    if (is_video) color = (px[0] << 16) | (px[1] << 8) | px[2]; /* Raw RGB -> BGR for FB usually? FB is usually BGR or RGB */
-                    /* Assuming FB is BGR (0xRRGGBB in u32 means BB on byte 0?). 
-                       Usually framebuffer[i] = 0xRRGGBB. 
-                       If u32 is 0xRRGGBB, then written to memory (LE) is BB GG RR. 
-                       If raw data is RGB (bytes), we want R->16, G->8, B->0. 
-                       My gen_video writes RGB. 0->R.
-                       So color = (px[0] << 16) | (px[1] << 8) | px[2].
-                    */
-                    else {
-                        /* BMP BGR */
-                         if (img_bpp == 3) color = (px[2] << 16) | (px[1] << 8) | px[0];
-                         if (img_bpp == 4) color = (px[3] << 24) | (px[2] << 16) | (px[1] << 8) | px[0];
+                if (start_y < end_y && start_x < end_x) {
+                    for (int y = start_y; y < end_y; y++) {
+                        int draw_y = cty + pan_y + y;
+                        int src_y = top_down ? y : (abs_h - 1 - y);
+                        uint8_t *row = curr_pixels + (src_y * row_size);
+                        uint32_t *fb_row = &framebuffer[draw_y * screen_w + ctx + pan_x];
+                        
+                        if (is_video) {
+                            for (int x = start_x; x < end_x; x++) {
+                                uint8_t *px = &row[x * 3];
+                                fb_row[x] = (px[0] << 16) | (px[1] << 8) | px[2];
+                            }
+                        } else if (img_bpp == 3) {
+                            for (int x = start_x; x < end_x; x++) {
+                                uint8_t *px = &row[x * 3];
+                                fb_row[x] = (px[2] << 16) | (px[1] << 8) | px[0];
+                            }
+                        } else if (img_bpp == 4) {
+                            for (int x = start_x; x < end_x; x++) {
+                                uint8_t *px = &row[x * 4];
+                                fb_row[x] = (px[3] << 24) | (px[2] << 16) | (px[1] << 8) | px[0];
+                            }
+                        }
                     }
+                }
+            } else {
+                for (int y = 0; y < abs_h; y++) {
+                    int sc_y_start = (y * zoom) / 100;
+                    int sc_y_end = ((y + 1) * zoom) / 100;
+                    int draw_y = cty + pan_y + sc_y_start;
+                    int p_h = sc_y_end - sc_y_start;
+                    if (p_h < 1) p_h = 1;
+
+                    if (draw_y >= cty + cth) break; 
+                    if (draw_y + p_h <= cty) continue; 
                     
-                    draw_rect_buf(vis_x, vis_y, vis_w, vis_h, color);
+                    int vis_y = draw_y;
+                    int vis_h = p_h;
+                    if (vis_y < cty) { vis_h -= (cty - vis_y); vis_y = cty; }
+                    if (vis_y + vis_h > cty + cth) vis_h = (cty + cth) - vis_y;
+                    if (vis_h <= 0) continue;
+                    
+                    int src_y = top_down ? y : (abs_h - 1 - y);
+                    uint8_t *row = curr_pixels + (src_y * row_size);
+                    
+                    for (int x = 0; x < img_w; x++) {
+                        int sc_x_start = (x * zoom) / 100;
+                        int sc_x_end = ((x + 1) * zoom) / 100;
+                        int draw_x = ctx + pan_x + sc_x_start;
+                        int p_w = sc_x_end - sc_x_start;
+                        if (p_w < 1) p_w = 1;
+                        
+                        if (draw_x >= ctx + ctw) break;
+                        if (draw_x + p_w <= ctx) continue;
+                        
+                        int vis_x = draw_x;
+                        int vis_w = p_w;
+                        if (vis_x < ctx) { vis_w -= (ctx - vis_x); vis_x = ctx; }
+                        if (vis_x + vis_w > ctx + ctw) vis_w = (ctx + ctw) - vis_x;
+                        if (vis_w <= 0) continue;
+                        
+                        uint8_t *px = &row[x * 3];
+                        if (!is_video && img_bpp==4) px = &row[x*4];
+                        else if (!is_video && img_bpp==3) px = &row[x*3];
+                        
+                        uint32_t color = 0;
+                        if (is_video) color = (px[0] << 16) | (px[1] << 8) | px[2]; 
+                        else {
+                             if (img_bpp == 3) color = (px[2] << 16) | (px[1] << 8) | px[0];
+                             if (img_bpp == 4) color = (px[3] << 24) | (px[2] << 16) | (px[1] << 8) | px[0];
+                        }
+                        
+                        for (int j = 0; j < vis_h; j++) {
+                            uint32_t *fb_row = &framebuffer[(vis_y + j) * screen_w + vis_x];
+                            for (int i = 0; i < vis_w; i++) {
+                                fb_row[i] = color;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -484,7 +541,12 @@ void cmd_view(char *filename) {
         if (keyboard_available()) {
             unsigned char c = (unsigned char)keyboard_getchar();
             if (c == 27) exit_loop = 1;
-            else if (c == ' ') { if (is_video) vid_playing = !vid_playing; }
+            else if (c == ' ') { 
+                if (is_video) {
+                    vid_playing = !vid_playing; 
+                    if (vid_playing) last_frame_ticks = timer_get_ticks();
+                }
+            }
         }
         
         if (screen_pitch == screen_w * 4) {
@@ -497,7 +559,18 @@ void cmd_view(char *filename) {
              }
         }
         
-        timer_sleep(16);
+        if (is_video && vid_playing) {
+             uint64_t current_ticks = timer_get_ticks();
+             uint32_t fps = (vid_hdr && vid_hdr->fps > 0) ? vid_hdr->fps : 30;
+             uint64_t delay_ticks = 100 / fps;
+             if (delay_ticks == 0) delay_ticks = 1;
+             
+             if (current_ticks - last_frame_ticks < delay_ticks) {
+                 timer_sleep((delay_ticks - (current_ticks - last_frame_ticks)) * 10);
+             }
+        } else {
+             timer_sleep(16);
+        }
     }
     
     if (file_data) kfree(file_data);

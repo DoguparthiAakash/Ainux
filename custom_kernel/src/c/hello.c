@@ -20,7 +20,7 @@ void _start() {
     char buf[1];
     while(1) {
         // Read 1 char from fd=0 (stdin)
-        long n = syscall3(7, 0, (long)buf, 1);
+        long n = syscall3(0, 0, (long)buf, 1);
         if (n == 1) {
             // Write to fd=1 (stdout)
             syscall3(1, 1, (long)buf, 1);
@@ -28,9 +28,6 @@ void _start() {
                buf[0] = '\n';
                syscall3(1, 1, (long)buf, 1);
             }
-        } else {
-            // Yield CPU if no data (syscall 24)
-            syscall3(24, 0, 0, 0);
         }
     }
     

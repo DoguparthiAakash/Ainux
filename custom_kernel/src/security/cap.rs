@@ -1,15 +1,19 @@
 use alloc::vec::Vec;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CapType {
     Endpoint(usize), // Points to a global Endpoint ID
     Notification,
-    Memory,
+    Memory(u64, usize), // Physical Address, Size
     Interrupt(u8),
+    Namespace(usize),
+    FileSystem(usize),
+    Resource(alloc::string::String),
+    Syscall(u32),
     Empty,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Capability {
     pub cap_type: CapType,
     pub permissions: u8, // R, W, X, Grant, etc.
@@ -32,7 +36,7 @@ impl CapTable {
 
     pub fn get(&self, handle: usize) -> Option<Capability> {
         if handle < self.caps.len() {
-            self.caps[handle]
+            self.caps[handle].clone()
         } else {
             None
         }

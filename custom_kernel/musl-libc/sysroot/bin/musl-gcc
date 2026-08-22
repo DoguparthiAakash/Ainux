@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "${REALGCC:-gcc}" "$@" -specs "/mnt/e/Ainux/Ainux/custom_kernel/musl-libc/sysroot/lib/musl-gcc.specs"

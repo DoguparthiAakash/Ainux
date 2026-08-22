@@ -233,7 +233,11 @@ impl ZonedAllocator {
             unsafe { crate::cpu::control::restore_cpu_flags(flags); }
 
             let mut allocated_batch = 0;
-            let mut fallback_zones = [target_zone as usize, ZoneType::Normal as usize, ZoneType::HighMem as usize];
+            let fallback_zones = match target_zone {
+                ZoneType::HighMem => [ZoneType::HighMem as usize, ZoneType::Normal as usize, ZoneType::DMA as usize],
+                ZoneType::Normal => [ZoneType::Normal as usize, ZoneType::DMA as usize, ZoneType::HighMem as usize],
+                ZoneType::DMA => [ZoneType::DMA as usize, ZoneType::Normal as usize, ZoneType::HighMem as usize],
+            };
             let mut returned_phys = None;
 
             for &z_idx in fallback_zones.iter() {
@@ -269,7 +273,11 @@ impl ZonedAllocator {
         }
 
         // SLOW PATH: Multi-page allocations go directly to Buddy
-        let mut fallback_zones = [target_zone as usize, ZoneType::Normal as usize, ZoneType::HighMem as usize];
+        let fallback_zones = match target_zone {
+            ZoneType::HighMem => [ZoneType::HighMem as usize, ZoneType::Normal as usize, ZoneType::DMA as usize],
+            ZoneType::Normal => [ZoneType::Normal as usize, ZoneType::DMA as usize, ZoneType::HighMem as usize],
+            ZoneType::DMA => [ZoneType::DMA as usize, ZoneType::Normal as usize, ZoneType::HighMem as usize],
+        };
         for &z_idx in fallback_zones.iter() {
             let zone = &mut self.zones[z_idx];
             if let Some(phys) = zone.alloc_buddy(self.hhdm_offset, order) {

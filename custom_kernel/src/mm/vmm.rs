@@ -85,11 +85,82 @@ pub fn virt_to_phys(virt: u64) -> u64 {
     virt - HHDM_OFFSET.load(Ordering::Relaxed)
 }
 
+/// Perform a full page table walk to resolve a virtual address to physical.
+/// Works for both 4KB and 2MB pages.
+pub unsafe fn virt_to_phys_walk(virt: u64) -> Option<u64> {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let cr3 = read_cr3();
+    let phys_pml4 = cr3 & 0x000FFFFFFFFFF000;
+    let pml4 = &*((phys_pml4 + hhdm_offset) as *const PageTable);
+
+    let p4_idx = p4_index(virt);
+    let p4_entry = pml4.entries[p4_idx];
+    if p4_entry & PRESENT == 0 { return None; }
+
+    let p3 = &*(((p4_entry & 0x000FFFFFFFFFF000) + hhdm_offset) as *const PageTable);
+    let p3_idx = p3_index(virt);
+    let p3_entry = p3.entries[p3_idx];
+    if p3_entry & PRESENT == 0 { return None; }
+    if p3_entry & HUGE_PAGE != 0 {
+        return Some((p3_entry & 0x000FFFFFFC000000) + (virt & 0x3FFFFFFF)); // 1GB page
+    }
+
+    let p2 = &*(((p3_entry & 0x000FFFFFFFFFF000) + hhdm_offset) as *const PageTable);
+    let p2_idx = p2_index(virt);
+    let p2_entry = p2.entries[p2_idx];
+    if p2_entry & PRESENT == 0 { return None; }
+    if p2_entry & HUGE_PAGE != 0 {
+        return Some((p2_entry & 0x000FFFFFFFE00000) + (virt & 0x1FFFFF)); // 2MB page
+    }
+
+    let p1 = &*(((p2_entry & 0x000FFFFFFFFFF000) + hhdm_offset) as *const PageTable);
+    let p1_idx = p1_index(virt);
+    let p1_entry = p1.entries[p1_idx];
+    if p1_entry & PRESENT == 0 { return None; }
+
+    Some((p1_entry & 0x000FFFFFFFFFF000) + (virt & 0xFFF))
+}
+
+pub static KERNEL_PML4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 // ---- VMM Init ----
 
 pub fn init() {
-    // VMM init is a stub — the boot.asm page tables are sufficient for early boot.
-    // The real work happens when we map heap pages, user pages, etc.
+    unsafe {
+        let cr3 = read_cr3();
+        KERNEL_PML4.store(cr3 & 0x000FFFFFFFFFF000, Ordering::Relaxed);
+
+        let pml4 = &mut *( (cr3 & 0x000FFFFFFFFFF000) as *mut PageTable );
+        
+        // Setup HHDM at 0xffff800000000000 (PML4 index 256)
+        // We will map the first 4GB of physical memory using 4 PDs
+        let mut pmm_lock = PMM.lock();
+        if let Some(ref mut pmm) = *pmm_lock {
+            let pdpt_phys = pmm.alloc_frame().expect("Failed to allocate PDPT for HHDM");
+            let pdpt = &mut *(pdpt_phys as *mut PageTable);
+            pdpt.clear();
+            pml4.entries[256] = pdpt_phys | PRESENT | WRITABLE;
+            
+            for i in 0..4 {
+                let pd_phys = pmm.alloc_frame().expect("Failed to allocate PD for HHDM");
+                let pd = &mut *(pd_phys as *mut PageTable);
+                pd.clear();
+                pdpt.entries[i] = pd_phys | PRESENT | WRITABLE;
+                
+                for j in 0..512 {
+                    let phys = ((i * 512) + j) as u64 * 0x200000;
+                    pd.entries[j] = phys | PRESENT | WRITABLE | HUGE_PAGE | GLOBAL;
+                }
+            }
+        }
+        drop(pmm_lock);
+        
+        let new_offset = 0xffff800000000000;
+        HHDM_OFFSET.store(new_offset, Ordering::Relaxed);
+        crate::mm::buddy::ZONED_PMM.lock().set_hhdm_offset(new_offset);
+        
+        flush_tlb_global();
+    }
 }
 
 // ---- Page Table Traversal ----
@@ -186,6 +257,39 @@ pub unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64) -> Result<(), &'sta
     Ok(())
 }
 
+/// Remaps a physical memory region in the HHDM to be Write-Combining (WC).
+/// Assumes PAT1 is configured as WC and mapped via WRITE_THROUGH flag.
+pub unsafe fn remap_hhdm_pages_wc(phys_addr: u64, size_bytes: usize) {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let cr3 = read_cr3();
+    let phys_pml4 = cr3 & 0x000FFFFFFFFFF000;
+    let pml4 = &mut *((phys_pml4 + hhdm_offset) as *mut PageTable);
+
+    let start_align = phys_addr & !(0x1FFFFF); // 2MB align down
+    let end_align = (phys_addr + size_bytes as u64 + 0x1FFFFF) & !(0x1FFFFF); // 2MB align up
+    
+    let mut current = start_align;
+    while current < end_align {
+        let virt = current + hhdm_offset;
+        
+        let p4_idx = p4_index(virt);
+        let p3_idx = p3_index(virt);
+        let p2_idx = p2_index(virt);
+        
+        if let Some(p4) = get_existing_table(pml4.entries[p4_idx], hhdm_offset) {
+            if let Some(p3) = get_existing_table(p4.entries[p3_idx], hhdm_offset) {
+                let entry = &mut p3.entries[p2_idx];
+                if *entry & HUGE_PAGE != 0 {
+                    *entry |= WRITE_THROUGH; // Use PAT1 (WC)
+                    flush_tlb(virt);
+                }
+            }
+        }
+        
+        current += 0x200000;
+    }
+}
+
 pub unsafe fn unmap_page(virt: u64) {
     let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
     let cr3 = read_cr3();
@@ -222,13 +326,18 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
     let p2_idx = ((vaddr >> 21) & 0x1FF) as usize;
     let p1_idx = ((vaddr >> 12) & 0x1FF) as usize;
 
+    // Propagate USER bit to all intermediate levels if requested
+    let user_bit = flags & 0x4; // bit 2 = USER
+
     if pml4[p4_idx] & 1 == 0 {
         let mut pmm_lock = PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
             let frame_addr = pmm.alloc_frame().unwrap();
             core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
-            pml4[p4_idx] = frame_addr | 0x7;
+            pml4[p4_idx] = frame_addr | 0x3 | user_bit; // Present | Writable | (User?)
         }
+    } else {
+        pml4[p4_idx] |= user_bit; // Ensure USER bit is set on existing entry
     }
 
     let pdpt_phys = pml4[p4_idx] & 0x000FFFFFFFFFF000;
@@ -239,8 +348,10 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
         if let Some(ref mut pmm) = *pmm_lock {
             let frame_addr = pmm.alloc_frame().unwrap();
             core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
-            pdpt[p3_idx] = frame_addr | 0x7;
+            pdpt[p3_idx] = frame_addr | 0x3 | user_bit;
         }
+    } else {
+        pdpt[p3_idx] |= user_bit;
     }
 
     let pd_phys = pdpt[p3_idx] & 0x000FFFFFFFFFF000;
@@ -251,57 +362,16 @@ pub unsafe fn map_page_in_pml4(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u6
         if let Some(ref mut pmm) = *pmm_lock {
             let frame_addr = pmm.alloc_frame().unwrap();
             core::ptr::write_bytes((frame_addr + hhdm_offset) as *mut u8, 0, 4096);
-            pd[p2_idx] = frame_addr | 0x7;
+            pd[p2_idx] = frame_addr | 0x3 | user_bit;
         }
+    } else {
+        pd[p2_idx] |= user_bit;
     }
 
     let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
     let pt = slice::from_raw_parts_mut((pt_phys + hhdm_offset) as *mut u64, 512);
 
-    pt[p1_index(vaddr)] = paddr | flags | 1;
-}
-
-/// Returns the raw page table entry for a given virtual address in a specific PML4.
-/// Returns None if the mapping does not exist at any level.
-pub unsafe fn get_mapping_info(pml4_phys: u64, vaddr: u64) -> Option<u64> {
-    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
-    let pml4 = slice::from_raw_parts((pml4_phys + hhdm_offset) as *const u64, 512);
-
-    let p4_idx = p4_index(vaddr);
-    let p3_idx = p3_index(vaddr);
-    let p2_idx = p2_index(vaddr);
-    let p1_idx = p1_index(vaddr);
-
-    if pml4[p4_idx] & PRESENT == 0 { return None; }
-    
-    let pdpt_phys = pml4[p4_idx] & 0x000FFFFFFFFFF000;
-    let pdpt = slice::from_raw_parts((pdpt_phys + hhdm_offset) as *const u64, 512);
-    if pdpt[p3_idx] & PRESENT == 0 { return None; }
-
-    let pd_phys = pdpt[p3_idx] & 0x000FFFFFFFFFF000;
-    let pd = slice::from_raw_parts((pd_phys + hhdm_offset) as *const u64, 512);
-    if pd[p2_idx] & PRESENT == 0 { return None; }
-    
-    if pd[p2_idx] & HUGE_PAGE != 0 {
-        return Some(pd[p2_idx]);
-    }
-
-    let pt_phys = pd[p2_idx] & 0x000FFFFFFFFFF000;
-    let pt = slice::from_raw_parts((pt_phys + hhdm_offset) as *const u64, 512);
-    if pt[p1_idx] & PRESENT == 0 { return None; }
-
-    Some(pt[p1_idx])
-}
-
-/// Maps a contiguous region of memory in a specific address space with user permissions.
-pub unsafe fn map_user_region(pml4_phys: u64, vaddr: u64, paddr: u64, size: usize, flags: u64) -> Result<(), &'static str> {
-    let pages = (size + 4095) / 4096;
-    for i in 0..pages {
-        let v = vaddr + (i as u64 * 4096);
-        let p = paddr + (i as u64 * 4096);
-        map_page_in_pml4(pml4_phys, v, p, flags | USER | PRESENT);
-    }
-    Ok(())
+    pt[p1_idx] = paddr | flags | 1;
 }
 
 /// Creates a new address space (PML4) by copying kernel mappings from the active one.
@@ -321,12 +391,80 @@ pub fn create_address_space() -> u64 {
                     pml4.entries[i] = active.entries[i];
                 }
                 
+                // Do NOT copy entry 0 — user pages will be mapped fresh
+                // pml4.entries[0] = active.entries[0]; // REMOVED: caused USER bit missing
             }
             return pml4_phys;
         }
     }
     0
 }
+/// Clones the user-space portion of an address space (PML4)
+pub unsafe fn clone_address_space(src_pml4_phys: u64) -> u64 {
+    let dest_pml4_phys = create_address_space();
+    if dest_pml4_phys == 0 {
+        return 0;
+    }
+    
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let src_pml4 = &*((src_pml4_phys + hhdm_offset) as *const PageTable);
+    
+    // Only clone user space (indices 0..256)
+    for i in 0..256 {
+        let entry4 = src_pml4.entries[i];
+        if entry4 & PRESENT != 0 && entry4 & HUGE_PAGE == 0 {
+            let p3_phys = entry4 & 0x000FFFFFFFFFF000;
+            let src_p3 = &*((p3_phys + hhdm_offset) as *const PageTable);
+            
+            for j in 0..512 {
+                let entry3 = src_p3.entries[j];
+                if entry3 & PRESENT != 0 && entry3 & HUGE_PAGE == 0 {
+                    let p2_phys = entry3 & 0x000FFFFFFFFFF000;
+                    let src_p2 = &*((p2_phys + hhdm_offset) as *const PageTable);
+                    
+                    for k in 0..512 {
+                        let entry2 = src_p2.entries[k];
+                        if entry2 & PRESENT != 0 && entry2 & HUGE_PAGE == 0 {
+                            let p1_phys = entry2 & 0x000FFFFFFFFFF000;
+                            let src_p1 = &*((p1_phys + hhdm_offset) as *const PageTable);
+                            
+                            for l in 0..512 {
+                                let entry1 = src_p1.entries[l];
+                                if entry1 & PRESENT != 0 {
+                                    let src_frame_phys = entry1 & 0x000FFFFFFFFFF000;
+                                    let flags = entry1 & 0xFFF;
+                                    
+                                    // Allocate a new frame
+                                    let mut pmm_lock = PMM.lock();
+                                    let new_frame_phys = if let Some(ref mut pmm) = *pmm_lock {
+                                        pmm.alloc_frame()
+                                    } else {
+                                        None
+                                    };
+                                    drop(pmm_lock);
+                                    
+                                    if let Some(new_frame_phys) = new_frame_phys {
+                                        // Copy the data
+                                        let src_ptr = (src_frame_phys + hhdm_offset) as *const u8;
+                                        let dest_ptr = (new_frame_phys + hhdm_offset) as *mut u8;
+                                        core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, 4096);
+                                        
+                                        // Map it in the new address space
+                                        let vaddr = ((i as u64) << 39) | ((j as u64) << 30) | ((k as u64) << 21) | ((l as u64) << 12);
+                                        map_page_in_pml4(dest_pml4_phys, vaddr, new_frame_phys, flags);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    dest_pml4_phys
+}
+
 /// Destroys an address space by recursively freeing all userspace frames.
 pub unsafe fn destroy_address_space(pml4_phys: u64) {
     let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);

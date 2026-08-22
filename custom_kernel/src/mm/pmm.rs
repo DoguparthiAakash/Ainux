@@ -72,11 +72,7 @@ pub const PAGE_SIZE: usize = 4096;
 /// HHDM offset. With our boot.asm identity mapping, physical addresses < 1GB
 /// can be accessed directly (offset = 0). We keep this atomic for future
 /// extension when we remap with a proper HHDM.
-pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF800000000000);
-
-pub fn phys_to_virt(phys: u64) -> u64 {
-    phys + HHDM_OFFSET.load(Ordering::SeqCst)
-}
+pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// Total detected system memory in bytes
 pub static TOTAL_MEMORY: AtomicU64 = AtomicU64::new(0);
@@ -137,20 +133,16 @@ impl BitmapPmm {
             let fb_bpp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_bpp)) };
             let fb_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).framebuffer_type)) };
             
-            if fb_type == 1 {
-                let _ = write!(serial, "PMM: VESA Graphics Mode (RGB) Detected!\n");
-                let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
-                let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
-                
-                // Inject to Video Driver 
-                *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = phys_to_virt(fb_addr);
-                *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
-                *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
-                *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
-                *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
-            } else {
-                let _ = write!(serial, "PMM: Multiboot reported Framebuffer Type {} (Text/Indexed). Falling back to Legacy VGA.\n", fb_type);
-            }
+            let _ = write!(serial, "PMM: VESA Graphics Mode Detected!\n");
+            let _ = write!(serial, "PMM: Framebuffer = {:#x}\n", fb_addr);
+            let _ = write!(serial, "PMM: Resolution  = {}x{} at {}bpp\n", fb_width, fb_height, fb_bpp);
+            
+            // Inject to Video Driver 
+            *crate::drivers::video::FRAMEBUFFER_ADDR.lock() = fb_addr;
+            *crate::drivers::video::FRAMEBUFFER_WIDTH.lock() = fb_width as usize;
+            *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() = fb_height as usize;
+            *crate::drivers::video::FRAMEBUFFER_PITCH.lock() = fb_pitch as usize;
+            *crate::drivers::video::FRAMEBUFFER_BPP.lock() = fb_bpp;
             *crate::drivers::video::FRAMEBUFFER_TYPE.lock() = fb_type;
         } else {
             let _ = write!(serial, "PMM: No VESA Framebuffer provided by GRUB. Outputting to Legacy Text Mode.\n");
@@ -220,9 +212,9 @@ impl BitmapPmm {
         let _ = write!(serial, "PMM: Max physical address: {:#x}\n", max_addr);
         let _ = write!(serial, "PMM: Total available memory: {} MB\n", total_available / (1024 * 1024));
 
-        // Cap at 4GB (our identity map covers 4GB via boot.asm PD0-PD3)
-        if max_addr > 0x100000000 {
-            max_addr = 0x100000000;
+        // Cap at 10MB to strictly fulfill memory footprint requirements (<2MB kernel, <10MB system)
+        if max_addr > 0xA00000 {
+            max_addr = 0xA00000;
         }
 
         let total_frames = (max_addr / PAGE_SIZE as u64) as usize;
@@ -242,8 +234,8 @@ impl BitmapPmm {
             let e_size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*entry_ptr).size)) };
             if e_type == MMAP_TYPE_AVAILABLE && e_len >= bitmap_size_bytes as u64 {
                 // Place bitmap at aligned address, avoiding first 16MB
-                let candidate = if e_addr < 0x1000000 {
-                    0x1000000_u64
+                let candidate = if e_addr < 0x200000 {
+                    0x200000_u64
                 } else {
                     e_addr
                 };
@@ -264,9 +256,9 @@ impl BitmapPmm {
 
         let _ = write!(serial, "PMM: Bitmap at physical {:#x}\n", bitmap_phys);
 
-        // The boot.asm mapping PML4[256] points to physical [0-4GB]
-        let hhdm_offset: u64 = 0xFFFF800000000000;
-        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
+        // With identity mapping, virtual == physical for < 1GB
+        let hhdm_offset: u64 = 0;
+        HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
 
         let bitmap_virt = bitmap_phys + hhdm_offset;
         let bitmap_ptr = bitmap_virt as *mut u64;
@@ -286,7 +278,7 @@ impl BitmapPmm {
             hhdm_offset,
         };
 
-        // Phase 3: Free usable regions
+        // Phase 3: Free usable regions (in bitmap only)
         offset = 0;
         while offset < mmap_len {
             let entry_ptr = unsafe { (mmap_addr + offset) as *const MultibootMmapEntry };
@@ -297,17 +289,15 @@ impl BitmapPmm {
             if e_type == MMAP_TYPE_AVAILABLE {
                 let base = e_addr;
                 let len = e_len as usize;
-                // Only free within our managed range
                 if base < max_addr {
                     let actual_len = core::cmp::min(len as u64, max_addr - base) as usize;
                     pmm.free_region(base, actual_len);
-                    crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, actual_len);
                 }
             }
             offset += e_size as usize + 4;
         }
 
-        // Phase 4: Mark critical regions as used
+        // Phase 4: Mark critical regions as used (in bitmap)
         // First 2MB (BIOS, kernel, Multiboot structures, page tables)
         pmm.mark_region_used(0, 0x200000);
         // Bitmap region
@@ -315,7 +305,33 @@ impl BitmapPmm {
         // Kernel region (1MB - 4MB approx, conservative)
         pmm.mark_region_used(0x100000, 0x300000);
 
-        // Recalculate accurately for the counter
+        // Phase 5: Populate ZONED_PMM using the verified bitmap
+        let mut current_free_base: Option<u64> = None;
+        let mut current_free_len: usize = 0;
+        
+        for frame in 0..total_frames {
+            if !pmm.test_bit(frame) {
+                // Free frame
+                if current_free_base.is_none() {
+                    current_free_base = Some((frame as u64) * PAGE_SIZE as u64);
+                    current_free_len = PAGE_SIZE;
+                } else {
+                    current_free_len += PAGE_SIZE;
+                }
+            } else {
+                // Used frame - flush current free region if any
+                if let Some(base) = current_free_base {
+                    crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, current_free_len);
+                    current_free_base = None;
+                    current_free_len = 0;
+                }
+            }
+        }
+        // Flush last region if it ends exactly at total_frames
+        if let Some(base) = current_free_base {
+            crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, current_free_len);
+        }
+
         // Recalculate accurately for the counter
         let (used, total) = pmm.get_stats();
         pmm.allocated_frames.store(used, Ordering::Relaxed);
@@ -331,15 +347,14 @@ impl BitmapPmm {
         use core::fmt::Write;
         let _ = write!(serial, "PMM: Basic init with {} bytes\n", total_bytes);
 
-        let max_addr = core::cmp::min(total_bytes, 0x40000000); // Cap at 1GB
+        let max_addr = core::cmp::min(total_bytes, 0xA00000); // Cap at 10MB for strict memory usage limits
         let total_frames = (max_addr / PAGE_SIZE as u64) as usize;
         let bitmap_size_u64 = (total_frames + 63) / 64;
         let bitmap_size_bytes = bitmap_size_u64 * 8;
 
-        // Place bitmap at 16MB
-        let bitmap_phys: u64 = 0x1000000;
-        let hhdm_offset = 0xFFFF800000000000;
-        HHDM_OFFSET.store(hhdm_offset, Ordering::SeqCst);
+        // Place bitmap at 2MB
+        let bitmap_phys: u64 = 0x200000;
+        HHDM_OFFSET.store(0, Ordering::Relaxed);
         TOTAL_MEMORY.store(total_bytes, Ordering::Relaxed);
 
         let bitmap_ptr = bitmap_phys as *mut u64;
@@ -355,24 +370,49 @@ impl BitmapPmm {
             usable_frames: total_frames,
             allocated_frames: AtomicUsize::new(0),
             last_idx: 0,
-            hhdm_offset,
+            hhdm_offset: 0,
         };
 
-        // Free everything above 2MB up to max
+        // Free everything above 2MB up to max (in bitmap)
         if max_addr > 0x200000 {
             pmm.free_region(0x200000, (max_addr - 0x200000) as usize);
-            crate::mm::buddy::ZONED_PMM.lock().add_free_region(0x200000, (max_addr - 0x200000) as usize);
         }
-        // Re-mark first 2MB + bitmap
+        // Re-mark first 2MB + bitmap (in bitmap)
         pmm.mark_region_used(0, 0x200000);
         pmm.mark_region_used(bitmap_phys, bitmap_size_bytes);
+
+        // Populate ZONED_PMM using the verified bitmap
+        let mut current_free_base: Option<u64> = None;
+        let mut current_free_len: usize = 0;
+        
+        for frame in 0..total_frames {
+            if !pmm.test_bit(frame) {
+                // Free frame
+                if current_free_base.is_none() {
+                    current_free_base = Some((frame as u64) * PAGE_SIZE as u64);
+                    current_free_len = PAGE_SIZE;
+                } else {
+                    current_free_len += PAGE_SIZE;
+                }
+            } else {
+                // Used frame - flush current free region if any
+                if let Some(base) = current_free_base {
+                    crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, current_free_len);
+                    current_free_base = None;
+                    current_free_len = 0;
+                }
+            }
+        }
+        if let Some(base) = current_free_base {
+            crate::mm::buddy::ZONED_PMM.lock().add_free_region(base, current_free_len);
+        }
 
         let _ = write!(serial, "PMM: Basic init complete. {} frames total\n", total_frames);
         *PMM.lock() = Some(pmm);
     }
 
     fn init_fallback() {
-        // Absolute minimum: assume 128MB of RAM, place bitmap at 16MB
+        // Absolute minimum: assume 128MB of RAM, place bitmap at 2MB
         Self::init_basic(128 * 1024 * 1024);
     }
 

@@ -1,9 +1,0 @@
-#
-#	architecture-dependent files for Plan 9
-#
-
-TARGFILES=asm-Plan9-$OBJTYPE.$O\
-	devfs-Inferno.$O\
-	os-Plan9.$O\
-	win-Plan9.$O\
-

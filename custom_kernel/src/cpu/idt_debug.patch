@@ -1,0 +1,5 @@
+--- src/cpu/idt.rs
++++ src/cpu/idt.rs
+@@ -274,6 +274,9 @@
+         print_hex(c.rip);
+         print_serial(" RSP=)

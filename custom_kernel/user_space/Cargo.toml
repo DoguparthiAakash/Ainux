@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "libainux",
+    "programs/ls",
+    "programs/cat",
+    "programs/ping",
+    "programs/nc",
+    "programs/ps",
+    "programs/kill",
+    "programs/wget"
+]
+resolver = "2"
