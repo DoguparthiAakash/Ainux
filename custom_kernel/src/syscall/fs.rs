@@ -150,3 +150,58 @@ pub fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
     // -25 is ENOTTY
     -25
 }
+
+pub fn sys_disk_read(lba: u32, sectors: u8, buf: *mut u8) -> isize {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "sys_disk_read: lba={}, sectors={}\n", lba, sectors);
+    
+    let total_bytes = (sectors as usize) * 512;
+    let mut tmp = alloc::vec![0u16; (sectors as usize) * 256];
+    
+    if crate::drivers::ata::read_sectors(&mut tmp, lba, sectors) {
+        let tmp_bytes = unsafe { core::slice::from_raw_parts(tmp.as_ptr() as *const u8, total_bytes) };
+        let user_slice = unsafe { core::slice::from_raw_parts_mut(buf, total_bytes) };
+        user_slice.copy_from_slice(tmp_bytes);
+        total_bytes as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_disk_write(lba: u32, sectors: u8, buf: *const u8) -> isize {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "sys_disk_write: lba={}, sectors={}\n", lba, sectors);
+    
+    let total_bytes = (sectors as usize) * 512;
+    let user_slice = unsafe { core::slice::from_raw_parts(buf, total_bytes) };
+    let mut tmp = alloc::vec![0u16; (sectors as usize) * 256];
+    
+    let tmp_bytes = unsafe { core::slice::from_raw_parts_mut(tmp.as_mut_ptr() as *mut u8, total_bytes) };
+    tmp_bytes.copy_from_slice(user_slice);
+    
+    if crate::drivers::ata::write_sectors(&tmp, lba, sectors) {
+        total_bytes as isize
+    } else {
+        -1
+    }
+}
+
+pub fn sys_disk_identify(buf: *mut u8) -> isize {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    use core::fmt::Write;
+    let _ = write!(serial, "sys_disk_identify\n");
+    
+    let total_bytes = 512;
+    let mut tmp = alloc::vec![0u16; 256];
+    
+    if crate::drivers::ata::identify_buffer(&mut tmp) {
+        let tmp_bytes = unsafe { core::slice::from_raw_parts(tmp.as_ptr() as *const u8, total_bytes) };
+        let user_slice = unsafe { core::slice::from_raw_parts_mut(buf, total_bytes) };
+        user_slice.copy_from_slice(tmp_bytes);
+        total_bytes as isize
+    } else {
+        -1
+    }
+}

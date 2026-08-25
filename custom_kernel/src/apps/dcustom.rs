@@ -314,10 +314,16 @@ fn resolution_menu() {
     let mut dialog = Dialog {
         title: " Display Resolution ",
         options: alloc::vec![
-            String::from("800 x 600   (Standard)"),
-            String::from("1024 x 768  (Legacy)"),
+            String::from("Auto (Highest Supported)"),
+            String::from("Default (Bootloader)"),
+            String::from("1920 x 1080 (FHD 1080p)"),
+            String::from("1600 x 900  (HD+)"),
+            String::from("1440 x 900  (WXGA+)"),
+            String::from("1366 x 768  (HD)"),
+            String::from("1280 x 1024 (SXGA)"),
             String::from("1280 x 720  (HD 720p)"),
-            String::from("1280 x 1024 (Standard Plus)")
+            String::from("1024 x 768  (XGA)"),
+            String::from("800 x 600   (SVGA)")
         ],
         selected: 0,
         active_btn: 0,
@@ -340,12 +346,26 @@ fn resolution_menu() {
                 '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
                 '\n' => {
                     if dialog.active_btn == 2 { klog!("dcustom: exit resolution_menu (back)\n"); return; } // Back
-                    match dialog.selected {
-                        0 => video::set_resolution(800, 600, 32),
-                        1 => video::set_resolution(1024, 768, 32),
-                        2 => video::set_resolution(1280, 720, 32),
-                        3 => video::set_resolution(1280, 1024, 32),
-                        _ => {}
+                    let success = match dialog.selected {
+                        0 => { video::auto_resolution(); true }
+                        1 => { video::restore_default_resolution(); true }
+                        2 => video::set_resolution(1920, 1080, 32),
+                        3 => video::set_resolution(1600, 900, 32),
+                        4 => video::set_resolution(1440, 900, 32),
+                        5 => video::set_resolution(1366, 768, 32),
+                        6 => video::set_resolution(1280, 1024, 32),
+                        7 => video::set_resolution(1280, 720, 32),
+                        8 => video::set_resolution(1024, 768, 32),
+                        9 => video::set_resolution(800, 600, 32),
+                        _ => true,
+                    };
+                    
+                    if !success {
+                        let p = theme_colors();
+                        video::draw_tui_title_box(10, 10, 60, 5, " Error ", 0xFF0000);
+                        video::put_str_at(12, 12, "Hardware rejected resolution (Unsupported / VMSVGA)", p.white, p.bg);
+                        video::put_str_at(25, 13, "[ Press Any Key ]", p.title, p.bg);
+                        loop { if keyboard::pop_char().is_some() { break; } }
                     }
                     return;
                 }

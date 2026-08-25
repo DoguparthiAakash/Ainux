@@ -443,7 +443,6 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
      }
 }
 
-
 pub fn run() {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     let _ = write!(serial, "Shell: Run entered.\n");
@@ -457,10 +456,6 @@ pub fn run() {
     
     // Initialize CWD
     set_cwd("/");
-
-    let _ = write!(serial, "Shell: Auto-executing ls...\n");
-    execute_command("ls");
-
 
     loop {
         let cwd = get_cwd();
@@ -738,6 +733,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "nuxc" | "gcc" | "clang" | "llvm" | "cc" => crate::apps::nuxc::cmd_nuxc(&args),
             "nuxa" => crate::apps::nuxa::cmd_nuxa(&args),
             "nuxv" => crate::apps::nuxv::cmd_nuxv(&args),
+            "disk" | "deskd" => cmd_exec(&["exec", "deskd.elf"], background),
             "run" => cmd_run(&args),
             "basename" => cmd_basename(&args),
             "dirname" => cmd_dirname(&args),
@@ -1730,12 +1726,15 @@ fn cmd_test_ipc() {
 extern "C" fn ipc_receiver() {
     video::put_str("[A] waiting for msg...\n"); 
     // Assumes port 0
-    if let Some(msg) = crate::ipc::port::receive(0) {
+    if let Some(msg) = crate::ipc::port::receive(0, false) {
         video::put_str("[A] Got Msg from PID ");
         crate::shell::print_digit(msg.sender_pid as u8);
         video::put_str("\n");
         video::put_str("[A] Data: ");
-        crate::shell::print_digit(msg.data[0] as u8);
+        match msg.payload {
+            crate::ipc::port::IpcPayload::Inline(data) => crate::shell::print_digit(data[0] as u8),
+            _ => video::put_str("Non-inline"),
+        }
         video::put_str("\n");
     } else {
         video::put_str("[A] Failed to recv\n");
@@ -1749,7 +1748,11 @@ extern "C" fn ipc_sender() {
     crate::process::scheduler::yield_now();
     
     video::put_str("[B] Sending msg...\n");
-    let msg = crate::ipc::port::Message { sender_pid: crate::process::scheduler::get_current_pid(), data: [99,0,0,0] };
+    let msg = crate::ipc::port::Message { 
+        sender_pid: crate::process::scheduler::get_current_pid(),
+        msg_type: 0,
+        payload: crate::ipc::port::IpcPayload::Inline([99, 0, 0, 0, 0, 0, 0, 0]),
+    };
     crate::ipc::port::send(0, msg);
     
     crate::process::scheduler::exit_current_task(0);

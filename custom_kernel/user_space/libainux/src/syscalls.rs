@@ -83,3 +83,27 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: usize, offset
 pub fn sys_readdir(path: &str, buf: &mut [u8]) -> isize {
     unsafe { syscall(78, path.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0) as isize }
 }
+
+pub fn sys_mkdir(path: &str) -> isize {
+    unsafe { syscall(83, path.as_ptr() as u64, path.len() as u64, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_ipc_send(port: usize, msg_type: u64, a1: u64, a2: u64, a3: u64) -> isize {
+    unsafe { syscall(503, port as u64, msg_type, a1, a2, a3, 0) as isize }
+}
+
+pub fn sys_ipc_recv(port: usize, msg_type_out: &mut u64, a1_out: &mut u64, a2_out: &mut u64, a3_out: &mut u64) -> isize {
+    unsafe { syscall(504, port as u64, msg_type_out as *mut _ as u64, a1_out as *mut _ as u64, a2_out as *mut _ as u64, a3_out as *mut _ as u64, 0) as isize }
+}
+
+pub fn sys_disk_read(lba: u32, sectors: u8, buf: &mut [u8]) -> isize {
+    unsafe { syscall(505, lba as u64, sectors as u64, buf.as_mut_ptr() as u64, 0, 0, 0) as isize }
+}
+
+pub fn sys_disk_write(lba: u32, sectors: u8, buf: &[u8]) -> isize {
+    unsafe { syscall(506, lba as u64, sectors as u64, buf.as_ptr() as u64, 0, 0, 0) as isize }
+}
+
+pub fn sys_disk_identify(buf: &mut [u8; 512]) -> isize {
+    unsafe { syscall(507, buf.as_mut_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}

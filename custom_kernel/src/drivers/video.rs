@@ -121,6 +121,34 @@ pub static mut FB_CACHE_HEIGHT: usize = 0;
 pub static mut FB_CACHE_PITCH: usize = 0;
 pub static mut FB_CACHE_BPP: usize = 0;
 
+pub static BOOT_WIDTH: spin::Mutex<usize> = spin::Mutex::new(0);
+pub static BOOT_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(0);
+pub static BOOT_BPP: spin::Mutex<u8> = spin::Mutex::new(0);
+pub static MAPPED_WC_SIZE: spin::Mutex<usize> = spin::Mutex::new(0);
+
+const VBE_DISPI_IOPORT_INDEX: u16 = 0x01CE;
+const VBE_DISPI_IOPORT_DATA: u16  = 0x01CF;
+
+unsafe fn bga_write(index: u16, data: u16) {
+    core::arch::asm!("out dx, ax", in("dx") VBE_DISPI_IOPORT_INDEX, in("ax") index);
+    core::arch::asm!("out dx, ax", in("dx") VBE_DISPI_IOPORT_DATA, in("ax") data);
+}
+
+unsafe fn bga_read(index: u16) -> u16 {
+    core::arch::asm!("out dx, ax", in("dx") VBE_DISPI_IOPORT_INDEX, in("ax") index);
+    let mut data: u16;
+    core::arch::asm!("in ax, dx", out("ax") data, in("dx") VBE_DISPI_IOPORT_DATA);
+    data
+}
+
+/// Returns true if a real Bochs/QEMU BGA adapter is present.
+/// BGA version register (index 0) always reads 0xB0Cx (x = 0..=6+).
+/// VirtualBox VMSVGA returns 0x0000 or 0xFFFF for this register.
+fn bga_is_present() -> bool {
+    let version = unsafe { bga_read(0) };
+    version >= 0xB0C0 && version <= 0xB0CF
+}
+
 // VGA Buffer Address in Higher Half (0xFFFFFFFF80000000 + 0xB8000)
 pub const VGA_HHDM_ADDR: u64 = 0xFFFFFFFF800B8000;
 
@@ -165,35 +193,59 @@ fn fast_clear(color: u32) {
 pub fn init() {
     let mut fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr != 0 {
-        let width = *FRAMEBUFFER_WIDTH.lock() as u64;
+        let width  = *FRAMEBUFFER_WIDTH.lock()  as u64;
         let height = *FRAMEBUFFER_HEIGHT.lock() as u64;
-        let pitch = *FRAMEBUFFER_PITCH.lock() as u64;
-        let bpp = *FRAMEBUFFER_BPP.lock();
+        let pitch  = *FRAMEBUFFER_PITCH.lock()  as u64;
+        let bpp    = *FRAMEBUFFER_BPP.lock();
         
+        // Save boot (default) resolution on first call only
+        {
+            let mut bw = BOOT_WIDTH.lock();
+            if *bw == 0 {
+                *bw = width as usize;
+                drop(bw);
+                *BOOT_HEIGHT.lock() = height as usize;
+                *BOOT_BPP.lock() = bpp;
+            }
+        }
+
         let size_bytes = (pitch * height) as usize;
+        let mut mapped_size = MAPPED_WC_SIZE.lock();
         
-        // Convert to virtual address if it's still a physical address
+        // Ensure the framebuffer is mapped Write-Combining (WC).
+        // If the resolution grew, map the additional pages too.
+        if *mapped_size < size_bytes {
+            let phys_addr = if fb_addr >= 0xFFFF800000000000 {
+                crate::mm::vmm::virt_to_phys(fb_addr)
+            } else {
+                fb_addr
+            };
+            unsafe { crate::mm::vmm::remap_hhdm_pages_wc(phys_addr, size_bytes); }
+            *mapped_size = size_bytes;
+        }
+        drop(mapped_size);
+        
+        // Convert physical address to HHDM virtual if needed
         if fb_addr < 0xFFFF800000000000 {
-            unsafe { crate::mm::vmm::remap_hhdm_pages_wc(fb_addr, size_bytes); }
             fb_addr = crate::mm::vmm::phys_to_virt(fb_addr);
             *FRAMEBUFFER_ADDR.lock() = fb_addr;
         }
         
         unsafe { 
-            FB_CACHE_ADDR = fb_addr;
-            FB_CACHE_WIDTH = width as usize;
+            FB_CACHE_ADDR   = fb_addr;
+            FB_CACHE_WIDTH  = width as usize;
             FB_CACHE_HEIGHT = height as usize;
-            FB_CACHE_PITCH = pitch as usize;
-            FB_CACHE_BPP = bpp as usize;
+            FB_CACHE_PITCH  = pitch as usize;
+            FB_CACHE_BPP    = bpp as usize;
             gfx_init(fb_addr as *mut u8, width, height, pitch, bpp); 
         }
         
-        *CONSOLE_WIDTH.lock() = ((width / 8) as usize).saturating_sub(2);
+        *CONSOLE_WIDTH.lock()  = ((width / 8) as usize).saturating_sub(2);
         *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
         fast_clear(0x00000000);
     } else {
-        // VGA Text mode dimensions
-        *CONSOLE_WIDTH.lock() = 80;
+        // VGA Text mode fallback
+        *CONSOLE_WIDTH.lock()  = 80;
         *CONSOLE_HEIGHT.lock() = 25;
         fast_clear(0);
     }
@@ -232,35 +284,81 @@ pub fn clear() {
     *grid = alloc::vec![ConsoleChar { c: ' ', fg: 0, bg: bg }; w * h];
 }
 
-pub fn set_resolution(w: u16, h: u16, bpp: u16) {
-    unsafe {
-        // DISPI_INDEX_ENABLE -> 0x0004, DISPI_DISABLED -> 0x0000
-        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0004 as u16);
-        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") 0x0000 as u16);
-        
-        // DISPI_INDEX_XRES -> 0x0001
-        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0001 as u16);
-        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") w);
-        
-        // DISPI_INDEX_YRES -> 0x0002
-        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0002 as u16);
-        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") h);
-        
-        // DISPI_INDEX_BPP -> 0x0003
-        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0003 as u16);
-        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") bpp);
-        
-        // DISPI_INDEX_ENABLE -> 0x0004, DISPI_ENABLED | DISPI_LFB_ENABLED -> 0x41
-        core::arch::asm!("out dx, ax", in("dx") 0x01CE as u16, in("ax") 0x0004 as u16);
-        core::arch::asm!("out dx, ax", in("dx") 0x01CF as u16, in("ax") 0x0041 as u16);
+pub fn set_resolution(w: u16, h: u16, bpp: u16) -> bool {
+    // Guard: bpp must be sane
+    let bpp = if bpp == 0 { 32 } else { bpp };
+    
+    // Do NOT touch the display if BGA is not present (e.g. VirtualBox VMSVGA).
+    // Writing the BGA DISABLE command on VMSVGA corrupts the framebuffer display.
+    if !bga_is_present() {
+        crate::klog!("set_resolution: BGA not detected — leaving bootloader FB unchanged\n");
+        return false;
     }
     
-    *FRAMEBUFFER_WIDTH.lock() = w as usize;
-    *FRAMEBUFFER_HEIGHT.lock() = h as usize;
-    *FRAMEBUFFER_PITCH.lock() = (w as usize) * (bpp as usize / 8);
-    *FRAMEBUFFER_BPP.lock() = bpp as u8;
+    // Attempt BGA resolution change
+    unsafe {
+        bga_write(4, 0);    // Disable display
+        bga_write(1, w);    // XRES
+        bga_write(2, h);    // YRES
+        bga_write(3, bpp);  // BPP
+        bga_write(4, 0x41); // Enable | LFB
+    }
     
-    init(); // Re-initialize with new dimensions
+    // Read back what the hardware actually set
+    let actual_w = unsafe { bga_read(1) };
+    let actual_h = unsafe { bga_read(2) };
+    
+    if actual_w != w || actual_h != h {
+        crate::klog!("BGA rejected {}x{} mode. Hardware reports {}x{}\n", w, h, actual_w, actual_h);
+        return false;
+    }
+    
+    // Compute pitch. Use w×(bpp/8) directly; BGA virtual-width (index 6)
+    // can be misaligned in bank modes and causes stripe artifacts.
+    let pitch = (w as usize) * (bpp as usize / 8);
+    
+    *FRAMEBUFFER_WIDTH.lock()  = w as usize;
+    *FRAMEBUFFER_HEIGHT.lock() = h as usize;
+    *FRAMEBUFFER_PITCH.lock()  = pitch;
+    *FRAMEBUFFER_BPP.lock()    = bpp as u8;
+    
+    init(); // Re-initialize framebuffer mapping and console geometry
+    true
+}
+
+pub fn restore_default_resolution() {
+    let w = *BOOT_WIDTH.lock();
+    let h = *BOOT_HEIGHT.lock();
+    let bpp = *BOOT_BPP.lock();
+    if w > 0 && h > 0 {
+        set_resolution(w as u16, h as u16, bpp as u16);
+    }
+}
+
+pub fn auto_resolution() {
+    // VirtualBox VMSVGA (and other non-BGA adapters) do not support BGA ports.
+    // Writing to them partially disables the display — detect BGA first.
+    if !bga_is_present() {
+        crate::klog!("auto_resolution: BGA not present, using bootloader resolution\n");
+        return;
+    }
+    
+    // Use the current BPP from the bootloader, but always fall back to 32.
+    let bpp = {
+        let b = *FRAMEBUFFER_BPP.lock();
+        if b == 0 || b == 24 { 32u16 } else { b as u16 }
+    };
+    
+    // Probe from highest to lowest; stop at first accepted mode.
+    let candidates: &[(u16, u16)] = &[
+        (1920, 1080), (1600, 900), (1440, 900), (1366, 768),
+        (1280, 1024), (1280, 720), (1024, 768), (800, 600),
+    ];
+    for &(w, h) in candidates {
+        if set_resolution(w, h, bpp) {
+            break;
+        }
+    }
 }
 
 fn scroll_screen(lines: usize) {
@@ -331,14 +429,46 @@ fn scroll_screen(lines: usize) {
 
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr != 0 {
-        let addr = fb_addr as *mut u32;
+        let addr = fb_addr as *mut u64;
         unsafe {
             if total_pixels > shift_pixels {
-                core::ptr::copy(addr.add(shift_pixels), addr, total_pixels - shift_pixels);
+                let count_u64 = (total_pixels - shift_pixels) / 2;
+                let src = (fb_addr as *mut u32).add(shift_pixels) as *const u64;
+                let chunks = count_u64 / 4;
+                let remainder = count_u64 % 4;
+                for i in 0..chunks {
+                    let idx = i * 4;
+                    let val0 = *src.add(idx);
+                    let val1 = *src.add(idx + 1);
+                    let val2 = *src.add(idx + 2);
+                    let val3 = *src.add(idx + 3);
+                    *addr.add(idx) = val0;
+                    *addr.add(idx + 1) = val1;
+                    *addr.add(idx + 2) = val2;
+                    *addr.add(idx + 3) = val3;
+                }
+                for i in (count_u64 - remainder)..count_u64 {
+                    *addr.add(i) = *src.add(i);
+                }
             }
-            let bottom_ptr = addr.add(total_pixels - shift_pixels);
-            for i in 0..shift_pixels {
-                *bottom_ptr.add(i) = bg;
+            let bottom_ptr = (fb_addr as *mut u32).add(total_pixels - shift_pixels);
+            let bottom_ptr_u64 = bottom_ptr as *mut u64;
+            let bg_u64 = (bg as u64) | ((bg as u64) << 32);
+            let clear_u64_count = shift_pixels / 2;
+            let clear_chunks = clear_u64_count / 4;
+            let clear_remainder = clear_u64_count % 4;
+            for i in 0..clear_chunks {
+                let idx = i * 4;
+                *bottom_ptr_u64.add(idx) = bg_u64;
+                *bottom_ptr_u64.add(idx + 1) = bg_u64;
+                *bottom_ptr_u64.add(idx + 2) = bg_u64;
+                *bottom_ptr_u64.add(idx + 3) = bg_u64;
+            }
+            for i in (clear_u64_count - clear_remainder)..clear_u64_count {
+                *bottom_ptr_u64.add(i) = bg_u64;
+            }
+            if shift_pixels % 2 != 0 {
+                *bottom_ptr.add(shift_pixels - 1) = bg;
             }
         }
     }

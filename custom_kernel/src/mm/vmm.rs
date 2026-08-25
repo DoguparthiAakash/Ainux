@@ -236,6 +236,92 @@ pub unsafe fn map_page(virt: u64, phys: u64, flags: u64) -> Result<(), &'static 
     Ok(())
 }
 
+// ---- Backend API for AddressSpace ----
+
+/// Map a page by allocating a new physical frame in a specific PML4.
+pub unsafe fn map_page_allocate_in_pml4(pml4_phys: u64, virt: u64, flags: u64) -> Result<(), &'static str> {
+    let mut pmm_lock = PMM.lock();
+    let phys = if let Some(ref mut pmm) = *pmm_lock {
+        pmm.alloc_frame().ok_or("Out of physical memory")?
+    } else {
+        return Err("PMM not initialized");
+    };
+    drop(pmm_lock);
+    
+    // Zero the frame (via HHDM)
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    core::ptr::write_bytes((phys + hhdm_offset) as *mut u8, 0, crate::mm::pmm::PAGE_SIZE);
+
+    map_page_in_pml4(pml4_phys, virt, phys, flags);
+    Ok(())
+}
+
+pub unsafe fn map_page_allocate(virt: u64, flags: u64) -> Result<(), &'static str> {
+    let pml4_phys = read_cr3() & 0x000FFFFFFFFFF000;
+    map_page_allocate_in_pml4(pml4_phys, virt, flags)
+}
+
+/// Helper for mapping a region chunk in a specific PML4. 
+pub unsafe fn map_region_backend_in_pml4(pml4_phys: u64, virt: u64, _size: u64, flags: u64) -> Result<(), &'static str> {
+    map_page_allocate_in_pml4(pml4_phys, virt, flags)
+}
+
+/// Unmap a single page (backend alias)
+pub unsafe fn unmap_page_backend(virt: u64) {
+    unmap_page(virt);
+}
+
+pub unsafe fn unmap_page_in_pml4(pml4_phys: u64, virt: u64) {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let pml4 = &mut *((pml4_phys + hhdm_offset) as *mut PageTable);
+
+    let p4 = match get_existing_table(pml4.entries[p4_index(virt)], hhdm_offset) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let p3 = match get_existing_table(p4.entries[p3_index(virt)], hhdm_offset) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let p2 = match get_existing_table(p3.entries[p2_index(virt)], hhdm_offset) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let idx1 = p1_index(virt);
+    p2.entries[idx1] = 0;
+    
+    if pml4_phys == (read_cr3() & 0x000FFFFFFFFFF000) {
+        flush_tlb(virt);
+    }
+}
+
+/// Change protection flags of an existing mapped page in a specific PML4
+pub unsafe fn protect_page_backend_in_pml4(pml4_phys: u64, virt: u64, new_flags: u64) -> Result<(), &'static str> {
+    let hhdm_offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    let pml4 = &mut *((pml4_phys + hhdm_offset) as *mut PageTable);
+
+    let p4 = get_existing_table(pml4.entries[p4_index(virt)], hhdm_offset).ok_or("P4 entry not present")?;
+    let p3 = get_existing_table(p4.entries[p3_index(virt)], hhdm_offset).ok_or("P3 entry not present")?;
+    let p2 = get_existing_table(p3.entries[p2_index(virt)], hhdm_offset).ok_or("P2 entry not present")?;
+
+    let pt_entry = &mut p2.entries[p1_index(virt)];
+
+    if *pt_entry & PRESENT == 0 {
+        return Err("Page not present for protection change");
+    }
+
+    let phys = *pt_entry & 0x000FFFFFFFFFF000;
+    *pt_entry = phys | new_flags;
+    
+    if pml4_phys == (read_cr3() & 0x000FFFFFFFFFF000) {
+        flush_tlb(virt);
+    }
+    Ok(())
+}
+
 /// Map a 2MB huge page (PD-level mapping, no PT needed).
 /// `virt` and `phys` must be 2MB-aligned.
 pub unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64) -> Result<(), &'static str> {

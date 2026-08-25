@@ -6,6 +6,8 @@ pub mod zone;
 pub mod slab;
 pub mod user;
 pub mod shm;
+pub mod memory_region;
+pub mod address_space;
 
 extern "C" {
     pub fn fast_memcpy(dest: *mut u8, src: *const u8, count: usize);

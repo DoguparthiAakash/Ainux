@@ -86,7 +86,7 @@ pub fn handle_ioctl(request: u64, arg: u64) -> VfsResult<u64> {
 
     match request {
         DRM_IOCTL_VERSION => {
-            if !crate::mm::user::validate_user_ptr(arg, core::mem::size_of::<DrmVersion>()) {
+            if !crate::mm::user::validate_user_range(arg, core::mem::size_of::<DrmVersion>()) {
                 return Err(VfsError::PermissionDenied);
             }
             let ptr = arg as *mut DrmVersion;
@@ -99,7 +99,7 @@ pub fn handle_ioctl(request: u64, arg: u64) -> VfsResult<u64> {
             Ok(0)
         },
         DRM_IOCTL_MODE_CREATE_DUMB => {
-            if !crate::mm::user::validate_user_ptr(arg, core::mem::size_of::<DrmModeCreateDumb>()) {
+            if !crate::mm::user::validate_user_range(arg, core::mem::size_of::<DrmModeCreateDumb>()) {
                 return Err(VfsError::PermissionDenied);
             }
             let ptr = arg as *mut DrmModeCreateDumb;
@@ -134,7 +134,7 @@ pub fn handle_ioctl(request: u64, arg: u64) -> VfsResult<u64> {
             Ok(0)
         },
         DRM_IOCTL_MODE_MAP_DUMB => {
-            if !crate::mm::user::validate_user_ptr(arg, core::mem::size_of::<DrmModeMapDumb>()) {
+            if !crate::mm::user::validate_user_range(arg, core::mem::size_of::<DrmModeMapDumb>()) {
                 return Err(VfsError::PermissionDenied);
             }
             let ptr = arg as *mut DrmModeMapDumb;

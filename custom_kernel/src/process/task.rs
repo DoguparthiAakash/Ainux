@@ -38,7 +38,10 @@ pub struct Task {
     pub context: Context,
     pub state: TaskState,
     pub stack: alloc::boxed::Box<[u8]>, 
-    pub cr3: u64, // Page Table Physical Address (0 if kernel task)
+    /// Legacy cr3 integer for compatibility with existing scheduler.
+    pub cr3: u64, 
+    /// PHASE 2 TEMPORARY: Task owns AddressSpace until Process/Thread separation in Phase 4.
+    pub address_space: Option<Arc<Mutex<crate::mm::address_space::AddressSpace>>>,
     pub userspace_stack_top: u64,
     pub caps: CapTable,
     pub sleep_ticks: u64, // Wake up time (0 = active)
@@ -119,6 +122,7 @@ impl Task {
             state: TaskState::Free,
             stack: alloc::vec![0; 16384].into_boxed_slice(),
             cr3: 0,
+            address_space: None, // Will be set by loader or scheduler for user tasks
             userspace_stack_top: 0,
             caps: CapTable::new(),
             sleep_ticks: 0,
@@ -152,10 +156,7 @@ impl Task {
 
 impl Drop for Task {
     fn drop(&mut self) {
-        if self.cr3 != 0 {
-            unsafe {
-                crate::mm::vmm::destroy_address_space(self.cr3);
-            }
-        }
+        // AddressSpace is dropped automatically by Arc/Drop.
+        // We removed the manual `vmm::destroy_address_space(self.cr3)` call.
     }
 }

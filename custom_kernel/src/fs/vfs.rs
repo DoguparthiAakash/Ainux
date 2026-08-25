@@ -166,8 +166,8 @@ pub fn resolve_path(path: &str) -> VfsResult<ArcInode> {
     }
 
     // 2. Fallback to Global Mounts if not root-restricted
-    // In a strict Sovereign environment, we might skip this.
-    {
+    // In a strict Sovereign environment, we skip this unless we are the root cell (id == 0).
+    if cell.id == 0 {
         let global_mounts = MOUNTS.lock();
         let mut g_best: Option<&Mount> = None;
         for m in global_mounts.iter() {

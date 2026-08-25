@@ -7,6 +7,7 @@ members = [
     "programs/nc",
     "programs/ps",
     "programs/kill",
-    "programs/wget"
-]
+    "programs/wget",
+    "programs/deskd"
+, "programs/posixd", "programs/fsd"]
 resolver = "2"

@@ -246,7 +246,8 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
 pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState) -> Result<(), ()> {
     match crate::shell::find_inode(path) {
         Ok(inode) => {
-            let cr3 = crate::mm::vmm::create_address_space();
+            let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+            let cr3 = address_space.lock().pml4_phys;
             if cr3 == 0 { return Err(()); }
             
             match load_elf(inode, cr3) {
@@ -271,6 +272,7 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
                         let mut tasks = crate::process::scheduler::TASKS.lock();
                         if let Some(task) = &mut tasks[pid] {
                             task.cr3 = cr3;
+                            task.address_space = Some(address_space);
                             unsafe {
                                 core::arch::asm!("mov cr3, {}", in(reg) cr3);
                             }
@@ -289,7 +291,8 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
 pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
     match crate::shell::find_inode(path) {
         Ok(inode) => {
-            let cr3 = crate::mm::vmm::create_address_space();
+            let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+            let cr3 = address_space.lock().pml4_phys;
             if cr3 == 0 { 
                 {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
@@ -301,6 +304,11 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
             
             match load_elf(inode, cr3) {
                 Ok(entry) => {
+                    {
+                        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                        use core::fmt::Write;
+                        let _ = write!(serial, "DEBUG load_elf returned entry: {:#x}\n", entry);
+                    }
                     // Allocate a user stack (1MB)
                     let stack_base = 0x00007FFFFFFFE000u64; // top page
                     let stack_pages = 256u64;
@@ -315,7 +323,7 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
                     let stack_top = stack_base + 4096; // 0x7FFFFFFFFFFF000 + 0x1000
                     let initial_sp = setup_user_stack(cr3, stack_top, entry);
                     
-                    let pid = crate::process::scheduler::spawn_user(entry, initial_sp, cr3, path);
+                    let pid = crate::process::scheduler::spawn_user(entry, initial_sp, address_space, path);
                     return Ok(pid);
                 },
                 Err(_) => {
@@ -405,7 +413,8 @@ pub fn load_alo(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
 
 pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
     if let Ok(inode) = crate::shell::find_inode(path) {
-        let cr3 = crate::mm::vmm::create_address_space();
+        let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+        let cr3 = address_space.lock().pml4_phys;
         if cr3 == 0 { return Err(()); }
         
         if let Ok(entry) = load_alo(inode, cr3) {
@@ -417,7 +426,7 @@ pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
             }
             
-            let pid = crate::process::scheduler::spawn_user(entry, stack_top, cr3, path);
+            let pid = crate::process::scheduler::spawn_user(entry, stack_top, address_space, path);
             return Ok(pid);
         }
     }

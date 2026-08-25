@@ -70,6 +70,7 @@ fn kernel_cflags() -> Vec<&'static str> {
         "-ffreestanding",
         "-fno-stack-protector",
         "-fno-pic",
+        "-fno-pie",
         "-mno-red-zone",
         "-mno-sse",
         "-mno-sse2",

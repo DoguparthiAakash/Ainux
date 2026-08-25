@@ -2,4 +2,4 @@
 rustflags = ["-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000"]
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000"]
+rustflags = ["-C", "relocation-model=static", "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000"]

@@ -3,9 +3,17 @@ use spin::Mutex;
 use alloc::collections::VecDeque;
 
 #[derive(Debug, Clone)]
+pub enum IpcPayload {
+    Inline([u64; 8]),         // Standard small payload
+    Memory(usize, usize),     // (Address, Size) - for passing memory handles/descriptors
+    Capability(usize),        // Passing a capability ID
+}
+
+#[derive(Debug, Clone)]
 pub struct Message {
     pub sender_pid: usize,
-    pub data: [u64; 4], // Simple 4-word message
+    pub msg_type: u32,
+    pub payload: IpcPayload,
 }
 
 pub struct Port {
@@ -15,6 +23,9 @@ pub struct Port {
 }
 
 pub static PORTS: Mutex<Vec<Option<Port>>> = Mutex::new(Vec::new());
+
+// Global well-known port for the POSIX subsystem
+pub static POSIX_SUBSYSTEM_PORT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
 
 pub fn create_port() -> usize {
     let mut ports = PORTS.lock();
@@ -41,8 +52,7 @@ pub fn send(port_id: usize, msg: Message) -> bool {
     false
 }
 
-pub fn receive(port_id: usize) -> Option<Message> {
-    // This now BLOCKS if empty
+pub fn receive(port_id: usize, non_blocking: bool) -> Option<Message> {
     loop {
         let ports = PORTS.lock();
         if let Some(Some(port)) = ports.get(port_id) {
@@ -50,6 +60,9 @@ pub fn receive(port_id: usize) -> Option<Message> {
             if let Some(msg) = queue.pop_front() {
                 return Some(msg);
             } else {
+                if non_blocking {
+                    return None;
+                }
                 // Empty, Block me
                 let current_pid = crate::process::scheduler::get_current_pid();
                 port.waiting_tasks.lock().push_back(current_pid);

@@ -7,7 +7,13 @@ nasm -f elf64 src/asm/utils.asm -o src/asm/utils.o
 nasm -f elf64 src/asm/boot.asm -o src/asm/boot.o
 nasm -f bin src/asm/ap_trampoline.asm -o src/asm/ap_trampoline.bin
 gcc -c src/c/hardware.c -o src/c/hardware.o -ffreestanding -mno-red-zone -mcmodel=kernel -fno-pic
-zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+# Ensure zig is in path (Check common locations)
+export PATH="$PATH:/usr/local/bin:/snap/bin"
+if ! command -v zig >/dev/null 2>&1; then
+    echo "Warning: zig not found in PATH. Attempting to use existing tui.o..."
+else
+    zig build-obj src/c/tui.zig -target x86_64-freestanding-none -mcmodel=kernel -O ReleaseFast -femit-bin=src/c/tui.o
+fi
 
 # Build Kernel
 echo "Building Kernel..."
@@ -15,36 +21,76 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-m
 
 # Build ISO
 echo "Building ISO..."
-rm -rf iso_root
-mkdir -p iso_root/boot/grub
-cp -v target/x86_64-unknown-none/release/ainux_kernel iso_root/boot/
-cp -v grub.cfg iso_root/boot/grub/ || :
-
-grub-mkrescue -o ainux.iso iso_root || { echo "ISO creation failed"; exit 1; }
+chmod +x build_iso.sh
+./build_iso.sh || { echo "ISO creation failed"; exit 1; }
 
 # Create Disk Image (EXT4) if not exists
-if [ ! -f disk2.img ]; then
-    echo "Creating disk2.img (32MB)..."
-    dd if=/dev/zero of=disk2.img bs=1M count=32
-    mkfs.ext4 -O ^extents,^64bit -F disk2.img || { echo "mkfs.ext4 failed"; exit 1; }
+if [ ! -f disk3.img ]; then
+    echo "Creating disk3.img (32MB)..."
+    dd if=/dev/zero of=disk3.img bs=1M count=32
+    mkfs.ext4 -O ^extents,^64bit -F disk3.img || { echo "mkfs.ext4 failed"; exit 1; }
 fi
 
 # Populate with hello.txt
 echo "Hello World from Ext4!" > hello.txt
-debugfs -w -R "rm hello.txt" disk2.img || true
-debugfs -w -R "write hello.txt hello.txt" disk2.img || echo "debugfs failed (optional)"
+debugfs -w -R "rm hello.txt" disk3.img || true
+debugfs -w -R "write hello.txt hello.txt" disk3.img || echo "debugfs failed (optional)"
 
-# Build and Inject Userspace Hello
-echo "Building hello.c..."
-gcc -static -nostdlib -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables -Ttext=0x400000 -e _start src/c/hello.c -o hello.elf
-debugfs -w -R "rm hello.elf" disk2.img || true
-debugfs -w -R "write hello.elf hello.elf" disk2.img || echo "debugfs (hello.elf) failed"
+# Build and Inject Userspace Musl Test
+echo "Building test_musl.c..."
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_musl.c -o test_musl.elf
+debugfs -w -R "rm test_musl.elf" disk3.img || true
+debugfs -w -R "write test_musl.elf test_musl.elf" disk3.img || echo "debugfs (test_musl.elf) failed"
 
-# Inject Wallpaper
-if [ -f wallpaper.bmp ]; then
-    echo "Injecting wallpaper.bmp..."
-    debugfs -w -R "rm wallpaper.bmp" disk2.img || true
-    debugfs -w -R "write wallpaper.bmp wallpaper.bmp" disk2.img || echo "debugfs (wallpaper.bmp) failed"
+echo "Building test_drm.c..."
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_drm.c -o test_drm.elf
+debugfs -w -R "rm test_drm.elf" disk3.img || true
+debugfs -w -R "write test_drm.elf test_drm.elf" disk3.img || echo "debugfs (test_drm.elf) failed"
+
+echo "Building user_space Rust binaries..."
+(cd user_space && cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
+debugfs -w -R "rm ls.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ls ls.elf" disk3.img || echo "debugfs (ls) failed"
+debugfs -w -R "rm cat.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/cat cat.elf" disk3.img || echo "debugfs (cat) failed"
+debugfs -w -R "rm ping.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ping ping.elf" disk3.img || echo "debugfs (ping) failed"
+debugfs -w -R "rm nc.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/nc nc.elf" disk3.img || echo "debugfs (nc) failed"
+debugfs -w -R "rm ps.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ps ps.elf" disk3.img || echo "debugfs (ps) failed"
+debugfs -w -R "rm kill.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/kill kill.elf" disk3.img || echo "debugfs (kill) failed"
+debugfs -w -R "rm wget.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/wget wget.elf" disk3.img || echo "debugfs (wget) failed"
+debugfs -w -R "rm deskd.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/deskd deskd.elf" disk3.img || echo "debugfs (deskd) failed"
+debugfs -w -R "rm posixd.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/posixd posixd.elf" disk3.img || echo "debugfs (posixd) failed"
+debugfs -w -R "rm fsd.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/fsd fsd.elf" disk3.img || echo "debugfs (fsd) failed"
+
+# Hybrid Nux-LLVM Compiler Step
+echo "Building test.nux using LLVM Hybrid Compiler..."
+python3 tools/nux_llvm.py tools/test.nux tools/test.ll
+if command -v clang >/dev/null 2>&1; then
+    clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 tools/test.ll -o test.elf
+    debugfs -w -R "rm test.elf" disk3.img || true
+    debugfs -w -R "write test.elf test.elf" disk3.img || echo "debugfs (test.elf) failed"
+else
+    echo "Warning: Clang not installed. Skipping LLVM backend compilation step."
+    echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
+fi
+
+# Export for external VMs
+if command -v qemu-img >/dev/null 2>&1; then
+    echo "Exporting VM-compatible disks..."
+    rm -f ainux_disk.vdi ainux_disk.vmdk
+    qemu-img convert -f raw -O vdi disk3.img ainux_disk.vdi || echo "vdi export failed"
+    qemu-img convert -f raw -O vmdk disk3.img ainux_disk.vmdk || echo "vmdk export failed"
+    echo "Exports ready: ainux_disk.vdi (VirtualBox), ainux_disk.vmdk (VMware)"
+else
+    echo "Warning: qemu-img not found. Skipping VM disk export."
 fi
 
 # Detect KVM

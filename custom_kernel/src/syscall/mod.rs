@@ -39,8 +39,12 @@ pub const SYS_OPENAT: usize = 257;
 pub const SYS_SET_ROBUST_LIST: usize = 273;
 pub const SYS_PRLIMIT64: usize = 302;
 pub const SYS_GETRANDOM: usize = 318;
+pub const SYS_DISK_READ: usize = 505;
+pub const SYS_DISK_WRITE: usize = 506;
+pub const SYS_DISK_IDENTIFY: usize = 507;
 
 // Need to link the assembly entry point
+
 extern "C" {
     fn syscall_entry();
 }
@@ -109,7 +113,11 @@ pub extern "C" fn syscall_handler(sys_no: usize, arg1: usize, arg2: usize, arg3:
         SYS_READV => fs::sys_readv(arg1, arg2 as *const u8, arg3),
         SYS_WRITEV => fs::sys_writev(arg1, arg2 as *const u8, arg3),
         SYS_OPENAT => fs::sys_openat(arg1 as i32, arg2 as *const u8, arg3 as i32, arg4 as i32),
+        SYS_DISK_READ => fs::sys_disk_read(arg1 as u32, arg2 as u8, arg3 as *mut u8),
+        SYS_DISK_WRITE => fs::sys_disk_write(arg1 as u32, arg2 as u8, arg3 as *const u8),
+        SYS_DISK_IDENTIFY => fs::sys_disk_identify(arg1 as *mut u8),
         SYS_GETPID => 1,           // PID 1 (init)
+
         SYS_GETTID => 1,           // TID 1
         SYS_GETUID | SYS_GETEUID => 0, // root
         SYS_GETGID | SYS_GETEGID => 0, // root

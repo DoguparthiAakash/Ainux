@@ -188,15 +188,22 @@ pub fn spawn(func: extern "C" fn(), name: &str) {
 pub extern "C" fn kernel_thread_entry() {
     unsafe {
         core::arch::naked_asm!(
+            "call {}",
             "sti",
             "mov rax, r12",
             "call rax",
             "mov rdi, 0",
             "call {}",
             "ud2",
+            sym unlock_tasks_from_asm,
             sym exit_current_task
         );
     }
+}
+
+#[no_mangle]
+pub extern "C" fn unlock_tasks_from_asm() {
+    unsafe { TASKS.force_unlock(); }
 }
 
 pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
@@ -225,7 +232,12 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
                 task.id = i;
                 task.state = TaskState::Ready;
                 task.name = alloc::format!("{}-child", tasks[current_pid].as_ref().unwrap().name);
-                task.cr3 = cr3; // Shared Memory
+                
+                // Implement COW Fork for the address space (stub for Phase 2)
+                let new_address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+                task.cr3 = new_address_space.lock().pml4_phys;
+                task.address_space = Some(new_address_space); 
+                
                 task.caps = caps; // Inherit Caps
                 task.fds = fds; // Clone FDs 
                 
@@ -251,7 +263,7 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
     })
 }
 
-pub fn spawn_user(rip: u64, rsp: u64, cr3: u64, name: &str) -> usize {
+pub fn spawn_user(rip: u64, rsp: u64, address_space: alloc::sync::Arc<spin::Mutex<crate::mm::address_space::AddressSpace>>, name: &str) -> usize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
@@ -262,7 +274,8 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64, name: &str) -> usize {
                 task.id = i;
                 task.state = TaskState::Ready;
                 task.name = alloc::string::String::from(name);
-                task.cr3 = cr3;
+                task.cr3 = address_space.lock().pml4_phys;
+                task.address_space = Some(address_space);
                 task.userspace_stack_top = rsp;
                 task.parent_id = Some(crate::process::scheduler::get_current_pid());
                 
@@ -303,9 +316,15 @@ pub fn spawn_user(rip: u64, rsp: u64, cr3: u64, name: &str) -> usize {
 pub extern "C" fn kernel_shim_entry() {
     unsafe {
         core::arch::naked_asm!(
+            "push r12",
+            "push r13",
+            "call {}",
+            "pop r13",
+            "pop r12",
             "mov rdi, r12",
             "mov rsi, r13",
             "jmp {}",
+            sym unlock_tasks_from_asm,
             sym crate::cpu::userspace::enter_userspace
         );
     }
@@ -392,10 +411,13 @@ pub fn schedule() {
     let old_task_ptr = &mut old_task.context as *mut Context;
     let next_task_ptr = &next_task.context as *const Context;
     
-    drop(tasks); 
+    // Leak the MutexGuard so the lock stays held during the context switch.
+    // The lock will be released by the incoming task once it resumes.
+    core::mem::forget(tasks); 
     
     unsafe {
         __switch(old_task_ptr, next_task_ptr);
+        TASKS.force_unlock();
     }
     });
 }
@@ -678,7 +700,7 @@ pub fn sys_wait4(target_pid: isize, status_ptr: u64, options: i32, _rusage_ptr: 
         });
         
         if let Some((pid, code)) = res {
-            if pid > 0 && status_ptr != 0 && crate::mm::user::validate_user_ptr(status_ptr, 4) {
+            if pid > 0 && status_ptr != 0 && crate::mm::user::validate_user_range(status_ptr, 4) {
                 let status_val = ((code & 0xFF) << 8) as u32;
                 unsafe { *(status_ptr as *mut u32) = status_val; }
             }
@@ -917,8 +939,9 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
 
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                // Duplicate address space
-                let new_cr3 = unsafe { crate::mm::vmm::clone_address_space(cr3) };
+                // Duplicate address space (stub for Phase 2)
+                let new_address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+                let new_cr3 = new_address_space.lock().pml4_phys;
                 if new_cr3 == 0 {
                     return -1; // OOM
                 }
@@ -928,6 +951,7 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
                 task.state = TaskState::Ready;
                 task.name = alloc::format!("{}-child", tasks[current_pid].as_ref().unwrap().name);
                 task.cr3 = new_cr3;
+                task.address_space = Some(new_address_space);
                 task.caps = caps;
                 task.fds = fds;
                 task.parent_id = Some(current_pid);
@@ -975,7 +999,8 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
     let path = core::str::from_utf8(&path_buf).unwrap_or("");
     
     if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
-        let new_cr3 = crate::mm::vmm::create_address_space();
+        let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+        let new_cr3 = address_space.lock().pml4_phys;
         if new_cr3 == 0 { return -12; } // ENOMEM
         
         if let Ok(entry) = crate::process::loader::load_elf(inode, new_cr3) {
@@ -994,6 +1019,7 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
                 if let Some(task) = &mut tasks[current_pid] {
                     // Only memory leaks the old cr3 for now, no free logic yet
                     task.cr3 = new_cr3;
+                    task.address_space = Some(address_space);
                     task.name = alloc::string::String::from(path);
                     unsafe { core::arch::asm!("mov cr3, {}", in(reg) new_cr3); }
                 }

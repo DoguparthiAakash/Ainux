@@ -303,7 +303,7 @@ fn show_mem_d(_separate: bool, _drive: Option<usize>) {
     }
 
     let mut ata_buf = [0u16; 256];
-    let mut model = String::from("QEMU VIRTUAL DRIVE");
+    let mut model = String::from("UNKNOWN OR NOT PRESENT");
     let mut total_capacity: u64 = 0;
 
     if crate::drivers::ata::identify_buffer(&mut ata_buf) {
@@ -316,11 +316,20 @@ fn show_mem_d(_separate: bool, _drive: Option<usize>) {
             if b2 != '\0' && b2 != ' ' { model.push(b2); }
         }
         // Words 60-61 contain total 28-bit LBA sectors
-        let sectors = (ata_buf[60] as u32) | ((ata_buf[61] as u32) << 16);
-        total_capacity = sectors as u64 * 512;
+        let sectors28 = (ata_buf[60] as u32) | ((ata_buf[61] as u32) << 16);
+        let mut sectors = sectors28 as u64;
+        
+        if sectors == 0 {
+            // Try LBA48 (Words 100-103)
+            let s0 = ata_buf[100] as u64;
+            let s1 = ata_buf[101] as u64;
+            let s2 = ata_buf[102] as u64;
+            let s3 = ata_buf[103] as u64;
+            sectors = s0 | (s1 << 16) | (s2 << 32) | (s3 << 48);
+        }
+        
+        total_capacity = sectors * 512;
     }
-
-    if total_capacity == 0 { total_capacity = 64 * 1024 * 1024; } // Fallback 64MB
 
     let other_size = stats.total_size.saturating_sub(stats.image_size + stats.system_size + stats.alo_size);
     
@@ -343,7 +352,7 @@ fn show_mem_d(_separate: bool, _drive: Option<usize>) {
 
     let info = [
         ("Model:        ", model),
-        ("Capacity:     ", format!("{} / {}", format_size(stats.total_size), format_size(total_capacity))),
+        ("Capacity:     ", if total_capacity > 0 { format!("{} / {}", format_size(stats.total_size), format_size(total_capacity)) } else { format!("{} / Unknown", format_size(stats.total_size)) }),
         ("Usage:        ", bar),
         ("              ", String::from("")),
         ("Images:       ", format_size(stats.image_size)),

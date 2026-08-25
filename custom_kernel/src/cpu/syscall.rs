@@ -190,7 +190,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             let fd = a1 as usize;
             let len = a3 as usize;
             if len > 8192 { return 0; }
-            if !crate::mm::user::validate_user_ptr(a2, len) { return 0; }
+            if !crate::mm::user::validate_user_range(a2, len) { return 0; }
 
             let mut buf = alloc::vec![0u8; len];
             if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf).is_ok() {
@@ -212,7 +212,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         }
 
         22 | 293 => { // pipe(pipefd) / pipe2(pipefd, flags)
-            if a1 != 0 && crate::mm::user::validate_user_ptr(a1, 8) {
+            if a1 != 0 && crate::mm::user::validate_user_range(a1, 8) {
                 let (r, w) = crate::process::scheduler::process_pipe();
                 if r >= 0 && w >= 0 {
                     unsafe {
@@ -231,7 +231,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         503 => { // IPC Send
             // a1 = port_handle (index in cap table), a2 = msg_ptr
             // Validate Message Pointer
-            if !crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
+            if !crate::mm::user::validate_user_range(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
                  return 1; // Invalid Pointer
             }
 
@@ -248,20 +248,20 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             }
         }
         504 => { // IPC Recv
-            // a1 = port_handle, a2 = buffer ptr
+            // a1 = port_handle, a2 = buffer ptr, a3 = non_blocking flag
             // Validate Buffer Pointer
-            if !crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
+            if !crate::mm::user::validate_user_range(a2, core::mem::size_of::<crate::ipc::port::Message>()) {
                  return 1;
             }
             if (a2 as usize) % 8 != 0 { return 1; }
 
-            if let Some(msg) = crate::ipc::port::receive(a1 as usize) {
+            let non_blocking = a3 != 0;
+            if let Some(msg) = crate::ipc::port::receive(a1 as usize, non_blocking) {
                  let buf = a2 as *mut crate::ipc::port::Message;
                  unsafe { *buf = msg };
                  0
             } else {
-                // Return 1 (No message / Would block)
-                // Real implementation should BLOCK.
+                // Return 1 (No message / Would block / Blocked and awoken without msg)
                 1
             }
         }
@@ -287,11 +287,28 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
                  u64::MAX // -1
              }
         },
-        41 => crate::net::sys_socket(a1 as i32, a2 as i32, a3 as i32) as u64,
-        42 => crate::net::sys_connect(a1 as usize, a2 as *const u8, a3 as usize) as u64,
-        43 => crate::net::sys_accept(a1 as usize) as u64,
-        49 => crate::net::sys_bind(a1 as usize, a2 as *const u8, a3 as usize) as u64,
-        50 => crate::net::sys_listen(a1 as usize, a2 as i32) as u64,
+        41 | 42 | 43 | 49 | 50 => {
+             // Capability Check: Network Access
+             let cell = crate::process::scheduler::get_current_cell();
+             // For now, we assume Cell 0 (root) has all capabilities.
+             if cell.id != 0 {
+                 let has_net = {
+                     let caps = cell.caps.lock();
+                     // Simplified check: Does the cell have any capability?
+                     // In a real implementation, we'd check for CapType::Resource("network")
+                     false // Strict deny by default for non-root cells
+                 };
+                 if !has_net { return u64::MAX; } // Access Denied
+             }
+             match id {
+                 41 => crate::net::sys_socket(a1 as i32, a2 as i32, a3 as i32) as u64,
+                 42 => crate::net::sys_connect(a1 as usize, a2 as *const u8, a3 as usize) as u64,
+                 43 => crate::net::sys_accept(a1 as usize) as u64,
+                 49 => crate::net::sys_bind(a1 as usize, a2 as *const u8, a3 as usize) as u64,
+                 50 => crate::net::sys_listen(a1 as usize, a2 as i32) as u64,
+                 _ => u64::MAX,
+             }
+        },
         62 => crate::process::scheduler::post_signal(a1 as usize, a2 as u32) as u64,
         500 => crate::process::scheduler::sys_get_tasks(a1 as u64, a2 as usize) as u64,
         13 => { // rt_sigaction(sig, act, oact, sigsetsize)
@@ -308,11 +325,11 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
                 let mut tasks = crate::process::scheduler::TASKS.lock();
                 let current_pid = crate::process::scheduler::get_current_pid();
                 if let Some(task) = &mut tasks[current_pid] {
-                    if oact_ptr as u64 != 0 && crate::mm::user::validate_user_ptr(oact_ptr as u64, core::mem::size_of::<crate::process::signal::SigAction>()) {
+                    if oact_ptr as u64 != 0 && crate::mm::user::validate_user_range(oact_ptr as u64, core::mem::size_of::<crate::process::signal::SigAction>()) {
                         unsafe { *oact_ptr = task.sigactions[sig]; }
                         res = 0;
                     }
-                    if act_ptr as u64 != 0 && crate::mm::user::validate_user_ptr(act_ptr as u64, core::mem::size_of::<crate::process::signal::SigAction>()) {
+                    if act_ptr as u64 != 0 && crate::mm::user::validate_user_range(act_ptr as u64, core::mem::size_of::<crate::process::signal::SigAction>()) {
                         unsafe { task.sigactions[sig] = *act_ptr; }
                         res = 0;
                     }
@@ -366,8 +383,26 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         83 => { // Sys_mkdir (path_ptr, path_len)
              let len = a2 as usize;
              if len > 256 { return u64::MAX; }
-             if !crate::mm::user::validate_user_ptr(a1, len) { return u64::MAX; }
+             if !crate::mm::user::validate_user_range(a1, len) { return u64::MAX; }
              
+             let posix_port = crate::ipc::port::POSIX_SUBSYSTEM_PORT.load(core::sync::atomic::Ordering::SeqCst);
+             if posix_port != usize::MAX {
+                 // Route to Userspace POSIX Server via IPC
+                 let msg = crate::ipc::port::Message {
+                     sender_pid: crate::process::scheduler::get_current_pid(),
+                     msg_type: 83, // MKDIR
+                     payload: crate::ipc::port::IpcPayload::Memory(a1 as usize, len),
+                 };
+                 if crate::ipc::port::send(posix_port, msg) {
+                     // Block waiting for reply
+                     // In a real system, we'd wait on a reply port.
+                     return 0; // Stub: assume success if message sent
+                 } else {
+                     return u64::MAX;
+                 }
+             }
+
+             // Fallback: In-kernel implementation
              let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
              if let Ok(path) = core::str::from_utf8(s) {
                  crate::process::scheduler::process_mkdir(path) as u64
@@ -378,7 +413,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         87 => { // Sys_unlink (path_ptr, path_len)
              let len = a2 as usize;
              if len > 256 { return u64::MAX; }
-             if !crate::mm::user::validate_user_ptr(a1, len) { return u64::MAX; }
+             if !crate::mm::user::validate_user_range(a1, len) { return u64::MAX; }
              
              let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
              if let Ok(path) = core::str::from_utf8(s) {
@@ -412,8 +447,8 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
              let val_len = a4 as usize;
              if key_len > 64 || val_len > 64 { return u64::MAX; }
              
-             if !crate::mm::user::validate_user_ptr(a1, key_len) { return u64::MAX; }
-             if !crate::mm::user::validate_user_ptr(a3, val_len) { return u64::MAX; }
+             if !crate::mm::user::validate_user_range(a1, key_len) { return u64::MAX; }
+             if !crate::mm::user::validate_user_range(a3, val_len) { return u64::MAX; }
 
              let mut key_buf = [0u8; 64];
              let mut val_buf = [0u8; 64];
@@ -542,7 +577,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
          },
         30 => { // Sys_query_metrics (pid, buf_ptr)
             // a1 = pid, a2 = ptr to TaskMetrics
-            if !crate::mm::user::validate_user_ptr(a2, 64) { return u64::MAX; }
+            if !crate::mm::user::validate_user_range(a2, 64) { return u64::MAX; }
             
             let mut tasks = crate::process::scheduler::TASKS.lock();
             if let Some(task) = &tasks[a1 as usize] {
@@ -595,7 +630,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             let mut buf = alloc::vec![0u8; len as usize];
             if crate::mm::user::copy_from_user(a1 as *const u8, &mut buf).is_err() { return u64::MAX; }
             if let Ok(path) = core::str::from_utf8(&buf) {
-                if crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
+                if crate::mm::user::validate_user_range(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
                     let stat_ptr = a2 as *mut crate::fs::vfs::CStat;
                     let mut stat_buf = crate::fs::vfs::CStat::default();
                     let res = crate::process::scheduler::process_stat(path, &mut stat_buf);
@@ -608,7 +643,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             u64::MAX
         },
         5 => { // sys_fstat (fd, stat_buf)
-            if crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
+            if crate::mm::user::validate_user_range(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
                 let stat_ptr = a2 as *mut crate::fs::vfs::CStat;
                 let mut stat_buf = crate::fs::vfs::CStat::default();
                 let res = crate::process::scheduler::process_fstat(a1 as usize, &mut stat_buf);
@@ -630,7 +665,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             let mut buf = alloc::vec![0u8; len as usize];
             if crate::mm::user::copy_from_user(a1 as *const u8, &mut buf).is_err() { return u64::MAX; }
             if let Ok(path) = core::str::from_utf8(&buf) {
-                if crate::mm::user::validate_user_ptr(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
+                if crate::mm::user::validate_user_range(a2, core::mem::size_of::<crate::fs::vfs::CStat>()) {
                     let stat_ptr = a2 as *mut crate::fs::vfs::CStat;
                     let mut stat_buf = crate::fs::vfs::CStat::default();
                     let res = crate::process::scheduler::process_stat(path, &mut stat_buf);
@@ -651,7 +686,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         },
         79 => { // sys_getcwd (buf, size)
              let size = a2 as usize;
-             if size > 0 && crate::mm::user::validate_user_ptr(a1, size) {
+             if size > 0 && crate::mm::user::validate_user_range(a1, size) {
                  let s = unsafe { core::slice::from_raw_parts_mut(a1 as *mut u8, size) };
                  let res = crate::process::scheduler::process_getcwd(s);
                  if res > 0 { return a1; } // success returns pointer
@@ -687,7 +722,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             let mut buf = alloc::vec![0u8; len as usize];
             if crate::mm::user::copy_from_user(a1 as *const u8, &mut buf).is_err() { return u64::MAX; }
             if let Ok(path) = core::str::from_utf8(&buf) {
-                if !crate::mm::user::validate_user_ptr(a2, a3 as usize) { return u64::MAX; }
+                if !crate::mm::user::validate_user_range(a2, a3 as usize) { return u64::MAX; }
                 
                 let res = match crate::fs::vfs::resolve_path(path) {
                     Ok(inode) => {
@@ -867,8 +902,8 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
              else { ((r as u64) << 32) | (w as u64) }
         },
         56 => { // sys_clone(entry, stack) -> pid
-             if !crate::mm::user::validate_user_ptr(a2, 8) { return 0xFFFFFFFFFFFFFFFF; }
-             if !crate::mm::user::validate_user_ptr(a1, 1) { return 0xFFFFFFFFFFFFFFFF; }
+             if !crate::mm::user::validate_user_range(a2, 8) { return 0xFFFFFFFFFFFFFFFF; }
+             if !crate::mm::user::validate_user_range(a1, 1) { return 0xFFFFFFFFFFFFFFFF; }
              crate::process::scheduler::clone_task(a1, a2) as u64
         },
         // sys_writev (20)
@@ -878,7 +913,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
             let iovcnt = a3 as usize;
 
             if iovcnt > 1024 { return u64::MAX; }
-            if !crate::mm::user::validate_user_ptr(a2, iovcnt * 16) { return u64::MAX; }
+            if !crate::mm::user::validate_user_range(a2, iovcnt * 16) { return u64::MAX; }
 
             if fd <= 2 {
                 let mut total_written = 0;
@@ -886,7 +921,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
                     let iov = unsafe { &*iov_ptr.add(i) };
                     let base = iov[0] as *const u8;
                     let len = iov[1] as usize;
-                    if len > 0 && crate::mm::user::validate_user_ptr(base as u64, len) {
+                    if len > 0 && crate::mm::user::validate_user_range(base as u64, len) {
                         let slice = unsafe { core::slice::from_raw_parts(base, len) };
                         if let Ok(s) = core::str::from_utf8(slice) {
                             crate::klog_serial!("{}", s);
@@ -983,14 +1018,14 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         }
         4 => { // sys_stat
             let buf = a2 as *mut u8;
-            if crate::mm::user::validate_user_ptr(a2, 144) {
+            if crate::mm::user::validate_user_range(a2, 144) {
                 unsafe { core::ptr::write_bytes(buf, 0, 144); }
                 0
             } else { u64::MAX }
         }
         5 => { // sys_fstat
             let buf = a2 as *mut u8;
-            if crate::mm::user::validate_user_ptr(a2, 144) {
+            if crate::mm::user::validate_user_range(a2, 144) {
                 unsafe { core::ptr::write_bytes(buf, 0, 144); }
                 0
             } else { u64::MAX }
@@ -1001,7 +1036,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         21 => (!2u64) + 1, // sys_access (-ENOENT)
         35 => { // sys_nanosleep(timespec *req, timespec *rem)
             // timespec: { time_t tv_sec (8 bytes), long tv_nsec (8 bytes) }
-            if crate::mm::user::validate_user_ptr(a1, 16) {
+            if crate::mm::user::validate_user_range(a1, 16) {
                 let tv_sec = unsafe { *(a1 as *const u64) };
                 let tv_nsec = unsafe { *((a1 + 8) as *const u64) };
                 let ms = tv_sec * 1000 + tv_nsec / 1_000_000;
@@ -1045,7 +1080,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         44 => { // sys_sendto(fd, buf, len, flags, dest_addr, addrlen)
             let fd = a1 as usize;
             let len = a3 as usize;
-            if len > 8192 || !crate::mm::user::validate_user_ptr(a2, len) { return (!0u64); }
+            if len > 8192 || !crate::mm::user::validate_user_range(a2, len) { return (!0u64); }
             let mut buf = alloc::vec![0u8; len];
             if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf).is_ok() {
                 let n = crate::process::scheduler::process_write(fd, &buf);
@@ -1056,7 +1091,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         45 => { // sys_recvfrom(fd, buf, len, flags, src_addr, addrlen)
             let fd = a1 as usize;
             let len = a3 as usize;
-            if len > 8192 || !crate::mm::user::validate_user_ptr(a2, len) { return (!0u64); }
+            if len > 8192 || !crate::mm::user::validate_user_range(a2, len) { return (!0u64); }
             let mut buf = alloc::vec![0u8; len];
             let n = crate::process::scheduler::process_read(fd, &mut buf);
             if n > 0 {
@@ -1069,7 +1104,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         },
         318 => { // sys_getrandom(buf, buflen, flags)
             let buflen = a2 as usize;
-            if buflen > 0 && crate::mm::user::validate_user_ptr(a1, buflen) {
+            if buflen > 0 && crate::mm::user::validate_user_range(a1, buflen) {
                 let mut buf = alloc::vec![0u8; buflen];
                 crate::lib::prng::get_random_bytes(&mut buf);
                 if crate::mm::user::copy_to_user(a1 as *mut u8, &buf).is_ok() {

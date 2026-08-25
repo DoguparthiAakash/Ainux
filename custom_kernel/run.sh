@@ -70,8 +70,15 @@ debugfs -w -R "rm ps.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ps ps.elf" disk3.img || echo "debugfs (ps) failed"
 debugfs -w -R "rm kill.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/kill kill.elf" disk3.img || echo "debugfs (kill) failed"
-debugfs -w -R "rm wget.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/wget wget.elf" disk3.img || echo "debugfs (wget) failed"
+    debugfs -w -R "rm wget.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/wget wget.elf" disk3.img || echo "debugfs (wget) failed"
+    debugfs -w -R "rm deskd.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/deskd deskd.elf" disk3.img || echo "debugfs (deskd) failed"
+    debugfs -w -R "rm posixd.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/posixd posixd.elf" disk3.img || echo "debugfs (posixd) failed"
+    debugfs -w -R "rm fsd.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/fsd fsd.elf" disk3.img || echo "debugfs (fsd) failed"
+
 
 # Hybrid Nux-LLVM Compiler Step
 echo "Building test.nux using LLVM Hybrid Compiler..."

@@ -67,7 +67,7 @@ fn panic(_info: &PanicInfo) -> ! {
         crate::drivers::video::emergency_put_str("               --- KERNEL PANIC ---\n\n");
         
         if depth == 0 {
-            crate::drivers::video::emergency_put_str("A sovereign system failure has occurred.\n\n");
+            crate::drivers::video::emergency_put_str("A system failure has occurred.\n\n");
             // We can't easily format! without allocation, so we just put some static text 
             // and hope the serial log has the details.
             crate::drivers::video::emergency_put_str("Check serial output (0x3F8) for full PanicInfo.\n");
@@ -93,7 +93,7 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "╚══════════════════════════════════════════════════╝\n");
     let _ = write!(serial, "\n");
 
-    // ─── Phase 0: CPU Detection ───
+    // ─── Phase 0: CPU Detection & Architecture Foundation ───
     let _ = write!(serial, "── Phase 0: CPU/BSS Init ──\n");
     cpu::cpuid::init();
 
@@ -105,6 +105,20 @@ pub extern "C" fn _start() -> ! {
     }
     let _ = write!(serial, "GS_BASE set to PRCB[0].\n");
     
+    let _ = write!(serial, "Initializing GDT...\n");
+    // GDT must be initialized before PMM so that a known good segment and TSS
+    // are available if exceptions occur during memory allocation.
+    cpu::gdt::init();
+    let _ = write!(serial, "GDT Initialized.\n");
+
+    let _ = write!(serial, "Initializing IDT...\n");
+    // IDT must be initialized before PMM so that exceptions (like page faults)
+    // can be caught and handled gracefully in early boot.
+    cpu::idt::init();
+    let _ = write!(serial, "IDT Initialized.\n");
+
+    let _ = write!(serial, "Phase 0 Complete.\n");
+
     let _ = write!(serial, "\n── Phase 1: Memory Subsystem ──\n");
     let _ = write!(serial, "Initializing PMM (Multiboot)...\n");
     mm::pmm::BitmapPmm::init();
@@ -124,16 +138,9 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
-    // ─── Phase 2: Core CPU Structures ───
-    let _ = write!(serial, "\n── Phase 2: Core CPU Structures ──\n");
-    let _ = write!(serial, "Initializing GDT...\n");
-    cpu::gdt::init();
-    let _ = write!(serial, "GDT Initialized.\n");
-
-    let _ = write!(serial, "Initializing IDT...\n");
-    cpu::idt::init();
-    let _ = write!(serial, "IDT Initialized.\n");
-
+    // ─── Phase 2: Virtual Memory & Heap ───
+    let _ = write!(serial, "\n── Phase 2: Virtual Memory & Heap ──\n");
+    
     let _ = write!(serial, "Initializing VMM...\n");
     mm::vmm::init();
     let _ = write!(serial, "VMM Initialized.\n");
@@ -186,6 +193,7 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Mouse Initialized (IRQ12 Unmasked).\n");
     
     drivers::video::init();
+    drivers::video::auto_resolution();
     drivers::video::put_str("Ainux Kernel v0.1\n");
     drivers::video::put_str("Initializing...\n");
     
@@ -392,6 +400,7 @@ fn boot_menu() {
                 '1' => {
                     drivers::video::put_str("1\n");
                     crate::shell::run();
+
                     return;
                 },
                 '2' => {

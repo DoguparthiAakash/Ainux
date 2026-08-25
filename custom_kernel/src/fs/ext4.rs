@@ -476,7 +476,11 @@ impl Inode for Ext4Inode {
                     ) };
                 
                     if let Ok(s) = core::str::from_utf8(name_slice) {
+                        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+                        use core::fmt::Write;
+                        let _ = write!(serial, "  -> scan: '{}' (len {}) == '{}' (len {}) ?\n", s, s.len(), name, name.len());
                         if s == name {
+                            let _ = write!(serial, "  -> MATCHED!\n");
                             // Found!
                             match self.fs.read_inode(entry.inode) {
                                 Ok(child_inode) => {
