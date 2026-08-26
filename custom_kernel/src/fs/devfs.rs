@@ -35,13 +35,14 @@ impl Inode for DevFsRoot {
             "zero" => Ok(Arc::new(DevZero)),
             "urandom" => Ok(Arc::new(DevURandom)),
             "dri" => Ok(Arc::new(DriDir)),
+            "fb0" => Ok(Arc::new(DevFb0)),
             _ => Err(VfsError::NotFound),
         }
     }
     fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> { Err(VfsError::IsADirectory) }
     fn create(&self, _name: &str, _type: FileType) -> VfsResult<ArcInode> { Err(VfsError::PermissionDenied) }
     fn read_dir(&self) -> VfsResult<Vec<String>> {
-        Ok(alloc::vec![String::from("null"), String::from("zero"), String::from("urandom"), String::from("dri")])
+        Ok(alloc::vec![String::from("null"), String::from("zero"), String::from("urandom"), String::from("dri"), String::from("fb0")])
     }
     fn mkdir(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::PermissionDenied) }
     fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
@@ -252,5 +253,94 @@ impl FileHandle for Card0Handle {
 
     fn mmap(&self, offset: u64, size: usize) -> VfsResult<Option<u64>> {
         crate::drivers::drm::handle_mmap(offset, size)
+    }
+}
+
+// /dev/fb0
+#[derive(Debug)]
+pub struct DevFb0;
+
+impl KernelObject for DevFb0 {
+    fn id(&self) -> usize { 0 }
+    fn object_type(&self) -> &'static str { "Device" }
+    fn name(&self) -> String { String::from("DevFb0") }
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &str> { Err("Not implemented") }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &str> { Err("Not implemented") }
+}
+
+impl Inode for DevFb0 {
+    fn inode_num(&self) -> u32 { 7 }
+    fn stat(&self) -> VfsResult<FileStat> {
+        let (w, h) = crate::drivers::video::get_resolution();
+        let pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock() as usize;
+        let size = (pitch * h) as u64;
+        Ok(FileStat { size, file_type: FileType::Device, mode: 0o666, uid: 0, gid: 0, mtime: 0 })
+    }
+    fn lookup(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> { Ok(Arc::new(DevFb0Handle)) }
+    fn create(&self, _name: &str, _type: FileType) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn read_dir(&self) -> VfsResult<Vec<String>> { Err(VfsError::NotADirectory) }
+    fn mkdir(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn remove_dir(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn rename(&self, _o: &str, _np: ArcInode, _nn: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn link(&self, _name: &str, _inode: ArcInode) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chmod(&self, _mode: u16) -> VfsResult<()> { Ok(()) }
+    fn chown(&self, _uid: u16, _gid: u16) -> VfsResult<()> { Ok(()) }
+}
+
+#[derive(Debug)]
+pub struct DevFb0Handle;
+
+impl FileHandle for DevFb0Handle {
+    fn read(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> { Ok(0) }
+    fn write(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> { Ok(0) }
+    fn truncate(&self) -> VfsResult<()> { Ok(()) }
+    fn close(&self) -> VfsResult<()> { Ok(()) }
+
+    fn ioctl(&self, request: u64, arg: u64) -> VfsResult<u64> {
+        // FBIOGET_VSCREENINFO = 0x4600
+        if request == 0x4600 {
+            if crate::mm::user::validate_user_range(arg, 160) {
+                let (w, h) = crate::drivers::video::get_resolution();
+                let bpp = *crate::drivers::video::FRAMEBUFFER_BPP.lock() as u32;
+                unsafe {
+                    // xres, yres, xres_virtual, yres_virtual
+                    *(arg as *mut u32) = w as u32;
+                    *((arg + 4) as *mut u32) = h as u32;
+                    *((arg + 8) as *mut u32) = w as u32;
+                    *((arg + 12) as *mut u32) = h as u32;
+                    // xoffset, yoffset, bits_per_pixel
+                    *((arg + 16) as *mut u32) = 0;
+                    *((arg + 20) as *mut u32) = 0;
+                    *((arg + 24) as *mut u32) = bpp;
+                }
+                return Ok(0);
+            }
+        }
+        // FBIOGET_FSCREENINFO = 0x4602
+        if request == 0x4602 {
+            if crate::mm::user::validate_user_range(arg, 80) {
+                let pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock() as u32;
+                let smem_len = pitch * (*crate::drivers::video::FRAMEBUFFER_HEIGHT.lock() as u32);
+                unsafe {
+                    // smem_start (not mapped to userspace directly by fbdev), smem_len, type, type_aux, visual, xpanstep, ypanstep, ywrapstep, line_length
+                    *((arg + 16) as *mut u32) = smem_len; // smem_len
+                    *((arg + 48) as *mut u32) = pitch; // line_length
+                }
+                return Ok(0);
+            }
+        }
+        Err(VfsError::PermissionDenied)
+    }
+
+    fn mmap(&self, _offset: u64, _size: usize) -> VfsResult<Option<u64>> {
+        // Return physical/virtual framebuffer address to sys_mmap
+        let addr = *crate::drivers::video::FRAMEBUFFER_ADDR.lock();
+        if addr != 0 {
+            Ok(Some(addr))
+        } else {
+            Err(VfsError::NotFound)
+        }
     }
 }

@@ -16,6 +16,26 @@ use crate::object::KernelObject;
 static ALIASES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 static ENV_VARS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
+static SPAWNED_ARGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static SPAWNED_CMD: Mutex<Option<fn(&[&str])>> = Mutex::new(None);
+
+extern "C" fn generic_spawn_wrapper() {
+    let func = SPAWNED_CMD.lock().unwrap();
+    let args_vec = SPAWNED_ARGS.lock().clone();
+    let args: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
+    func(&args);
+    crate::process::scheduler::exit_current_task(0);
+}
+
+fn run_in_session(name: &str, func: fn(&[&str]), args: &[&str]) {
+    *SPAWNED_CMD.lock() = Some(func);
+    *SPAWNED_ARGS.lock() = args.iter().map(|s| String::from(*s)).collect();
+    let pid = crate::process::scheduler::spawn(generic_spawn_wrapper, name);
+    crate::process::scheduler::set_foreground_pid(pid);
+    crate::process::scheduler::wait_pid(pid);
+    crate::process::scheduler::set_foreground_pid(0);
+}
+
 pub struct FlushGuard(bool);
 impl FlushGuard {
     pub fn new() -> Self {
@@ -778,6 +798,10 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "chmod" => cmd_chmod(&args),
             "chown" => cmd_chown(&args),
             "su" => cmd_su(&args),
+            "ping" => run_in_session("ping", cmd_ping, &args),
+            "youtube" => run_in_session("youtube", cmd_youtube, &args),
+            "wget" => run_in_session("wget", cmd_wget, &args),
+            "nc" => run_in_session("nc", cmd_nc, &args),
             "bg" => cmd_bg(&args),
             "fg" => cmd_fg(&args),
             "jobs" => cmd_jobs(),

@@ -4,7 +4,7 @@ use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
 
-pub const MAX_TASKS: usize = 32;
+pub const MAX_TASKS: usize = 16;
 
 pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None }; MAX_TASKS]);
 
@@ -14,7 +14,7 @@ static mut TICKS: u64 = 0;
 pub static READY_BITMAP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SCHEDULER_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-fn set_ready(pid: usize) {
+pub fn set_ready(pid: usize) {
     if pid < MAX_TASKS {
         READY_BITMAP.fetch_or(1 << pid, core::sync::atomic::Ordering::Relaxed);
     }
@@ -174,7 +174,7 @@ pub fn spawn_kernel_task(func: u64, name: &str) -> usize {
                 let task_ref = tasks[i].as_mut().unwrap();
 
                 // Setup Stack
-                let stack_top = task_ref.stack.as_ptr() as u64 + 16384;
+                let stack_top = task_ref.stack.as_ptr() as u64 + task_ref.stack.len() as u64;
                 let mut sp = stack_top & !0xF;
                 unsafe {
                     sp -= 8; *(sp as *mut u64) = kernel_thread_entry as u64; // ret
@@ -190,8 +190,8 @@ pub fn spawn_kernel_task(func: u64, name: &str) -> usize {
     })
 }
 
-pub fn spawn(func: extern "C" fn(), name: &str) {
-    spawn_kernel_task(func as u64, name);
+pub fn spawn(func: extern "C" fn(), name: &str) -> usize {
+    spawn_kernel_task(func as u64, name)
 }
 
 #[unsafe(naked)]
@@ -649,10 +649,21 @@ pub fn exit_current_task(exit_code: isize) {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
         
+        let mut parent_to_wake = None;
         if let Some(task) = &mut tasks[current_pid] {
              task.state = TaskState::Zombie;
              task.exit_code = exit_code;
+             parent_to_wake = task.parent_id;
              clear_ready(current_pid);
+        }
+        
+        if let Some(pid) = parent_to_wake {
+             if let Some(parent) = &mut tasks[pid] {
+                 if parent.state == TaskState::Waiting {
+                     parent.state = TaskState::Ready;
+                     set_ready(pid);
+                 }
+             }
         }
         
         drop(tasks);

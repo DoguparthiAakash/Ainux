@@ -53,14 +53,16 @@ static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 pub const HEAP_START: usize = 0xFFFF_A000_0000_0000;
 
 pub fn init() {
-    init_custom(1 * 1024 * 1024); // 1MB heap default for memory constrained environments
+    init_custom(512 * 1024); // 512KB heap default for memory constrained environments
 }
 
 pub fn init_custom(heap_size: usize) {
     let total_mem = crate::mm::pmm::TOTAL_MEMORY.load(core::sync::atomic::Ordering::Relaxed) as usize;
     
     // Strictly enforce 1MB maximum heap for memory constrained environments
-    let actual_size = if total_mem > 0 && total_mem < (heap_size * 2) {
+    let actual_size = if total_mem > 0 && total_mem <= 2 * 1024 * 1024 {
+        total_mem / 8 // Use 1/8th of RAM for heap in extremely constrained environments (256KB for 2MB RAM)
+    } else if total_mem > 0 && total_mem < (heap_size * 2) {
         total_mem / 4
     } else {
         heap_size
@@ -68,6 +70,17 @@ pub fn init_custom(heap_size: usize) {
     
     // The user strictly requested < 2MB for the kernel heap footprint.
     let heap_size = actual_size.min(1900 * 1024); // at most 1.9MB
+    
+    // Also cap by available physical memory
+    let (allocated, usable) = crate::mm::pmm::PMM.lock().as_ref().unwrap().get_stats_fast();
+    let free_frames = usable.saturating_sub(allocated);
+    let max_possible_heap = free_frames * 4096;
+    let heap_size = if heap_size > max_possible_heap {
+        if max_possible_heap > 4096 * 4 { max_possible_heap - 4096 * 4 } else { 4096 } // leave a few frames for other things
+    } else {
+        heap_size
+    };
+
     let pages = (heap_size + 4095) / 4096;
     let mut current_addr = HEAP_START;
     

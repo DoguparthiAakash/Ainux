@@ -63,6 +63,7 @@ pub const MMAP_TYPE_ACPI_RECLAIMABLE: u32 = 3;
 extern "C" {
     static MULTIBOOT_INFO_PTR: u64;
     static MULTIBOOT_MAGIC_VAL: u64;
+    static __kernel_end: u8;
 }
 
 // ---- Constants ----
@@ -233,9 +234,12 @@ impl BitmapPmm {
             let e_type = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*entry_ptr).entry_type)) };
             let e_size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*entry_ptr).size)) };
             if e_type == MMAP_TYPE_AVAILABLE && e_len >= bitmap_size_bytes as u64 {
-                // Place bitmap at aligned address, avoiding first 16MB
-                let candidate = if e_addr < 0x200000 {
-                    0x200000_u64
+                let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
+                let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
+                let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+                
+                let candidate = if e_addr < kernel_end_aligned {
+                    kernel_end_aligned
                 } else {
                     e_addr
                 };
@@ -298,12 +302,15 @@ impl BitmapPmm {
         }
 
         // Phase 4: Mark critical regions as used (in bitmap)
-        // First 2MB (BIOS, kernel, Multiboot structures, page tables)
-        pmm.mark_region_used(0, 0x200000);
+        // Reserve memory from 0 up to the end of the kernel (dynamically calculated)
+        let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
+        let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
+        let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+        
+        pmm.mark_region_used(0, kernel_end_aligned as usize);
+        
         // Bitmap region
         pmm.mark_region_used(bitmap_phys, bitmap_size_bytes);
-        // Kernel region (1MB - 4MB approx, conservative)
-        pmm.mark_region_used(0x100000, 0x300000);
 
         // Phase 5: Populate ZONED_PMM using the verified bitmap
         let mut current_free_base: Option<u64> = None;
@@ -352,8 +359,12 @@ impl BitmapPmm {
         let bitmap_size_u64 = (total_frames + 63) / 64;
         let bitmap_size_bytes = bitmap_size_u64 * 8;
 
-        // Place bitmap at 2MB
-        let bitmap_phys: u64 = 0x200000;
+        let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
+        let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
+        let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+        
+        // Place bitmap at kernel end
+        let bitmap_phys: u64 = kernel_end_aligned;
         HHDM_OFFSET.store(0, Ordering::Relaxed);
         TOTAL_MEMORY.store(total_bytes, Ordering::Relaxed);
 
@@ -373,12 +384,18 @@ impl BitmapPmm {
             hhdm_offset: 0,
         };
 
-        // Free everything above 2MB up to max (in bitmap)
-        if max_addr > 0x200000 {
-            pmm.free_region(0x200000, (max_addr - 0x200000) as usize);
+        // Free everything above kernel_end + bitmap up to max (in bitmap)
+        let bitmap_end = bitmap_phys + bitmap_size_bytes as u64;
+        let bitmap_end_aligned = (bitmap_end + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+        if max_addr > bitmap_end_aligned {
+            pmm.free_region(bitmap_end_aligned, (max_addr - bitmap_end_aligned) as usize);
         }
-        // Re-mark first 2MB + bitmap (in bitmap)
-        pmm.mark_region_used(0, 0x200000);
+        // Re-mark first 1MB + kernel + bitmap (in bitmap)
+        let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
+        let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
+        let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+        
+        pmm.mark_region_used(0, kernel_end_aligned as usize);
         pmm.mark_region_used(bitmap_phys, bitmap_size_bytes);
 
         // Populate ZONED_PMM using the verified bitmap

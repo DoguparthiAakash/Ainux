@@ -126,7 +126,7 @@ impl Task {
             id: 0,
             context: Context { rsp:0, r15:0, r14:0, r13:0, r12:0, rbx:0, rbp:0, rip:0 },
             state: TaskState::Free,
-            stack: alloc::vec![0; 16384].into_boxed_slice(),
+            stack: alloc::vec![0; 8192].into_boxed_slice(),
             cr3: 0,
             address_space: None, // Will be set by loader or scheduler for user tasks
             userspace_stack_top: 0,

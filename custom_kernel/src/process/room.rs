@@ -38,15 +38,15 @@ pub struct RoomContext {
 }
 
 pub trait SchedulerStrategy: Send + Sync + core::fmt::Debug {
-    fn pick_next(&self, tasks: &[Option<Task>; 32], current: usize) -> Option<usize>;
+    fn pick_next(&self, tasks: &[Option<Task>; crate::process::scheduler::MAX_TASKS], current: usize) -> Option<usize>;
 }
 
 #[derive(Debug)]
 pub struct FairShareStrategy;
 impl SchedulerStrategy for FairShareStrategy {
-    fn pick_next(&self, tasks: &[Option<Task>; 32], current: usize) -> Option<usize> {
-        for i in 1..32 {
-            let idx = (current + i) % 32;
+    fn pick_next(&self, tasks: &[Option<Task>; crate::process::scheduler::MAX_TASKS], current: usize) -> Option<usize> {
+        for i in 1..crate::process::scheduler::MAX_TASKS {
+            let idx = (current + i) % crate::process::scheduler::MAX_TASKS;
             if let Some(task) = &tasks[idx] {
                 if task.state == crate::process::task::TaskState::Ready {
                     return Some(idx);
@@ -60,10 +60,10 @@ impl SchedulerStrategy for FairShareStrategy {
 #[derive(Debug)]
 pub struct RealTimeStrategy;
 impl SchedulerStrategy for RealTimeStrategy {
-    fn pick_next(&self, tasks: &[Option<Task>; 32], _current: usize) -> Option<usize> {
+    fn pick_next(&self, tasks: &[Option<Task>; crate::process::scheduler::MAX_TASKS], _current: usize) -> Option<usize> {
         let mut best_pid = None;
         let mut best_pri = 0;
-        for i in 0..32 {
+        for i in 0..crate::process::scheduler::MAX_TASKS {
             if let Some(task) = &tasks[i] {
                 if task.state == crate::process::task::TaskState::Ready {
                     if task.priority > best_pri {

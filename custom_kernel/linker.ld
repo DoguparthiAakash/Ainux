@@ -41,6 +41,9 @@ SECTIONS
     .got ALIGN(4K) : AT(ADDR(.got) - 0xFFFFFFFF80000000) {
         *(.got .got.*)
     }
+    
+    . = ALIGN(4K);
+    __kernel_end = .;
 
     /DISCARD/ : {
         *(.eh_frame .eh_frame_hdr)

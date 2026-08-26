@@ -896,6 +896,36 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         510 => { // sys_uptime() -> ms
              unsafe { crate::process::scheduler::get_ticks() * 10 }
         },
+        96 => { // sys_gettimeofday(tv, tz)
+            let tv_ptr = a1;
+            if tv_ptr != 0 && crate::mm::user::validate_user_range(tv_ptr, 16) {
+                let ms = unsafe { crate::process::scheduler::get_ticks() * 10 };
+                let sec = ms / 1000;
+                let usec = (ms % 1000) * 1000;
+                unsafe {
+                    *(tv_ptr as *mut u64) = sec;
+                    *((tv_ptr + 8) as *mut u64) = usec;
+                }
+                0
+            } else {
+                u64::MAX
+            }
+        },
+        228 => { // sys_clock_gettime(clk_id, tp)
+            let tp_ptr = a2;
+            if tp_ptr != 0 && crate::mm::user::validate_user_range(tp_ptr, 16) {
+                let ms = unsafe { crate::process::scheduler::get_ticks() * 10 };
+                let sec = ms / 1000;
+                let nsec = (ms % 1000) * 1000000;
+                unsafe {
+                    *(tp_ptr as *mut u64) = sec;
+                    *((tp_ptr + 8) as *mut u64) = nsec;
+                }
+                0
+            } else {
+                u64::MAX
+            }
+        },
         22 => { // sys_pipe() -> (r << 32 | w)
              let (r, w) = crate::process::scheduler::process_pipe();
              if r == -1 { u64::MAX }

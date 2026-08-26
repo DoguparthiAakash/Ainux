@@ -77,7 +77,8 @@ struct BdlEntry {
     flags: u16,
 }
 
-static STARTUP_AUDIO: &[u8] = include_bytes!("../../../startup_audio.raw");
+// Removed large startup_audio.raw to save ~900KB of memory
+static STARTUP_AUDIO: &[u8] = &[0; 128];
 
 pub fn play_startup_sound() {
     let mut ac97 = AC97.lock();
