@@ -191,6 +191,32 @@ pub fn resolve_path(path: &str) -> VfsResult<ArcInode> {
     recursive_lookup(cell_root, path)
 }
 
+pub fn check_permission(stat: &FileStat, req_mode: u16) -> VfsResult<()> {
+    let pid = crate::cpu::smp::get_current_pid();
+    let tasks = crate::process::scheduler::TASKS.lock();
+    if let Some(task) = &tasks[pid] {
+        let euid = task.euid;
+        let egid = task.egid;
+
+        if euid == 0 {
+            return Ok(()); // Root can do anything
+        }
+
+        let granted = if euid as u16 == stat.uid {
+            (stat.mode >> 6) & 7
+        } else if egid as u16 == stat.gid {
+            (stat.mode >> 3) & 7
+        } else {
+            stat.mode & 7
+        };
+
+        if (granted & req_mode) == req_mode {
+            return Ok(());
+        }
+    }
+    Err(VfsError::PermissionDenied)
+}
+
 fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {
     let path = path.trim_start_matches('/');
     if path.is_empty() { return Ok(start); }
@@ -198,6 +224,11 @@ fn recursive_lookup(start: ArcInode, path: &str) -> VfsResult<ArcInode> {
     let mut current = start;
     for bit in path.split('/') {
         if bit.is_empty() { continue; }
+        
+        let stat = current.stat()?;
+        // Require execute permission (1) to traverse directory
+        check_permission(&stat, 1)?;
+        
         current = current.lookup(bit)?;
     }
     Ok(current)

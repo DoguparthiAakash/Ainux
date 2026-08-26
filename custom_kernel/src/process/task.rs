@@ -71,6 +71,12 @@ pub struct Task {
     pub sigactions: [crate::process::signal::SigAction; 64],
     pub brk: u64,
     pub mmap_base: u64,
+    // --- UNIX Process Credentials ---
+    pub ruid: u32,
+    pub euid: u32,
+    pub rgid: u32,
+    pub egid: u32,
+    pub umask: u16,
 }
 
 impl KernelObject for Task {
@@ -150,6 +156,11 @@ impl Task {
             sigactions: [crate::process::signal::SigAction::default(); 64],
             brk: 0x0000000040000000, // Reasonable start for heap
             mmap_base: 0x0000700000000000,
+            ruid: 0,
+            euid: 0,
+            rgid: 0,
+            egid: 0,
+            umask: 0o022,
         }
     }
 }

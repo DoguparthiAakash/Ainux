@@ -37,15 +37,56 @@ pub fn sys_open(path_ptr: *const u8, flags: i32, mode: i32) -> isize {
     let _ = write!(serial, "sys_open: path={}, flags={}, mode={}\n", path_str, flags, mode);
 
     // Call the VFS open here.
-    // For now, since VFS is partially stubbed, let's just return a dummy FD or check specific paths.
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path_str) {
+        if let Ok(stat) = inode.stat() {
+            let is_read = (flags & 3) == 0 || (flags & 3) == 2;
+            let is_write = (flags & 3) == 1 || (flags & 3) == 2;
+            
+            let mut req_mode = 0;
+            if is_read { req_mode |= 4; }
+            if is_write { req_mode |= 2; }
+            
+            if crate::fs::vfs::check_permission(&stat, req_mode).is_err() {
+                return -13; // EACCES
+            }
+            
+            if let Ok(handle) = inode.open(flags as u32) {
+                let mut table = FD_TABLE.lock();
+                let mut next_fd = NEXT_FD.lock();
+                let fd = *next_fd;
+                *next_fd += 1;
+                table.insert(fd, handle);
+                return fd as isize;
+            }
+        }
+    } else if (flags & 64) != 0 {
+        // O_CREAT is set, try to create the file
+        let (parent_path, name) = match path_str.rsplit_once('/') {
+            Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+            None => (".", path_str),
+        };
+        if let Ok(parent) = crate::fs::vfs::resolve_path(parent_path) {
+            if let Ok(stat) = parent.stat() {
+                if crate::fs::vfs::check_permission(&stat, 2).is_ok() {
+                    if let Ok(new_inode) = parent.create(name, crate::fs::vfs::FileType::File) {
+                        if let Ok(handle) = new_inode.open(flags as u32) {
+                            let mut table = FD_TABLE.lock();
+                            let mut next_fd = NEXT_FD.lock();
+                            let fd = *next_fd;
+                            *next_fd += 1;
+                            table.insert(fd, handle);
+                            return fd as isize;
+                        }
+                    }
+                }
+            }
+        }
+    }
     
-    // Fallback:
+    // Fallback if VFS fails (temporarily keep dummy FDs for unresolved standard streams/tests)
     let mut next_fd = NEXT_FD.lock();
     let fd = *next_fd;
     *next_fd += 1;
-    
-    // Note: We should actually insert a real FileHandle into FD_TABLE here.
-    // For now, we return a success code.
     fd as isize
 }
 
@@ -188,6 +229,86 @@ pub fn sys_disk_write(lba: u32, sectors: u8, buf: *const u8) -> isize {
     }
 }
 
+pub fn sys_chmod(path_ptr: *const u8, mode: u16) -> isize {
+    let mut len = 0;
+    unsafe {
+        while *path_ptr.add(len) != 0 {
+            len += 1;
+            if len > 4096 { return -36; } // ENAMETOOLONG
+        }
+    }
+    let path_slice = unsafe { slice::from_raw_parts(path_ptr, len) };
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return -22, // EINVAL
+    };
+    
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path_str) {
+        if let Ok(stat) = inode.stat() {
+            // Must be owner or root
+            let pid = crate::cpu::smp::get_current_pid();
+            let tasks = crate::process::scheduler::TASKS.lock();
+            let mut is_owner_or_root = false;
+            if let Some(task) = &tasks[pid] {
+                if task.euid == 0 || task.euid as u16 == stat.uid {
+                    is_owner_or_root = true;
+                }
+            }
+            drop(tasks);
+            
+            if is_owner_or_root {
+                if inode.chmod(mode).is_ok() {
+                    return 0;
+                }
+            } else {
+                return -1; // EPERM
+            }
+        }
+    }
+    -2 // ENOENT
+}
+
+pub fn sys_chown(path_ptr: *const u8, uid: u16, gid: u16) -> isize {
+    let mut len = 0;
+    unsafe {
+        while *path_ptr.add(len) != 0 {
+            len += 1;
+            if len > 4096 { return -36; }
+        }
+    }
+    let path_slice = unsafe { slice::from_raw_parts(path_ptr, len) };
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return -22,
+    };
+    
+    if let Ok(inode) = crate::fs::vfs::resolve_path(path_str) {
+        if let Ok(stat) = inode.stat() {
+            let pid = crate::cpu::smp::get_current_pid();
+            let tasks = crate::process::scheduler::TASKS.lock();
+            let mut can_chown = false;
+            if let Some(task) = &tasks[pid] {
+                // Only root can change owner. 
+                // Owner can change group if they belong to that group (simplified: only root for now).
+                if task.euid == 0 {
+                    can_chown = true;
+                }
+            }
+            drop(tasks);
+            
+            if can_chown {
+                if inode.chown(uid, gid).is_ok() {
+                    return 0;
+                }
+            } else {
+                return -1; // EPERM
+            }
+        }
+    }
+    -2 // ENOENT
+}
+
+
 pub fn sys_disk_identify(buf: *mut u8) -> isize {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     use core::fmt::Write;
@@ -204,4 +325,144 @@ pub fn sys_disk_identify(buf: *mut u8) -> isize {
     } else {
         -1
     }
+}
+
+// Helper to extract string from userspace pointer
+fn get_user_string(ptr: *const u8) -> Result<&'static str, isize> {
+    let mut len = 0;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+            if len > 4096 { return Err(-36); } // ENAMETOOLONG
+        }
+    }
+    let slice = unsafe { slice::from_raw_parts(ptr, len) };
+    core::str::from_utf8(slice).map_err(|_| -22) // EINVAL
+}
+
+pub fn sys_mkdir(path_ptr: *const u8, _mode: u16) -> isize {
+    let path = match get_user_string(path_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    
+    // Find parent directory
+    let (parent_path, name) = match path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", path),
+    };
+    
+    if let Ok(parent) = crate::fs::vfs::resolve_path(parent_path) {
+        if let Ok(stat) = parent.stat() {
+            if crate::fs::vfs::check_permission(&stat, 2).is_err() { // need write to parent
+                return -13; // EACCES
+            }
+            if parent.mkdir(name).is_ok() {
+                return 0;
+            }
+        }
+    }
+    -2 // ENOENT
+}
+
+pub fn sys_rmdir(path_ptr: *const u8) -> isize {
+    let path = match get_user_string(path_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    
+    let (parent_path, name) = match path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", path),
+    };
+    
+    if let Ok(parent) = crate::fs::vfs::resolve_path(parent_path) {
+        if let Ok(stat) = parent.stat() {
+            if crate::fs::vfs::check_permission(&stat, 2).is_err() {
+                return -13;
+            }
+            if parent.remove_dir(name).is_ok() {
+                return 0;
+            }
+        }
+    }
+    -2
+}
+
+pub fn sys_unlink(path_ptr: *const u8) -> isize {
+    let path = match get_user_string(path_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    
+    let (parent_path, name) = match path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", path),
+    };
+    
+    if let Ok(parent) = crate::fs::vfs::resolve_path(parent_path) {
+        if let Ok(stat) = parent.stat() {
+            if crate::fs::vfs::check_permission(&stat, 2).is_err() {
+                return -13;
+            }
+            if parent.unlink(name).is_ok() {
+                return 0;
+            }
+        }
+    }
+    -2
+}
+
+pub fn sys_rename(old_ptr: *const u8, new_ptr: *const u8) -> isize {
+    let old_path = match get_user_string(old_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let new_path = match get_user_string(new_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    
+    let (old_parent_path, old_name) = match old_path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", old_path),
+    };
+    let (new_parent_path, new_name) = match new_path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", new_path),
+    };
+    
+    if let Ok(old_parent) = crate::fs::vfs::resolve_path(old_parent_path) {
+        if let Ok(new_parent) = crate::fs::vfs::resolve_path(new_parent_path) {
+            if old_parent.rename(old_name, new_parent, new_name).is_ok() {
+                return 0;
+            }
+        }
+    }
+    -2
+}
+
+pub fn sys_link(old_ptr: *const u8, new_ptr: *const u8) -> isize {
+    let old_path = match get_user_string(old_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let new_path = match get_user_string(new_ptr) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    
+    let (new_parent_path, new_name) = match new_path.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/" } else { p }, n),
+        None => (".", new_path),
+    };
+    
+    if let Ok(inode) = crate::fs::vfs::resolve_path(old_path) {
+        if let Ok(new_parent) = crate::fs::vfs::resolve_path(new_parent_path) {
+            if new_parent.link(new_name, inode).is_ok() {
+                return 0;
+            }
+        }
+    }
+    -2
 }

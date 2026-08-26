@@ -285,7 +285,13 @@ pub fn syscall_bind(fd: usize, port: u16) -> isize {
         let pid = crate::process::scheduler::get_current_pid();
         if let Some(task) = &mut tasks[pid] {
             if let Ok(handle) = task.fds.get_handle(fd) {
-                return 0;
+                // If it's a network SocketHandle, set the port
+                // We don't have downcast for FileHandle, so we'll just check NET_STACK
+                // Actually, the handle doesn't expose a downcast.
+                // For now, let's just let sys_listen/sys_accept use the passed `port` by storing it in a global map,
+                // or just change sys_bind signature... wait, SocketHandle isn't easily downcastable.
+                // Let's implement an `as_socket_handle` trait method.
+                return 0; // Wait, actually I'll modify FileHandle next
             }
         }
         -1

@@ -64,6 +64,18 @@ pub fn sys_connect(fd: usize, ip: &[u8], port: u16) -> isize {
     unsafe { syscall(42, fd as u64, ip.as_ptr() as u64, port as u64, 0, 0, 0) as isize }
 }
 
+pub fn sys_accept(fd: usize) -> isize {
+    unsafe { syscall(43, fd as u64, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_bind(fd: usize, ip: &[u8], port: u16) -> isize {
+    unsafe { syscall(49, fd as u64, ip.as_ptr() as u64, port as u64, 0, 0, 0) as isize }
+}
+
+pub fn sys_listen(fd: usize, backlog: i32) -> isize {
+    unsafe { syscall(50, fd as u64, backlog as u64, 0, 0, 0, 0) as isize }
+}
+
 pub fn sys_execve(path: &str) -> isize {
     unsafe { syscall(59, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
 }
@@ -85,7 +97,23 @@ pub fn sys_readdir(path: &str, buf: &mut [u8]) -> isize {
 }
 
 pub fn sys_mkdir(path: &str) -> isize {
-    unsafe { syscall(83, path.as_ptr() as u64, path.len() as u64, 0, 0, 0, 0) as isize }
+    unsafe { syscall(83, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_rmdir(path: &str) -> isize {
+    unsafe { syscall(84, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_unlink(path: &str) -> isize {
+    unsafe { syscall(87, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_rename(old_path: &str, new_path: &str) -> isize {
+    unsafe { syscall(82, old_path.as_ptr() as u64, new_path.as_ptr() as u64, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_link(old_path: &str, new_path: &str) -> isize {
+    unsafe { syscall(86, old_path.as_ptr() as u64, new_path.as_ptr() as u64, 0, 0, 0, 0) as isize }
 }
 
 pub fn sys_ipc_send(port: usize, msg_type: u64, a1: u64, a2: u64, a3: u64) -> isize {
@@ -94,6 +122,27 @@ pub fn sys_ipc_send(port: usize, msg_type: u64, a1: u64, a2: u64, a3: u64) -> is
 
 pub fn sys_ipc_recv(port: usize, msg_type_out: &mut u64, a1_out: &mut u64, a2_out: &mut u64, a3_out: &mut u64) -> isize {
     unsafe { syscall(504, port as u64, msg_type_out as *mut _ as u64, a1_out as *mut _ as u64, a2_out as *mut _ as u64, a3_out as *mut _ as u64, 0) as isize }
+}
+
+#[repr(C)]
+pub struct Sysinfo {
+    pub uptime: i64,
+    pub loads: [u64; 3],
+    pub totalram: u64,
+    pub freeram: u64,
+    pub sharedram: u64,
+    pub bufferram: u64,
+    pub totalswap: u64,
+    pub freeswap: u64,
+    pub procs: u16,
+    pub pad: u16,
+    pub totalhigh: u64,
+    pub freehigh: u64,
+    pub mem_unit: u32,
+}
+
+pub fn sys_sysinfo(info: &mut Sysinfo) -> isize {
+    unsafe { syscall(99, info as *mut _ as u64, 0, 0, 0, 0, 0) as isize }
 }
 
 pub fn sys_disk_read(lba: u32, sectors: u8, buf: &mut [u8]) -> isize {

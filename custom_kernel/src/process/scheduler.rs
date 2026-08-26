@@ -8,6 +8,8 @@ pub const MAX_TASKS: usize = 32;
 
 pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None }; MAX_TASKS]);
 
+pub static FOREGROUND_PID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 static mut TICKS: u64 = 0;
 pub static READY_BITMAP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SCHEDULER_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -26,6 +28,14 @@ fn clear_ready(pid: usize) {
 
 pub fn get_ticks() -> u64 {
     unsafe { TICKS }
+}
+
+pub fn set_foreground_pid(pid: usize) {
+    FOREGROUND_PID.store(pid, core::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn get_foreground_pid() -> usize {
+    FOREGROUND_PID.load(core::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn init() {
@@ -343,11 +353,8 @@ pub fn schedule() {
                      return; // The current task is the only one runnable. Keep running it.
                  }
              }
-             // IDLE STRATEGY: Reduce host CPU load
-             crate::cpu::smp::set_current_pid(0);
-             drop(tasks);
-             unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)); }
-             return;
+             // We MUST switch to the idle task (Task 0) since the current task is blocked/dead.
+             0
         };
         
         crate::cpu::smp::set_current_pid(next_pid);
@@ -922,7 +929,7 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
         
-        let (cr3, caps, fds, cell, pgid, sid, cwd, environ) = if let Some(current) = &tasks[current_pid] {
+        let (cr3, caps, fds, cell, pgid, sid, cwd, environ, ruid, euid, rgid, egid, umask) = if let Some(current) = &tasks[current_pid] {
             (
                 current.cr3, 
                 current.caps.clone(), 
@@ -931,7 +938,12 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
                 current.pgid,
                 current.sid,
                 current.cwd.clone(),
-                current.environ.clone()
+                current.environ.clone(),
+                current.ruid,
+                current.euid,
+                current.rgid,
+                current.egid,
+                current.umask
             )
         } else {
             return -1;
@@ -959,6 +971,11 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
                 task.sid = sid;
                 task.cwd = cwd;
                 task.environ = environ;
+                task.ruid = ruid;
+                task.euid = euid;
+                task.rgid = rgid;
+                task.egid = egid;
+                task.umask = umask;
                 
                 // Copy SyscallState to child's stack
                 let kstack_top = task.stack.as_ptr() as u64 + 16384;
@@ -998,6 +1015,45 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
     crate::mm::user::copy_from_user(path_ptr as *const u8, &mut path_buf).unwrap();
     let path = core::str::from_utf8(&path_buf).unwrap_or("");
     
+    // Parse argv array if present
+    let mut args = alloc::vec![alloc::string::String::from(path)];
+    let argv_ptr = _argv_ptr;
+    if argv_ptr != 0 {
+        let mut ptr_offset = 0;
+        loop {
+            let mut ptr_buf = [0u8; 8];
+            if crate::mm::user::copy_from_user((argv_ptr + ptr_offset) as *const u8, &mut ptr_buf).is_err() {
+                break;
+            }
+            let str_ptr = u64::from_le_bytes(ptr_buf);
+            if str_ptr == 0 { break; }
+            
+            let mut str_len = 0;
+            while str_len < 4096 { 
+                let mut b = [0u8; 1];
+                if crate::mm::user::copy_from_user((str_ptr + str_len) as *const u8, &mut b).is_err() {
+                    break;
+                }
+                if b[0] == 0 { break; }
+                str_len += 1;
+            }
+            let mut str_buf = alloc::vec![0u8; str_len as usize];
+            if crate::mm::user::copy_from_user(str_ptr as *const u8, &mut str_buf).is_ok() {
+                if let Ok(s) = core::str::from_utf8(&str_buf) {
+                    // Start adding from arg 1 if argv[0] was provided, to prevent duplicating argv[0]
+                    // But actually typical C expects argv[0] to be the command itself.
+                    // If the user provided argv, we should probably just use their argv directly,
+                    // but for safety let's just push it. Wait! If the user provides argv, we clear our default path arg.
+                    if ptr_offset == 0 {
+                        args.clear();
+                    }
+                    args.push(alloc::string::String::from(s));
+                }
+            }
+            ptr_offset += 8;
+        }
+    }
+    
     if let Ok(inode) = crate::fs::vfs::resolve_path(path) {
         let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
         let new_cr3 = address_space.lock().pml4_phys;
@@ -1011,7 +1067,7 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
                 unsafe { crate::mm::vmm::map_page_in_pml4(new_cr3, stack_base - (p * 4096), frame, 0x07); }
             }
             let stack_top = stack_base + 4096;
-            let initial_sp = crate::process::loader::setup_user_stack(new_cr3, stack_top, entry);
+            let initial_sp = crate::process::loader::setup_user_stack(new_cr3, stack_top, entry, &args);
             
             crate::cpu::without_interrupts(|| {
                 let mut tasks = TASKS.lock();
@@ -1028,6 +1084,8 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
             unsafe {
                 (*state).rcx = entry;
                 (*state).user_rsp = initial_sp;
+                (*state).a1 = args.len() as u64; // argc (mapped to rdi)
+                (*state).a2 = initial_sp + 8;    // argv (mapped to rsi)
             }
             return 0; // returns 0 to the new process through rax
         }
@@ -1220,4 +1278,122 @@ pub fn sys_get_tasks(buf_ptr: u64, buf_len: usize) -> isize {
     }
     
     copy_len as isize
+}
+
+pub fn sys_getuid() -> isize {
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &tasks[pid] {
+            return task.ruid as isize;
+        }
+        -1
+    })
+}
+
+pub fn sys_geteuid() -> isize {
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &tasks[pid] {
+            return task.euid as isize;
+        }
+        -1
+    })
+}
+
+pub fn sys_getgid() -> isize {
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &tasks[pid] {
+            return task.rgid as isize;
+        }
+        -1
+    })
+}
+
+pub fn sys_getegid() -> isize {
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &tasks[pid] {
+            return task.egid as isize;
+        }
+        -1
+    })
+}
+
+pub fn sys_setuid(uid: u32) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &mut tasks[pid] {
+            // Unprivileged can only set to ruid or euid
+            if task.euid == 0 || task.ruid == uid || task.euid == uid {
+                task.ruid = uid;
+                task.euid = uid;
+                return 0;
+            }
+            return -1; // EPERM
+        }
+        -1
+    })
+}
+
+pub fn sys_setgid(gid: u32) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &mut tasks[pid] {
+            if task.euid == 0 || task.rgid == gid || task.egid == gid {
+                task.rgid = gid;
+                task.egid = gid;
+                return 0;
+            }
+            return -1; // EPERM
+        }
+        -1
+    })
+}
+
+pub fn sys_setreuid(ruid: u32, euid: u32) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &mut tasks[pid] {
+            // Simplified check: root can do anything. Others can swap or set to their current values.
+            let is_root = task.euid == 0;
+            let valid_ruid = ruid == 0xFFFFFFFF || is_root || ruid == task.ruid || ruid == task.euid;
+            let valid_euid = euid == 0xFFFFFFFF || is_root || euid == task.ruid || euid == task.euid;
+            
+            if valid_ruid && valid_euid {
+                if ruid != 0xFFFFFFFF { task.ruid = ruid; }
+                if euid != 0xFFFFFFFF { task.euid = euid; }
+                return 0;
+            }
+            return -1; // EPERM
+        }
+        -1
+    })
+}
+
+pub fn sys_setregid(rgid: u32, egid: u32) -> isize {
+    crate::cpu::without_interrupts(|| {
+        let mut tasks = TASKS.lock();
+        let pid = get_current_pid();
+        if let Some(task) = &mut tasks[pid] {
+            let is_root = task.euid == 0;
+            let valid_rgid = rgid == 0xFFFFFFFF || is_root || rgid == task.rgid || rgid == task.egid;
+            let valid_egid = egid == 0xFFFFFFFF || is_root || egid == task.rgid || egid == task.egid;
+            
+            if valid_rgid && valid_egid {
+                if rgid != 0xFFFFFFFF { task.rgid = rgid; }
+                if egid != 0xFFFFFFFF { task.egid = egid; }
+                return 0;
+            }
+            return -1; // EPERM
+        }
+        -1
+    })
 }

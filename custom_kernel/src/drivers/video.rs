@@ -166,7 +166,7 @@ fn fast_clear(color: u32) {
         if fb_addr == 0 {
             // VGA Text mode clear
             let vga_buffer = VGA_HHDM_ADDR as *mut u16;
-            let vga_char = 0x0F00 | b' ' as u16; // Black background, white space
+            let vga_char = 0x0F00 | b' ' as u16;
             unsafe {
                 for i in 0..(80 * 25) {
                     core::ptr::write_volatile(vga_buffer.offset(i as isize), vga_char);
@@ -177,14 +177,28 @@ fn fast_clear(color: u32) {
         
         let final_color = if color == 0 { THEME.lock().bg } else { color };
         let height = *FRAMEBUFFER_HEIGHT.lock();
-        let pitch = *FRAMEBUFFER_PITCH.lock();
-        let total_bytes = height * pitch;
+        let pitch  = *FRAMEBUFFER_PITCH.lock();
+        let bpp    = *FRAMEBUFFER_BPP.lock() as usize;
+        let total_bytes = pitch * height;
         
         unsafe {
-            let ptr = fb_addr as *mut u32;
-            let total_pixels = total_bytes / 4;
-            for i in 0..total_pixels {
-                *ptr.add(i) = final_color;
+            let ptr = fb_addr as *mut u8;
+            if bpp == 32 {
+                let p32 = ptr as *mut u32;
+                for i in 0..(total_bytes / 4) {
+                    *p32.add(i) = final_color;
+                }
+            } else if bpp == 24 {
+                let r = (final_color & 0xFF) as u8;
+                let g = ((final_color >> 8) & 0xFF) as u8;
+                let b = ((final_color >> 16) & 0xFF) as u8;
+                for i in (0..total_bytes).step_by(3) {
+                    *ptr.add(i) = r;
+                    *ptr.add(i + 1) = g;
+                    *ptr.add(i + 2) = b;
+                }
+            } else {
+                core::ptr::write_bytes(ptr, 0, total_bytes);
             }
         }
     });
@@ -198,51 +212,39 @@ pub fn init() {
         let pitch  = *FRAMEBUFFER_PITCH.lock()  as u64;
         let bpp    = *FRAMEBUFFER_BPP.lock();
         
-        // Save boot (default) resolution on first call only
+        // Save boot resolution once (for restore_default_resolution / display menu)
         {
             let mut bw = BOOT_WIDTH.lock();
             if *bw == 0 {
                 *bw = width as usize;
                 drop(bw);
                 *BOOT_HEIGHT.lock() = height as usize;
-                *BOOT_BPP.lock() = bpp;
+                *BOOT_BPP.lock()    = bpp;
             }
         }
-
+        
         let size_bytes = (pitch * height) as usize;
-        let mut mapped_size = MAPPED_WC_SIZE.lock();
         
-        // Ensure the framebuffer is mapped Write-Combining (WC).
-        // If the resolution grew, map the additional pages too.
-        if *mapped_size < size_bytes {
-            let phys_addr = if fb_addr >= 0xFFFF800000000000 {
-                crate::mm::vmm::virt_to_phys(fb_addr)
-            } else {
-                fb_addr
-            };
-            unsafe { crate::mm::vmm::remap_hhdm_pages_wc(phys_addr, size_bytes); }
-            *mapped_size = size_bytes;
-        }
-        drop(mapped_size);
-        
-        // Convert physical address to HHDM virtual if needed
+        // Only remap WC if address is still physical (first call).
+        // After conversion fb_addr is virtual — never re-remap.
         if fb_addr < 0xFFFF800000000000 {
+            unsafe { crate::mm::vmm::remap_hhdm_pages_wc(fb_addr, size_bytes); }
             fb_addr = crate::mm::vmm::phys_to_virt(fb_addr);
             *FRAMEBUFFER_ADDR.lock() = fb_addr;
         }
         
         unsafe { 
             FB_CACHE_ADDR   = fb_addr;
-            FB_CACHE_WIDTH  = width as usize;
+            FB_CACHE_WIDTH  = width  as usize;
             FB_CACHE_HEIGHT = height as usize;
-            FB_CACHE_PITCH  = pitch as usize;
-            FB_CACHE_BPP    = bpp as usize;
+            FB_CACHE_PITCH  = pitch  as usize;
+            FB_CACHE_BPP    = bpp    as usize;
             gfx_init(fb_addr as *mut u8, width, height, pitch, bpp); 
         }
         
         *CONSOLE_WIDTH.lock()  = ((width / 8) as usize).saturating_sub(2);
         *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
-        fast_clear(0x00000000);
+        fast_clear(0);
     } else {
         // VGA Text mode fallback
         *CONSOLE_WIDTH.lock()  = 80;
@@ -258,7 +260,7 @@ pub fn get_resolution() -> (usize, usize) {
     (w, h)
 }
 
-pub static HISTORY: Mutex<alloc::vec::Vec<alloc::vec::Vec<ConsoleChar>>> = Mutex::new(alloc::vec::Vec::new());
+pub static HISTORY: Mutex<alloc::collections::VecDeque<alloc::vec::Vec<ConsoleChar>>> = Mutex::new(alloc::collections::VecDeque::new());
 pub static SCROLL_OFFSET: AtomicU32 = AtomicU32::new(0);
 pub static SCREEN_GRID: Mutex<alloc::vec::Vec<ConsoleChar>> = Mutex::new(alloc::vec::Vec::new());
 
@@ -379,17 +381,13 @@ fn scroll_screen(lines: usize) {
                     for i in 0..width {
                         line_vec.push(grid[l * width + i]);
                     }
-                    history.push(line_vec);
+                    history.push_back(line_vec);
                 }
             }
             
-            // Limit history to 2000 lines
-            if history.len() > 2000 {
-                let excess = history.len() - 2000;
-                // history.drain(0..excess) is better, but since it's a vec we can do this
-                for _ in 0..excess {
-                    history.remove(0);
-                }
+            // Limit history to 300 lines to save RAM
+            while history.len() > 300 {
+                history.pop_front();
             }
             
             let shift_elements = core::cmp::min(lines * width, grid.len());
@@ -421,54 +419,41 @@ fn scroll_screen(lines: usize) {
     
     let fb_height = *FRAMEBUFFER_HEIGHT.lock();
     let pitch = *FRAMEBUFFER_PITCH.lock(); // This is in bytes!
+    let bpp = *FRAMEBUFFER_BPP.lock() as usize;
     
     let char_height = 12; 
     let shift_rows = core::cmp::min(lines * char_height, fb_height);
-    let shift_pixels = (pitch / 4) * shift_rows;
-    let total_pixels = (pitch / 4) * fb_height;
+    let shift_bytes = pitch * shift_rows;
+    let total_bytes = pitch * fb_height;
 
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr != 0 {
-        let addr = fb_addr as *mut u64;
+        let addr = fb_addr as *mut u8;
         unsafe {
-            if total_pixels > shift_pixels {
-                let count_u64 = (total_pixels - shift_pixels) / 2;
-                let src = (fb_addr as *mut u32).add(shift_pixels) as *const u64;
-                let chunks = count_u64 / 4;
-                let remainder = count_u64 % 4;
-                for i in 0..chunks {
-                    let idx = i * 4;
-                    let val0 = *src.add(idx);
-                    let val1 = *src.add(idx + 1);
-                    let val2 = *src.add(idx + 2);
-                    let val3 = *src.add(idx + 3);
-                    *addr.add(idx) = val0;
-                    *addr.add(idx + 1) = val1;
-                    *addr.add(idx + 2) = val2;
-                    *addr.add(idx + 3) = val3;
+            if total_bytes > shift_bytes {
+                let count = total_bytes - shift_bytes;
+                let src = addr.add(shift_bytes);
+                core::ptr::copy(src, addr, count);
+            }
+            
+            let bottom_ptr = addr.add(total_bytes - shift_bytes);
+            let clear_bytes = shift_bytes;
+            if bpp == 32 {
+                let p32 = bottom_ptr as *mut u32;
+                for i in 0..(clear_bytes / 4) {
+                    *p32.add(i) = bg;
                 }
-                for i in (count_u64 - remainder)..count_u64 {
-                    *addr.add(i) = *src.add(i);
+            } else if bpp == 24 {
+                let r = (bg & 0xFF) as u8;
+                let g = ((bg >> 8) & 0xFF) as u8;
+                let b = ((bg >> 16) & 0xFF) as u8;
+                for i in (0..clear_bytes).step_by(3) {
+                    *bottom_ptr.add(i) = r;
+                    *bottom_ptr.add(i + 1) = g;
+                    *bottom_ptr.add(i + 2) = b;
                 }
-            }
-            let bottom_ptr = (fb_addr as *mut u32).add(total_pixels - shift_pixels);
-            let bottom_ptr_u64 = bottom_ptr as *mut u64;
-            let bg_u64 = (bg as u64) | ((bg as u64) << 32);
-            let clear_u64_count = shift_pixels / 2;
-            let clear_chunks = clear_u64_count / 4;
-            let clear_remainder = clear_u64_count % 4;
-            for i in 0..clear_chunks {
-                let idx = i * 4;
-                *bottom_ptr_u64.add(idx) = bg_u64;
-                *bottom_ptr_u64.add(idx + 1) = bg_u64;
-                *bottom_ptr_u64.add(idx + 2) = bg_u64;
-                *bottom_ptr_u64.add(idx + 3) = bg_u64;
-            }
-            for i in (clear_u64_count - clear_remainder)..clear_u64_count {
-                *bottom_ptr_u64.add(i) = bg_u64;
-            }
-            if shift_pixels % 2 != 0 {
-                *bottom_ptr.add(shift_pixels - 1) = bg;
+            } else {
+                core::ptr::write_bytes(bottom_ptr, 0, clear_bytes);
             }
         }
     }

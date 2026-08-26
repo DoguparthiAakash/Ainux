@@ -41,48 +41,72 @@ unsafe fn write_user_u64(cr3: u64, vaddr: u64, val: u64) {
 ///   argv[0] ptr         -- points to program name string
 ///   argc = 1
 ///   [program name string "ainux" at a known location above]
-pub fn setup_user_stack(cr3: u64, stack_top: u64, entry: u64) -> u64 {
+pub fn setup_user_stack(cr3: u64, stack_top: u64, entry: u64, args: &[alloc::string::String]) -> u64 {
     // We'll build the stack from the top, pushing downward.
-    // First, write the program name string near the top.
-    let prog_name = b"ainux\0";
-    let string_addr = stack_top - 64; // place string here
-    unsafe {
-        for (i, &byte) in prog_name.iter().enumerate() {
-            if let Some(ptr) = user_virt_to_hhdm_ptr(cr3, string_addr + i as u64) {
-                *ptr = byte;
+    // First, write the strings near the top.
+    let mut current_string_addr = stack_top;
+    
+    // We need to store the pointers to each string
+    let mut argv_ptrs = alloc::vec::Vec::new();
+    
+    for arg in args.iter().rev() {
+        let bytes = arg.as_bytes();
+        current_string_addr -= (bytes.len() + 1) as u64;
+        unsafe {
+            for (i, &byte) in bytes.iter().enumerate() {
+                if let Some(ptr) = user_virt_to_hhdm_ptr(cr3, current_string_addr + i as u64) {
+                    *ptr = byte;
+                }
+            }
+            // Null terminator
+            if let Some(ptr) = user_virt_to_hhdm_ptr(cr3, current_string_addr + bytes.len() as u64) {
+                *ptr = 0;
             }
         }
+        argv_ptrs.push(current_string_addr);
     }
+    // Reverse again so they are in original order
+    argv_ptrs.reverse();
 
     // Now build the stack frame below the string area.
-    // Stack must be 16-byte aligned at _start entry.
-    let mut sp = stack_top - 128; // leave room for string
+    let mut sp = current_string_addr;
     sp &= !0xF; // 16-byte align
-
-    // Push items bottom-up (we write from low to high, but sp points to lowest)
-    // Layout at sp:
-    //   sp+0:  argc (1)
-    //   sp+8:  argv[0] (pointer to program name)
-    //   sp+16: NULL (argv terminator)
-    //   sp+24: NULL (envp terminator)
-    //   sp+32: AT_PAGESZ (6)
-    //   sp+40: 4096
-    //   sp+48: AT_ENTRY (9)
-    //   sp+56: entry
-    //   sp+64: AT_NULL (0)
-    //   sp+72: 0
+    
+    // Calculate total size of pointers and headers
+    // argc + argv array + NULL + NULL (envp) + AT_PAGESZ + val + AT_ENTRY + val + AT_NULL + val
+    let ptrs_count = 1 + argv_ptrs.len() + 1 + 1 + 2 + 2 + 2;
+    sp -= (ptrs_count * 8) as u64;
+    sp &= !0xF; // Re-align
 
     unsafe {
-        write_user_u64(cr3, sp,      1);              // argc = 1
-        write_user_u64(cr3, sp + 8,  string_addr);    // argv[0]
-        write_user_u64(cr3, sp + 16, 0);              // argv terminator
-        write_user_u64(cr3, sp + 24, 0);              // envp terminator
-        write_user_u64(cr3, sp + 32, 6);              // AT_PAGESZ
-        write_user_u64(cr3, sp + 40, 4096);           // page size value
-        write_user_u64(cr3, sp + 48, 9);              // AT_ENTRY
-        write_user_u64(cr3, sp + 56, entry);          // entry point
-        write_user_u64(cr3, sp + 64, 0);              // AT_NULL
-        write_user_u64(cr3, sp + 72, 0);              // AT_NULL value
+        let mut cur = sp;
+        write_user_u64(cr3, cur, args.len() as u64); // argc
+        cur += 8;
+        
+        for &ptr in &argv_ptrs {
+            write_user_u64(cr3, cur, ptr); // argv[i]
+            cur += 8;
+        }
+        
+        write_user_u64(cr3, cur, 0); // argv terminator
+        cur += 8;
+        
+        write_user_u64(cr3, cur, 0); // envp terminator
+        cur += 8;
+        
+        write_user_u64(cr3, cur, 6); // AT_PAGESZ
+        cur += 8;
+        write_user_u64(cr3, cur, 4096); // page size value
+        cur += 8;
+        
+        write_user_u64(cr3, cur, 9); // AT_ENTRY
+        cur += 8;
+        write_user_u64(cr3, cur, entry); // entry point
+        cur += 8;
+        
+        write_user_u64(cr3, cur, 0); // AT_NULL
+        cur += 8;
+        write_user_u64(cr3, cur, 0); // AT_NULL value
     }
 
     sp
@@ -260,7 +284,8 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
                     }
                     
                     let stack_top = stack_base + 4096;
-                    let initial_sp = setup_user_stack(cr3, stack_top, entry);
+                    let args = alloc::vec![alloc::string::String::from(path)];
+                    let initial_sp = setup_user_stack(cr3, stack_top, entry, &args);
                     
                     unsafe {
                         (*state).rcx = entry;
@@ -321,7 +346,8 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
                     // musl _start expects: [argc, argv[0], NULL, envp NULL, auxv AT_NULL]
                     // We write from the top of the stack downward using HHDM.
                     let stack_top = stack_base + 4096; // 0x7FFFFFFFFFFF000 + 0x1000
-                    let initial_sp = setup_user_stack(cr3, stack_top, entry);
+                    let args = alloc::vec![alloc::string::String::from(path)];
+                    let initial_sp = setup_user_stack(cr3, stack_top, entry, &args);
                     
                     let pid = crate::process::scheduler::spawn_user(entry, initial_sp, address_space, path);
                     return Ok(pid);

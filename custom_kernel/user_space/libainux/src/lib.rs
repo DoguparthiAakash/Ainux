@@ -2,6 +2,7 @@
 #![feature(alloc_error_handler)]
 
 pub mod syscalls;
+pub mod env;
 
 use core::panic::PanicInfo;
 use core::fmt;
@@ -48,7 +49,8 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
+    env::init(argc, argv);
     let ret = unsafe { main() };
     syscalls::sys_exit(ret);
 }

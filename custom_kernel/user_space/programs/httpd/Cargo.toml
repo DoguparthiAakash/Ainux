@@ -1,0 +1,12 @@
+[package]
+name = "httpd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libainux = { path = "../../libainux" }
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"

@@ -193,7 +193,6 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "Mouse Initialized (IRQ12 Unmasked).\n");
     
     drivers::video::init();
-    drivers::video::auto_resolution();
     drivers::video::put_str("Ainux Kernel v0.1\n");
     drivers::video::put_str("Initializing...\n");
     

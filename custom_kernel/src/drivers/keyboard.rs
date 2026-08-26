@@ -287,11 +287,25 @@ extern "C" fn rust_keyboard_handler() {
                     if let Some(ch) = c {
                         match ch {
                             'c' | 'C' => {
-                                crate::process::scheduler::post_signal(crate::process::scheduler::get_current_pid(), crate::process::task::SIGINT);
+                                let fg = crate::process::scheduler::get_foreground_pid();
+                                if fg != 0 {
+                                    crate::cpu::without_interrupts(|| {
+                                        let mut tasks = crate::process::scheduler::TASKS.lock();
+                                        if let Some(target) = &mut tasks[fg] {
+                                            if target.state != crate::process::task::TaskState::Free && target.state != crate::process::task::TaskState::Zombie {
+                                                target.state = crate::process::task::TaskState::Zombie;
+                                                target.exit_code = -9;
+                                            }
+                                        }
+                                    });
+                                }
                                 c = Some('\x03'); // Still push char for polling apps
                             },
                             'z' | 'Z' => {
-                                crate::process::scheduler::post_signal(crate::process::scheduler::get_current_pid(), crate::process::task::SIGTSTP);
+                                let fg = crate::process::scheduler::get_foreground_pid();
+                                if fg != 0 {
+                                    crate::process::scheduler::post_signal(fg, crate::process::task::SIGTSTP);
+                                }
                                 c = Some('\x1A');
                             },
                             _ => {

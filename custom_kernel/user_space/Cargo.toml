@@ -5,9 +5,22 @@ members = [
     "programs/cat",
     "programs/ping",
     "programs/nc",
-    "programs/ps",
-    "programs/kill",
     "programs/wget",
-    "programs/deskd"
-, "programs/posixd", "programs/fsd"]
+    "programs/deskd",
+    "programs/mkdir",
+    "programs/rm",
+    "programs/rmdir",
+    "programs/touch",
+    "programs/cp",
+    "programs/mv",
+    "programs/posixd", 
+    "programs/fsd",
+    "programs/httpd"
+]
 resolver = "2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

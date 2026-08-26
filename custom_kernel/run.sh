@@ -60,16 +60,24 @@ echo "Building user_space Rust binaries..."
 (cd user_space && cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
 debugfs -w -R "rm ls.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ls ls.elf" disk3.img || echo "debugfs (ls) failed"
-debugfs -w -R "rm cat.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/cat cat.elf" disk3.img || echo "debugfs (cat) failed"
+    debugfs -w -R "rm cat.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/cat cat.elf" disk3.img || echo "debugfs (cat) failed"
+    debugfs -w -R "rm mkdir.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/mkdir mkdir.elf" disk3.img || echo "debugfs (mkdir) failed"
+    debugfs -w -R "rm rm.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/rm rm.elf" disk3.img || echo "debugfs (rm) failed"
+    debugfs -w -R "rm rmdir.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/rmdir rmdir.elf" disk3.img || echo "debugfs (rmdir) failed"
+    debugfs -w -R "rm touch.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/touch touch.elf" disk3.img || echo "debugfs (touch) failed"
+    debugfs -w -R "rm cp.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/cp cp.elf" disk3.img || echo "debugfs (cp) failed"
+    debugfs -w -R "rm mv.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/mv mv.elf" disk3.img || echo "debugfs (mv) failed"
 debugfs -w -R "rm ping.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ping ping.elf" disk3.img || echo "debugfs (ping) failed"
 debugfs -w -R "rm nc.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/nc nc.elf" disk3.img || echo "debugfs (nc) failed"
-debugfs -w -R "rm ps.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ps ps.elf" disk3.img || echo "debugfs (ps) failed"
-debugfs -w -R "rm kill.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/kill kill.elf" disk3.img || echo "debugfs (kill) failed"
     debugfs -w -R "rm wget.elf" disk3.img || true
     debugfs -w -R "write user_space/target/x86_64-unknown-none/release/wget wget.elf" disk3.img || echo "debugfs (wget) failed"
     debugfs -w -R "rm deskd.elf" disk3.img || true
@@ -78,6 +86,8 @@ debugfs -w -R "write user_space/target/x86_64-unknown-none/release/kill kill.elf
     debugfs -w -R "write user_space/target/x86_64-unknown-none/release/posixd posixd.elf" disk3.img || echo "debugfs (posixd) failed"
     debugfs -w -R "rm fsd.elf" disk3.img || true
     debugfs -w -R "write user_space/target/x86_64-unknown-none/release/fsd fsd.elf" disk3.img || echo "debugfs (fsd) failed"
+    debugfs -w -R "rm httpd.elf" disk3.img || true
+    debugfs -w -R "write user_space/target/x86_64-unknown-none/release/httpd httpd.elf" disk3.img || echo "debugfs (httpd) failed"
 
 
 # Hybrid Nux-LLVM Compiler Step
