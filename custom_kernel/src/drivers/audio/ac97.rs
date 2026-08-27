@@ -77,34 +77,12 @@ struct BdlEntry {
     flags: u16,
 }
 
-// Synthesized boot chime (takes RAM at runtime, 0 bytes in binary file)
-static mut BOOT_SOUND: [i16; 65536] = [0; 65536]; // ~1.36 seconds at 48kHz
+// Raw audio data extracted from the user's MP3 file (16-bit, 48000Hz, mono)
+static STARTUP_SOUND: &[u8] = include_bytes!("../../../Audio/startup.raw");
 
 pub fn play_startup_sound() {
     let mut ac97 = AC97.lock();
     if !ac97.initialized { return; }
-    
-    // Synthesize a boot chime: C major chord (C5, E5, G5)
-    // C5 = 523Hz, E5 = 659Hz, G5 = 784Hz
-    let mut phase_c = 0u32;
-    let mut phase_e = 0u32;
-    let mut phase_g = 0u32;
-    
-    for i in 0..65536 {
-        phase_c = (phase_c + 523) % 48000;
-        phase_e = (phase_e + 659) % 48000;
-        phase_g = (phase_g + 784) % 48000;
-        
-        let tri_c = if phase_c < 24000 { phase_c as i32 - 12000 } else { 36000 - phase_c as i32 };
-        let tri_e = if phase_e < 24000 { phase_e as i32 - 12000 } else { 36000 - phase_e as i32 };
-        let tri_g = if phase_g < 24000 { phase_g as i32 - 12000 } else { 36000 - phase_g as i32 };
-        
-        let mix = (tri_c + tri_e + tri_g) / 3;
-        let env = 65535 - i as i32; // Decaying envelope
-        let sample = (mix * env) / 65536;
-        
-        unsafe { BOOT_SOUND[i] = sample as i16; }
-    }
 
     let nabmbar = ac97.nabmbar;
     
@@ -130,8 +108,8 @@ pub fn play_startup_sound() {
     
     let mut chunks: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
     let mut offset = 0;
-    let size = unsafe { core::mem::size_of_val(&BOOT_SOUND) };
-    let vaddr = unsafe { BOOT_SOUND.as_ptr() as u64 };
+    let size = STARTUP_SOUND.len();
+    let vaddr = STARTUP_SOUND.as_ptr() as u64;
     
     while offset < size {
         let current_vaddr = vaddr + offset as u64;
