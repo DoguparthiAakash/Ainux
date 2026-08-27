@@ -61,42 +61,43 @@ impl Window {
         crate::gui::rect::Rect::new(self.x + 40, self.y + 6, 12, 12)
     }
 
-    pub fn draw(&self, buffer: &mut [u32], stride: usize) {
+    pub fn draw(&self) {
         if self.is_minimized { return; }
         
         // 1. Draw Titlebar (Adwaita Dark Headerbar)
         let header_h = 36;
         let title_color = 0xFF303030; 
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, self.y as usize, self.width, header_h, title_color);
+        crate::drivers::video::fill_rect(self.x as i64, self.y as i64, self.width as i64, header_h as i64, title_color);
         
         // 2. Draw Window Content Background (Adwaita Dark Mode)
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, (self.y + header_h as isize) as usize, self.width, self.height - header_h, 0xFF1E1E1E);
+        crate::drivers::video::fill_rect(self.x as i64, (self.y + header_h as isize) as i64, self.width as i64, (self.height - header_h) as i64, 0xFF1E1E1E);
 
         // 3. Draw Border (Subtle)
         let border_col = 0xFF242424;
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, self.y as usize, self.width, 1, border_col); // Top
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, self.y as usize, 1, self.height, border_col); // Left
-        Graphics::draw_rect_to_buffer(buffer, stride, (self.x + self.width as isize - 1) as usize, self.y as usize, 1, self.height, border_col); // Right
-        Graphics::draw_rect_to_buffer(buffer, stride, self.x as usize, (self.y + self.height as isize - 1) as usize, self.width, 1, border_col); // Bottom
+        crate::drivers::video::fill_rect(self.x as i64, self.y as i64, self.width as i64, 1, border_col); // Top
+        crate::drivers::video::fill_rect(self.x as i64, self.y as i64, 1, self.height as i64, border_col); // Left
+        crate::drivers::video::fill_rect((self.x + self.width as isize - 1) as i64, self.y as i64, 1, self.height as i64, border_col); // Right
+        crate::drivers::video::fill_rect(self.x as i64, (self.y + self.height as isize - 1) as i64, self.width as i64, 1, border_col); // Bottom
 
         // 4. Draw GNOME Window Controls
         let btn_bg = 0xFF4A4A4A;
         let close_rect = self.get_close_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, close_rect.x as usize, close_rect.y as usize, close_rect.w, close_rect.h, 0xFFE04343); // Close is red on hover, we keep red for now
+        crate::drivers::video::fill_rect(close_rect.x as i64, close_rect.y as i64, close_rect.w as i64, close_rect.h as i64, 0xFFE04343); // Close is red on hover, we keep red for now
         
         let min_rect = self.get_min_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, min_rect.x as usize, min_rect.y as usize, min_rect.w, min_rect.h, btn_bg);
+        crate::drivers::video::fill_rect(min_rect.x as i64, min_rect.y as i64, min_rect.w as i64, min_rect.h as i64, btn_bg);
 
         let max_rect = self.get_max_button_rect();
-        Graphics::draw_rect_to_buffer(buffer, stride, max_rect.x as usize, max_rect.y as usize, max_rect.w, max_rect.h, btn_bg);
+        crate::drivers::video::fill_rect(max_rect.x as i64, max_rect.y as i64, max_rect.w as i64, max_rect.h as i64, btn_bg);
 
         // 5. Content
         let content_w = self.width;
         let content_h = self.height - header_h;
         if self.content.len() >= content_w * content_h {
-             Graphics::copy_buffer(buffer, stride, &self.content, content_w, self.x as usize, (self.y + header_h as isize) as usize, content_w, content_h);
+             crate::drivers::video::blit_buffer(&self.content, self.x as i32, (self.y + header_h as isize) as i32, content_w as i32, content_h as i32, content_w as i32);
         }
     }
+
 
     pub fn draw_text(&self) {
         if self.is_minimized { return; }

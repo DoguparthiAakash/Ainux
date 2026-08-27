@@ -83,17 +83,7 @@ impl Graphics {
 
     // Standard VRAM Plot (Legacy/Direct)
     pub fn plot_pixel(x: usize, y: usize, color: Color) {
-        unsafe {
-            let fb_addr = *video::FRAMEBUFFER_ADDR.lock();
-            let fb_width = *video::FRAMEBUFFER_WIDTH.lock();
-            let fb_height = *video::FRAMEBUFFER_HEIGHT.lock();
-            let fb_pitch = *video::FRAMEBUFFER_PITCH.lock();
-            
-            if x >= fb_width || y >= fb_height { return; }
-            let offset = y * fb_pitch + x * 4;
-            let ptr = (fb_addr + offset as u64) as *mut u32;
-            *ptr = color.to_u32();
-        }
+        crate::drivers::video::draw_pixel(x as i64, y as i64, color.to_u32());
     }
 
     pub fn draw_rect_to_buffer(buffer: &mut [u32], stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
@@ -119,18 +109,14 @@ impl Graphics {
     }
 
     pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: Color) {
-        for i in 0..h {
-            for j in 0..w {
-                Self::plot_pixel(x + j, y + i, color);
-            }
-        }
+        crate::drivers::video::fill_rect(x as i64, y as i64, w as i64, h as i64, color.to_u32());
     }
     
     // Fast Rect for clearing screen or solid windows
     pub fn fill_screen(color: Color) {
         let w = *video::FRAMEBUFFER_WIDTH.lock();
         let h = *video::FRAMEBUFFER_HEIGHT.lock();
-        Self::fill_rect(0, 0, w, h, color);
+        crate::drivers::video::fill_rect(0, 0, w as i64, h as i64, color.to_u32());
     }
     
     pub fn draw_line(x0: isize, y0: isize, x1: isize, y1: isize, color: Color) {
@@ -162,16 +148,6 @@ impl Graphics {
     // Blit (Texture Copy) - For Cards!
     // src: array of u32 (ARGB)
     pub fn blit(x: usize, y: usize, w: usize, h: usize, src: &[u32]) {
-        for i in 0..h {
-            for j in 0..w {
-                if i * w + j >= src.len() { break; }
-                let color_val = src[i * w + j];
-                // Check Alpha (Simple check: if not fully transparent)
-                if (color_val >> 24) != 0 {
-                    let color = Color::from_hex(color_val);
-                    Self::plot_pixel(x + j, y + i, color);
-                }
-            }
-        }
+        crate::drivers::video::blit_buffer(src, x as i32, y as i32, w as i32, h as i32, w as i32);
     }
 }

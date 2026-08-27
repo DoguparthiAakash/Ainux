@@ -19,6 +19,8 @@ void gfx_fill_rect(int x, int y, int w, int h, uint32_t color);
 void gfx_draw_line(int x0, int y0, int x1, int y1, uint32_t color);
 void gfx_put_pixel_safe(int x, int y, uint32_t color);
 void gfx_clear(uint32_t color);
+void gfx_blit_buffer(const uint32_t *src, int x, int y, int w, int h, int src_stride);
+void gfx_blit_buffer_opaque(const uint32_t *src, int x, int y, int w, int h, int src_stride);
 
 /* For Mouse Cursor */
 void gfx_draw_cursor(int x, int y);

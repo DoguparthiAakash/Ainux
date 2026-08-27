@@ -1,28 +1,25 @@
 use crate::gui::graphics::Graphics;
 use crate::drivers::video;
 
-pub fn draw_desktop(buffer: &mut [u32], w: usize, h: usize) {
+pub fn draw_desktop(w: usize, h: usize) {
     // GNOME Default Wallpaper (Solid Dark Grey/Blue)
     let gnome_bg = 0xFF243447;
-    for i in 0..buffer.len() {
-        buffer[i] = gnome_bg;
-    }
+    crate::drivers::video::fill_rect(0, 0, w as i64, h as i64, gnome_bg);
 }
 
-pub fn draw_overlay(buffer: &mut [u32], w: usize, h: usize, mx: isize, my: isize) {
+pub fn draw_overlay(w: usize, h: usize, mx: isize, my: isize) {
     // 1. GNOME Top Bar (Solid Black/Dark Grey)
     let topbar_col = 0xFF1E1E1E; 
-    let stride = w;
-    Graphics::draw_rect_to_buffer(buffer, stride, 0, 0, w, 28, topbar_col);
+    crate::drivers::video::fill_rect(0, 0, w as i64, 28, topbar_col);
     
     // Top Bar Bottom Border (Subtle highlight)
-    Graphics::draw_rect_to_buffer(buffer, stride, 0, 28, w, 1, 0xFF333333);
+    crate::drivers::video::fill_rect(0, 28, w as i64, 1, 0xFF333333);
     
     // 2. GNOME Dash (Centered at bottom)
-    draw_dock(buffer, w, h, mx, my);
+    draw_dock(w, h, mx, my);
 }
 
-fn draw_dock(buffer: &mut [u32], w: usize, h: usize, mx: isize, my: isize) {
+fn draw_dock(w: usize, h: usize, mx: isize, my: isize) {
     let num_icons = 4; // GNOME Dash apps
     let icon_size = 48;
     let pad = 12;
@@ -34,7 +31,7 @@ fn draw_dock(buffer: &mut [u32], w: usize, h: usize, mx: isize, my: isize) {
     
     // GNOME Dash Background (Dark rounded rect)
     let dock_bg = 0xAA000000;
-    Graphics::draw_rect_to_buffer(buffer, w, dock_x, dock_y, dock_w, dock_h, dock_bg);
+    crate::drivers::video::fill_rect(dock_x as i64, dock_y as i64, dock_w as i64, dock_h as i64, dock_bg);
     
     // Draw Icons (Terminal, Files, Settings, Web)
     let colors = [
@@ -56,7 +53,7 @@ fn draw_dock(buffer: &mut [u32], w: usize, h: usize, mx: isize, my: isize) {
             color = Graphics::blend_colors(color, 0x40FFFFFF);
         }
         
-        Graphics::draw_rect_to_buffer(buffer, w, x, y, icon_size, icon_size, color);
+        crate::drivers::video::fill_rect(x as i64, y as i64, icon_size as i64, icon_size as i64, color);
     }
 }
 

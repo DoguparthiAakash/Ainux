@@ -82,6 +82,8 @@ extern "C" {
     fn gfx_init(framebuffer_addr: *mut u8, width: u64, height: u64, pitch: u64, bpp: u8);
     fn c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32);
     fn c_clear_screen(color: u32);
+    fn gfx_blit_buffer(src: *const u32, x: i32, y: i32, w: i32, h: i32, src_stride: i32);
+    fn gfx_blit_buffer_opaque(src: *const u32, x: i32, y: i32, w: i32, h: i32, src_stride: i32);
 }
 
 pub fn fast_grid_clear(width: u32, height: u32, fg: u32, bg: u32, char_c: u32) {
@@ -736,12 +738,21 @@ pub fn copy_buffer(buffer: &[u32]) {
 }
 
 pub fn copy_buffer_region(buffer: &[u32], offset: usize) {
-    let fb_virt = *FRAMEBUFFER_ADDR.lock(); 
-    if fb_virt == 0 { return; }
+    let width = *FRAMEBUFFER_WIDTH.lock();
+    let height = *FRAMEBUFFER_HEIGHT.lock();
+    let src_stride = width;
     
-    let ptr = fb_virt as *mut u32;
+    // Calculate y-offset if we are implementing scrolling or partial blits
+    let y_start = offset / width;
+    
     unsafe {
-        core::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr.add(offset), buffer.len());
+        gfx_blit_buffer_opaque(buffer.as_ptr(), 0, y_start as i32, width as i32, height as i32, src_stride as i32);
+    }
+}
+
+pub fn blit_buffer(src: &[u32], x: i32, y: i32, w: i32, h: i32, src_stride: i32) {
+    unsafe {
+        gfx_blit_buffer(src.as_ptr(), x, y, w, h, src_stride);
     }
 }
 

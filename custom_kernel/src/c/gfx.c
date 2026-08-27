@@ -104,3 +104,70 @@ void gfx_draw_cursor(int x, int y) {
 void gfx_scroll_up(int pixels) {
     (void)pixels;
 }
+
+void gfx_blit_buffer(const uint32_t *src, int x, int y, int w, int h, int src_stride) {
+    if (!fb_addr) return;
+    
+    // Bounds check to avoid drawing outside the framebuffer
+    int start_x = (x < 0) ? -x : 0;
+    int start_y = (y < 0) ? -y : 0;
+    int end_x = (x + w > (int)fb_width) ? (int)fb_width - x : w;
+    int end_y = (y + h > (int)fb_height) ? (int)fb_height - y : h;
+    
+    for (int j = start_y; j < end_y; j++) {
+        uint64_t dest_offset = (y + j) * fb_pitch + (x + start_x) * (fb_bpp / 8);
+        int src_offset = j * src_stride + start_x;
+        
+        for (int i = start_x; i < end_x; i++) {
+            uint32_t color = src[src_offset];
+            
+            // Handle simple alpha testing (only draw if not fully transparent)
+            if ((color >> 24) != 0) {
+                if (fb_bpp == 32) {
+                    *((uint32_t*)(fb_addr + dest_offset)) = color;
+                } else if (fb_bpp == 24) {
+                    fb_addr[dest_offset] = color & 0xFF;
+                    fb_addr[dest_offset + 1] = (color >> 8) & 0xFF;
+                    fb_addr[dest_offset + 2] = (color >> 16) & 0xFF;
+                }
+            }
+            
+            dest_offset += (fb_bpp / 8);
+            src_offset++;
+        }
+    }
+}
+
+// Fast path for opaque buffers (like game backbuffers), avoiding branching for WC optimizations
+void gfx_blit_buffer_opaque(const uint32_t *src, int x, int y, int w, int h, int src_stride) {
+    if (!fb_addr) return;
+    
+    // Bounds check to avoid drawing outside the framebuffer
+    int start_x = (x < 0) ? -x : 0;
+    int start_y = (y < 0) ? -y : 0;
+    int end_x = (x + w > (int)fb_width) ? (int)fb_width - x : w;
+    int end_y = (y + h > (int)fb_height) ? (int)fb_height - y : h;
+    
+    int draw_w = end_x - start_x;
+    if (draw_w <= 0) return;
+    
+    for (int j = start_y; j < end_y; j++) {
+        uint64_t dest_offset = (y + j) * fb_pitch + (x + start_x) * (fb_bpp / 8);
+        int src_offset = j * src_stride + start_x;
+        
+        if (fb_bpp == 32) {
+            // Direct memory copy (allows CPU to use ERMS and proper Write-Combining bursts)
+            for (int i = 0; i < draw_w; i++) {
+                ((uint32_t*)(fb_addr + dest_offset))[i] = src[src_offset + i];
+            }
+        } else if (fb_bpp == 24) {
+            for (int i = 0; i < draw_w; i++) {
+                uint32_t color = src[src_offset + i];
+                fb_addr[dest_offset] = color & 0xFF;
+                fb_addr[dest_offset + 1] = (color >> 8) & 0xFF;
+                fb_addr[dest_offset + 2] = (color >> 16) & 0xFF;
+                dest_offset += 3;
+            }
+        }
+    }
+}

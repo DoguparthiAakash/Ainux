@@ -69,6 +69,8 @@ debugfs -w -R "rm posixd.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/posixd posixd.elf" disk3.img || echo "debugfs (posixd) failed"
 debugfs -w -R "rm fsd.elf" disk3.img || true
 debugfs -w -R "write user_space/target/x86_64-unknown-none/release/fsd fsd.elf" disk3.img || echo "debugfs (fsd) failed"
+debugfs -w -R "rm hwtest.elf" disk3.img || true
+debugfs -w -R "write user_space/target/x86_64-unknown-none/release/hwtest hwtest.elf" disk3.img || echo "debugfs (hwtest) failed"
 
 # Hybrid Nux-LLVM Compiler Step
 echo "Building test.nux using LLVM Hybrid Compiler..."

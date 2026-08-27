@@ -51,5 +51,18 @@ pub fn init() {
         let _ = write!(serial, "AMD: Enabled SYSCALL/SYSRET (SCE) in EFER.\n");
     }
 
+    // Check for Invariant TSC (CPUID 0x8000_0007 EDX bit 8)
+    let (_, _, _, edx_7) = crate::cpu::cpuid::cpuid(0x8000_0007);
+    if (edx_7 & (1 << 8)) != 0 {
+        let _ = write!(serial, "AMD: Invariant TSC is supported. Timer will not drift with P-states.\n");
+    } else {
+        let _ = write!(serial, "AMD: Warning: Invariant TSC NOT supported. Potential timer drift.\n");
+    }
+
+    // Optionally check HWCR (Hardware Configuration Register) for TLB/Cache optimizations
+    // (We only read/log it here to avoid crashing older AMDs if not supported)
+    let hwcr = rdmsr(MSR_HWCR);
+    let _ = write!(serial, "AMD: MSR_HWCR = {:#x}\n", hwcr);
+
     let _ = write!(serial, "AMD: Initialization complete.\n");
 }

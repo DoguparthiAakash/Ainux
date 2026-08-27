@@ -126,57 +126,48 @@ impl Compositor {
         Self::handle_mouse(mx, my, buttons);
         
         let wins = WINDOWS.lock();
-        unsafe {
-             let fb_addr = *crate::drivers::video::FRAMEBUFFER_ADDR.lock();
-             let fb_pitch = *crate::drivers::video::FRAMEBUFFER_PITCH.lock();
-             let fb_ptr = fb_addr as *mut u32;
-             let stride = fb_pitch / 4;
-             
-             let bb = core::slice::from_raw_parts_mut(fb_ptr, stride * h);
-
-             crate::gui::desktop::draw_desktop(bb, w, h);
-             
-             for win in wins.iter() {
-                 win.draw(bb, stride); // pass stride instead of w
-             }
-             
-             crate::gui::desktop::draw_overlay(bb, w, h, mx, my);
-             
-             // --- INDUSTRIAL SCROLLBAR (Right Side) ---
-             let sb_w = 12;
-             let sb_h = h - 24 - 80; // Minus top bar and dock area
-             let sb_x = w - sb_w - 4;
-             let sb_y = 30;
-             Graphics::draw_rect_to_buffer(bb, stride, sb_x, sb_y, sb_w, sb_h, 0x40FFFFFF); // Track
-             Graphics::draw_rect_to_buffer(bb, stride, sb_x + 2, sb_y + 10, sb_w - 4, 40, 0xCCFFFFFF); // Thumb
-             
-             // --- INDUSTRIAL ARROW CURSOR ---
-             let cursor_bitmap: [u16; 16] = [
-                 0b1000000000000000,
-                 0b1100000000000000,
-                 0b1110000000000000,
-                 0b1111000000000000,
-                 0b1111100000000000,
-                 0b1111110000000000,
-                 0b1111111000000000,
-                 0b1111111100000000,
-                 0b1111111110000000,
-                 0b1111111111000000,
-                 0b1111111111100000,
-                 0b1111111100000000,
-                 0b1111011110000000,
-                 0b1110001110000000,
-                 0b1100000111000000,
-                 0b1000000011100000,
-             ];
-             
-             for (ry, row) in cursor_bitmap.iter().enumerate() {
-                 for rx in 0..16 {
-                     if (row >> (15 - rx)) & 1 != 0 {
-                         Graphics::plot_pixel_unchecked(bb, stride, mx as usize + rx, my as usize + ry, 0xFFFFFFFF);
-                     }
-                 }
-             }
+        crate::gui::desktop::draw_desktop(w, h);
+        
+        for win in wins.iter() {
+            win.draw(); // removed bb and stride args
+        }
+        
+        crate::gui::desktop::draw_overlay(w, h, mx, my);
+        
+        // --- INDUSTRIAL SCROLLBAR (Right Side) ---
+        let sb_w = 12;
+        let sb_h = h - 24 - 80; // Minus top bar and dock area
+        let sb_x = w - sb_w - 4;
+        let sb_y = 30;
+        crate::drivers::video::fill_rect(sb_x as i64, sb_y as i64, sb_w as i64, sb_h as i64, 0x40FFFFFF); // Track
+        crate::drivers::video::fill_rect((sb_x + 2) as i64, (sb_y + 10) as i64, (sb_w - 4) as i64, 40, 0xCCFFFFFF); // Thumb
+        
+        // --- INDUSTRIAL ARROW CURSOR ---
+        let cursor_bitmap: [u16; 16] = [
+            0b1000000000000000,
+            0b1100000000000000,
+            0b1110000000000000,
+            0b1111000000000000,
+            0b1111100000000000,
+            0b1111110000000000,
+            0b1111111000000000,
+            0b1111111100000000,
+            0b1111111110000000,
+            0b1111111111000000,
+            0b1111111111100000,
+            0b1111111100000000,
+            0b1111011110000000,
+            0b1110001110000000,
+            0b1100000111000000,
+            0b1000000011100000,
+        ];
+        
+        for (ry, row) in cursor_bitmap.iter().enumerate() {
+            for rx in 0..16 {
+                if (row >> (15 - rx)) & 1 != 0 {
+                    crate::drivers::video::draw_pixel(mx as i64 + rx as i64, my as i64 + ry as i64, 0xFFFFFFFF);
+                }
+            }
         }
         
         for win in wins.iter() {

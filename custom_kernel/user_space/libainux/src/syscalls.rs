@@ -156,3 +156,11 @@ pub fn sys_disk_write(lba: u32, sectors: u8, buf: &[u8]) -> isize {
 pub fn sys_disk_identify(buf: &mut [u8; 512]) -> isize {
     unsafe { syscall(507, buf.as_mut_ptr() as u64, 0, 0, 0, 0, 0) as isize }
 }
+
+pub fn sys_get_speaker_count() -> isize {
+    unsafe { syscall(510, 0, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_play_beep() -> isize {
+    unsafe { syscall(511, 0, 0, 0, 0, 0, 0) as isize }
+}

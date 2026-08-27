@@ -77,27 +77,46 @@ struct BdlEntry {
     flags: u16,
 }
 
-// Removed large startup_audio.raw to save ~900KB of memory
-static STARTUP_AUDIO: &[u8] = &[0; 128];
+// Synthesized boot chime (takes RAM at runtime, 0 bytes in binary file)
+static mut BOOT_SOUND: [i16; 65536] = [0; 65536]; // ~1.36 seconds at 48kHz
 
 pub fn play_startup_sound() {
     let mut ac97 = AC97.lock();
     if !ac97.initialized { return; }
     
+    // Synthesize a boot chime: C major chord (C5, E5, G5)
+    // C5 = 523Hz, E5 = 659Hz, G5 = 784Hz
+    let mut phase_c = 0u32;
+    let mut phase_e = 0u32;
+    let mut phase_g = 0u32;
+    
+    for i in 0..65536 {
+        phase_c = (phase_c + 523) % 48000;
+        phase_e = (phase_e + 659) % 48000;
+        phase_g = (phase_g + 784) % 48000;
+        
+        let tri_c = if phase_c < 24000 { phase_c as i32 - 12000 } else { 36000 - phase_c as i32 };
+        let tri_e = if phase_e < 24000 { phase_e as i32 - 12000 } else { 36000 - phase_e as i32 };
+        let tri_g = if phase_g < 24000 { phase_g as i32 - 12000 } else { 36000 - phase_g as i32 };
+        
+        let mix = (tri_c + tri_e + tri_g) / 3;
+        let env = 65535 - i as i32; // Decaying envelope
+        let sample = (mix * env) / 65536;
+        
+        unsafe { BOOT_SOUND[i] = sample as i16; }
+    }
+
     let nabmbar = ac97.nabmbar;
     
     // Stop any ongoing PCM out
     unsafe {
         outb(nabmbar + 0x1B, 0x00);
-        
-        // Reset PCM out registers
         outb(nabmbar + 0x1B, 0x02); // Reset
         let mut timeout = 1000;
         while timeout > 0 { core::arch::asm!("pause"); timeout -= 1; }
     }
     
     // Build the BDL
-    // We allocate a physical frame for the BDL itself to ensure physical address
     let bdl_phys = {
         let mut pmm_lock = crate::mm::pmm::PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
@@ -109,11 +128,10 @@ pub fn play_startup_sound() {
     let bdl_virt = bdl_phys + hhdm;
     let bdl = unsafe { core::slice::from_raw_parts_mut(bdl_virt as *mut BdlEntry, 32) };
     
-    // Convert audio buffer into physically contiguous chunks
     let mut chunks: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
     let mut offset = 0;
-    let size = STARTUP_AUDIO.len();
-    let vaddr = STARTUP_AUDIO.as_ptr() as u64;
+    let size = unsafe { core::mem::size_of_val(&BOOT_SOUND) };
+    let vaddr = unsafe { BOOT_SOUND.as_ptr() as u64 };
     
     while offset < size {
         let current_vaddr = vaddr + offset as u64;
@@ -161,4 +179,73 @@ pub fn play_startup_sound() {
     }
     
     video::put_str("AC97: Startup sound playback started.\n");
+}
+
+pub fn get_speaker_count() -> u32 {
+    let ac97 = AC97.lock();
+    if !ac97.initialized { return 0; }
+    
+    // Read Extended Audio ID register (0x28)
+    let ext_id = unsafe {
+        let mut val: u16;
+        asm!("in ax, dx", out("ax") val, in("dx") ac97.nambar + 0x28, options(nomem, nostack, preserves_flags));
+        val
+    };
+    
+    // Bit 6: Center/LFE supported (5.1 = 6 speakers)
+    // Bit 7: Surround supported (4 speakers)
+    if (ext_id & (1 << 6)) != 0 {
+        6
+    } else if (ext_id & (1 << 7)) != 0 {
+        4
+    } else {
+        2 // Default stereo
+    }
+}
+
+pub fn play_beep() {
+    let mut ac97 = AC97.lock();
+    if !ac97.initialized { return; }
+    
+    // Play a short beep by writing a square wave to PCM out.
+    // For simplicity, we just reuse the startup sound logic with a dynamically generated buffer.
+    // We will generate a quick square wave.
+    
+    let nabmbar = ac97.nabmbar;
+    unsafe {
+        outb(nabmbar + 0x1B, 0x00); // Stop
+        outb(nabmbar + 0x1B, 0x02); // Reset
+        let mut timeout = 1000;
+        while timeout > 0 { core::arch::asm!("pause"); timeout -= 1; }
+    }
+    
+    // Generate square wave in memory
+    // (Allocate a small frame for audio data)
+    let bdl_phys = {
+        let mut pmm_lock = crate::mm::pmm::PMM.lock();
+        if let Some(ref mut pmm) = *pmm_lock {
+            pmm.alloc_frame().unwrap()
+        } else { return; }
+    };
+    
+    let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let page_virt = bdl_phys + hhdm;
+    
+    // BDL is at start of page, audio data is immediately after it.
+    let bdl = unsafe { core::slice::from_raw_parts_mut(page_virt as *mut BdlEntry, 1) };
+    let audio_data = unsafe { core::slice::from_raw_parts_mut((page_virt + 128) as *mut i16, 1024) };
+    
+    for i in 0..1024 {
+        audio_data[i] = if (i / 10) % 2 == 0 { 10000 } else { -10000 };
+    }
+    
+    bdl[0].addr = (bdl_phys + 128) as u32;
+    bdl[0].length = 1024; // Samples
+    bdl[0].flags = 0x8000; // IOC
+    
+    unsafe {
+        asm!("out dx, eax", in("dx") nabmbar + 0x10, in("eax") bdl_phys as u32);
+        outb(nabmbar + 0x15, 0); // Last index = 0
+        outb(nabmbar + 0x1B, 0x01); // Play
+    }
 }

@@ -604,6 +604,13 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
                 u64::MAX
             }
         },
+        510 => { // sys_get_speaker_count
+             crate::drivers::audio::ac97::get_speaker_count() as u64
+        },
+        511 => { // sys_play_beep
+             crate::drivers::audio::ac97::play_beep();
+             0
+        },
         60 | 231 => { // sys_exit / sys_exit_group
             crate::klog_serial!("Process {} exited with status {}\n", crate::process::scheduler::get_current_pid(), a1);
             crate::process::scheduler::exit_current_task(a1 as isize);
