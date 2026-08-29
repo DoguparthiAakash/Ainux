@@ -2,6 +2,7 @@ use crate::drivers::video;
 use core::arch::asm;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 const AC97_VENDOR_ID: u16 = 0x8086;
 const AC97_DEVICE_ID: u16 = 0x2415;
@@ -64,6 +65,31 @@ pub fn init_device(bus: u8, slot: u8, func: u8) {
     ac97.nambar = nambar;
     ac97.nabmbar = nabmbar;
     ac97.initialized = true;
+}
+
+pub static VOLUME_LEVEL: AtomicU8 = AtomicU8::new(100);
+
+pub fn set_volume(level: u8) {
+    let level = core::cmp::min(level, 100);
+    VOLUME_LEVEL.store(level, Ordering::Relaxed);
+    
+    let ac97 = AC97.lock();
+    if !ac97.initialized { return; }
+    
+    // Attenuation is 0 (max vol) to 31 (min vol)
+    // 100 level -> 0 attenuation
+    // 0 level -> 31 attenuation (or 0x8000 for mute)
+    let attenuation = if level == 0 {
+        0x8000 // Mute
+    } else {
+        let att = 31 - ((level as u32 * 31) / 100) as u16;
+        (att << 8) | att // Left and Right
+    };
+    
+    unsafe {
+        outw(ac97.nambar + 0x02, attenuation);
+        outw(ac97.nambar + 0x18, attenuation);
+    }
 }
 
 pub fn init() {

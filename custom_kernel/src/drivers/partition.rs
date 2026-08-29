@@ -35,8 +35,13 @@ lazy_static! {
 }
 
 pub fn init() {
+    reload();
+}
+
+pub fn reload() {
     let mbr_parts = crate::drivers::mbr::parse_mbr();
     let mut parts = PARTITIONS.lock();
+    parts.clear();
     for (i, p) in mbr_parts.iter().enumerate() {
         parts.push(LogicalPartition {
             id: i,

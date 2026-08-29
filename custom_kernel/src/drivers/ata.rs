@@ -85,7 +85,7 @@ pub fn read_sectors(target: &mut [u16], lba: u32, sectors: u8) -> bool {
         outb(base + 3, (lba & 0xFF) as u8);
         outb(base + 4, ((lba >> 8) & 0xFF) as u8);
         outb(base + 5, ((lba >> 16) & 0xFF) as u8);
-        outb(base + 6, drive | ((lba >> 24) & 0x0F) as u8);
+        outb(base + 6, 0x40 | drive | ((lba >> 24) & 0x0F) as u8);
         outb(base + 7, CMD_READ_SECTORS);
 
         for s in 0..sectors {
@@ -118,7 +118,7 @@ pub fn write_sectors(data: &[u16], lba: u32, sectors: u8) -> bool {
         outb(base + 3, (lba & 0xFF) as u8);
         outb(base + 4, ((lba >> 8) & 0xFF) as u8);
         outb(base + 5, ((lba >> 16) & 0xFF) as u8);
-        outb(base + 6, drive | ((lba >> 24) & 0x0F) as u8);
+        outb(base + 6, 0x40 | drive | ((lba >> 24) & 0x0F) as u8);
         outb(base + 7, CMD_WRITE_SECTORS);
 
         for s in 0..sectors {
@@ -130,6 +130,10 @@ pub fn write_sectors(data: &[u16], lba: u32, sectors: u8) -> bool {
                 outw(base, val);
             }
         }
+        
+        // Wait for the drive to process the final sector's data before sending the next command
+        if !wait_bsy(base) { return false; }
+        
         outb(base + 7, CMD_FLUSH_CACHE);
         if !wait_bsy(base) { return false; }
         true
@@ -167,8 +171,9 @@ fn probe_drive(base: u16, ctrl: u16, drive: u8, target: &mut [u16]) -> bool {
         }
         
         if is_atapi {
-            outb(base + 7, CMD_IDENTIFY_PACKET);
-            for _ in 0..4 { inb(ctrl); }
+            // ATAPI devices (like CD-ROMs) use packet commands and different protocols.
+            // We specifically want an ATA hard drive for our root filesystem.
+            return false;
         }
         
         if !wait_bsy(base) { return false; }
@@ -201,4 +206,21 @@ pub fn identify_buffer(target: &mut [u16]) -> bool {
         }
     }
     false
+}
+
+pub fn get_drive_capacity() -> u32 {
+    let mut buf = [0u16; 256];
+    let dev = ACTIVE_ATA.lock();
+    let base = dev.base_port;
+    let ctrl = dev.ctrl_port;
+    let drive = dev.drive;
+    drop(dev);
+
+    if probe_drive(base, ctrl, drive, &mut buf) {
+        let sectors_low = buf[60] as u32;
+        let sectors_high = buf[61] as u32;
+        sectors_low | (sectors_high << 16)
+    } else {
+        0
+    }
 }

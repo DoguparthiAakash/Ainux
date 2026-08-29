@@ -99,6 +99,10 @@ pub trait FileHandle: Send + Sync + core::fmt::Debug {
     fn truncate(&self) -> VfsResult<()>;
     fn close(&self) -> VfsResult<()>;
     
+    fn stat(&self) -> VfsResult<FileStat> {
+        Err(VfsError::NotImplemented)
+    }
+
     fn ioctl(&self, _request: u64, _arg: u64) -> VfsResult<u64> {
         Err(VfsError::NotImplemented)
     }

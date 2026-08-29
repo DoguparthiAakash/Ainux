@@ -24,6 +24,7 @@ pub mod net;
 pub mod api;
 pub mod shell;
 pub mod tui_fm;
+pub mod tui_pm;
 pub mod gui;
 pub mod engine;
 pub mod debug;
@@ -438,7 +439,7 @@ fn boot_menu() {
                     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
                     use core::fmt::Write;
                     let _ = write!(serial, "Launching test_drm.elf to verify DRM subsystem...\n");
-                    let res = crate::process::loader::load_elf_from_file("test_drm.elf");
+                    let res = crate::process::loader::load_elf_from_file("test_drm.elf", &[]);
                     if res.is_err() {
                         let _ = write!(serial, "Failed to load test_drm.elf\n");
                     }
@@ -493,7 +494,7 @@ fn boot_menu() {
                     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
                     use core::fmt::Write;
                     let _ = write!(serial, "Launching test_drm.elf to verify DRM subsystem...\n");
-                    let res = crate::process::loader::load_elf_from_file("test_drm.elf");
+                    let res = crate::process::loader::load_elf_from_file("test_drm.elf", &[]);
                     if res.is_err() {
                         let _ = write!(serial, "Failed to load test_drm.elf\n");
                     }

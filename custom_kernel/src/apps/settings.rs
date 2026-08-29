@@ -21,8 +21,9 @@ pub fn main() {
             String::from("2 Personalization       Colors, Themes, Appearance"),
             String::from("3 Time & Date           Clock and RTC Configuration"),
             String::from("4 System Dashboard      CPU, RAM, and Disk Health"),
-            String::from("5 About Sovereignty     Kernel and Branding Information"),
-            String::from("6 Exit Settings         Return to Shell")
+            String::from("5 Volume & Brightness   Audio and Display Levels"),
+            String::from("6 About Sovereignty     Kernel and Branding Information"),
+            String::from("7 Exit Settings         Return to Shell")
         ],
         selected: 0,
         active_btn: 0,
@@ -54,8 +55,9 @@ pub fn main() {
                             1 => dcustom::main_personalization(),
                             2 => time_settings(),
                             3 => hardware_dashboard(),
-                            4 => about_sovereignty(),
-                            5 => { video::clear(); return; },
+                            4 => volume_brightness_settings(),
+                            5 => about_sovereignty(),
+                            6 => { video::clear(); return; },
                             _ => {}
                         }
                     }
@@ -381,3 +383,69 @@ fn about_sovereignty() {
         unsafe { core::arch::asm!("hlt"); }
     }
 }
+
+fn volume_brightness_settings() {
+    let mut dialog = Dialog {
+        title: " Volume & Brightness ",
+        options: alloc::vec![
+            format!("Volume Level:     {}%", crate::drivers::audio::ac97::VOLUME_LEVEL.load(core::sync::atomic::Ordering::Relaxed)),
+            format!("Brightness Level: {}%", video::BRIGHTNESS_LEVEL.load(core::sync::atomic::Ordering::Relaxed)),
+        ],
+        selected: 0,
+        active_btn: 0,
+    };
+
+    let mut dirty = true;
+    loop {
+        net::poll();
+        if dirty {
+            dialog.options[0] = format!("Volume Level:     {:>3}%", crate::drivers::audio::ac97::VOLUME_LEVEL.load(core::sync::atomic::Ordering::Relaxed));
+            dialog.options[1] = format!("Brightness Level: {:>3}%", video::BRIGHTNESS_LEVEL.load(core::sync::atomic::Ordering::Relaxed));
+
+            dcustom::draw_background();
+            dcustom::draw_dialog(&dialog);
+            dirty = false;
+        }
+
+        if let Some(ch) = keyboard::pop_char() {
+            dirty = true;
+            match ch {
+                '\u{2191}' => if dialog.active_btn == 0 && dialog.selected > 0 { dialog.selected -= 1; },
+                '\u{2193}' => if dialog.active_btn == 0 && dialog.selected < dialog.options.len() - 1 { dialog.selected += 1; },
+                '\u{2190}' => {
+                    if dialog.active_btn == 0 {
+                        if dialog.selected == 0 {
+                            let mut vol = crate::drivers::audio::ac97::VOLUME_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
+                            if vol >= 5 { vol -= 5; } else { vol = 0; }
+                            crate::drivers::audio::ac97::set_volume(vol);
+                        } else if dialog.selected == 1 {
+                            let mut br = video::BRIGHTNESS_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
+                            if br >= 5 { br -= 5; } else { br = 0; }
+                            video::set_brightness(br);
+                        }
+                    } else if dialog.active_btn == 2 { dialog.active_btn = 1; }
+                },
+                '\u{2192}' => {
+                    if dialog.active_btn == 0 {
+                        if dialog.selected == 0 {
+                            let mut vol = crate::drivers::audio::ac97::VOLUME_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
+                            if vol <= 95 { vol += 5; } else { vol = 100; }
+                            crate::drivers::audio::ac97::set_volume(vol);
+                        } else if dialog.selected == 1 {
+                            let mut br = video::BRIGHTNESS_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
+                            if br <= 95 { br += 5; } else { br = 100; }
+                            video::set_brightness(br);
+                        }
+                    } else if dialog.active_btn == 1 { dialog.active_btn = 2; }
+                },
+                '\t' => dialog.active_btn = (dialog.active_btn + 1) % 3,
+                '\n' | '\x1B' => {
+                    if dialog.active_btn == 2 || ch == '\x1B' { return; }
+                }
+                _ => { dirty = false; }
+            }
+        }
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
+

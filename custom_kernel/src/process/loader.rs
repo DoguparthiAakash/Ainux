@@ -212,7 +212,13 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
              
              for p in 0..pages {
                  let virt = (vaddr & !0xFFF) + (p * 4096);
-                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                 let frame = match crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame() {
+                     Some(f) => f,
+                     None => {
+                         crate::drivers::video::put_str("ELF LOAD ERROR: Out of physical memory for segment!\n");
+                         return Err(());
+                     }
+                 };
                  unsafe {
                      crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, page_flags);
                      let hhdm_offset = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
@@ -277,9 +283,15 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
             match load_elf(inode, cr3) {
                 Ok(entry) => {
                     let stack_base = 0x00007FFFFFFFE000u64;
-                    let stack_pages = 256u64;
+                    let stack_pages = 32u64;
                     for p in 0..stack_pages {
-                        let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                        let frame = match crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame() {
+                            Some(f) => f,
+                            None => {
+                                crate::drivers::video::put_str("ELF EXEC ERROR: Out of memory for stack!\n");
+                                return Err(());
+                            }
+                        };
                         unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_base - (p * 4096), frame, 0x07); }
                     }
                     
@@ -313,7 +325,7 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
     }
 }
 
-pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
+pub fn load_elf_from_file(path: &str, cmd_args: &[&str]) -> Result<usize, ()> {
     match crate::shell::find_inode(path) {
         Ok(inode) => {
             let address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
@@ -336,9 +348,15 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
                     }
                     // Allocate a user stack (1MB)
                     let stack_base = 0x00007FFFFFFFE000u64; // top page
-                    let stack_pages = 256u64;
+                    let stack_pages = 32u64;
                     for p in 0..stack_pages {
-                        let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                        let frame = match crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame() {
+                            Some(f) => f,
+                            None => {
+                                crate::drivers::video::put_str("ELF LOAD ALO ERROR: Out of memory for stack!\n");
+                                return Err(());
+                            }
+                        };
                         unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_base - (p * 4096), frame, 0x07); }
                     }
                     
@@ -346,8 +364,15 @@ pub fn load_elf_from_file(path: &str) -> Result<usize, ()> {
                     // musl _start expects: [argc, argv[0], NULL, envp NULL, auxv AT_NULL]
                     // We write from the top of the stack downward using HHDM.
                     let stack_top = stack_base + 4096; // 0x7FFFFFFFFFFF000 + 0x1000
-                    let args = alloc::vec![alloc::string::String::from(path)];
-                    let initial_sp = setup_user_stack(cr3, stack_top, entry, &args);
+                    let mut str_args = alloc::vec::Vec::new();
+                    if cmd_args.is_empty() {
+                        str_args.push(alloc::string::String::from(path));
+                    } else {
+                        for arg in cmd_args {
+                            str_args.push(alloc::string::String::from(*arg));
+                        }
+                    }
+                    let initial_sp = setup_user_stack(cr3, stack_top, entry, &str_args);
                     
                     let pid = crate::process::scheduler::spawn_user(entry, initial_sp, address_space, path);
                     return Ok(pid);
@@ -417,7 +442,13 @@ pub fn load_alo(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
              let pages = (seg.size + 4095) / 4096;
              for p in 0..pages {
                  let virt = seg.vaddr + (p * 4096);
-                 let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                 let frame = match crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame() {
+                     Some(f) => f,
+                     None => {
+                         crate::drivers::video::put_str("ELF LOAD ERROR: Out of physical memory for alo segment!\n");
+                         return Err(());
+                     }
+                 };
                  unsafe {
                      crate::mm::vmm::map_page_in_pml4(cr3, virt, frame, 0x07); // Present, Write, User
                      let hhdm_offset = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
@@ -446,9 +477,15 @@ pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
         if let Ok(entry) = load_alo(inode, cr3) {
             // Allocate a user stack (1MB)
             let stack_top = 0x00007FFFFFFFF000;
-            let stack_pages = 256;
+            let stack_pages = 32;
             for p in 0..stack_pages {
-                let frame = crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame().unwrap();
+                let frame = match crate::mm::pmm::PMM.lock().as_mut().unwrap().alloc_frame() {
+                    Some(f) => f,
+                    None => {
+                        crate::drivers::video::put_str("ELF LOAD ERROR: Out of physical memory for alo bss!\n");
+                        return Err(());
+                    }
+                };
                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
             }
             

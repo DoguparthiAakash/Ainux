@@ -3,22 +3,12 @@ use crate::drivers::video;
 use crate::drivers::keyboard;
 use alloc::string::String;
 use alloc::vec::Vec;
+use spin::Mutex;
 
-fn fill_rect_buf(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, width: i32, height: i32, color: u32) {
-    let start_x = x.max(0);
-    let start_y = y.max(0);
-    let end_x = (x + width).min(w as i32);
-    let end_y = (y + height).min(h as i32);
-    
-    for row in start_y..end_y {
-        let row_offset = (row as usize) * w;
-        for col in start_x..end_x {
-            buf[row_offset + (col as usize)] = color;
-        }
-    }
-}
+pub static ACTIVE_STATE: Mutex<Option<Game2048>> = Mutex::new(None);
+pub static SAVED_STATE: Mutex<Option<Game2048>> = Mutex::new(None);
 
-fn draw_digit_buf(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, digit: u8, scale: i32, color: u32) {
+fn draw_digit_fb(x: i32, y: i32, digit: u8, scale: i32, color: u32) {
     if digit > 9 { return; }
     let font: [[u8; 5]; 10] = [
         [0b01110, 0b10001, 0b10001, 0b10001, 0b01110], // 0
@@ -36,15 +26,15 @@ fn draw_digit_buf(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, digit: u8
     for (row_idx, row_val) in bitmap.iter().enumerate() {
         for col_idx in 0..5 {
             if (row_val & (1 << (4 - col_idx))) != 0 {
-                fill_rect_buf(buf, w, h, x + (col_idx * scale), y + (row_idx as i32 * scale), scale, scale, color);
+                video::fill_rect((x + (col_idx * scale)) as i64, (y + (row_idx as i32 * scale)) as i64, scale as i64, scale as i64, color);
             }
         }
     }
 }
 
-fn draw_number_buf(buf: &mut [u32], w: usize, h: usize, mut x: i32, y: i32, mut num: u32, scale: i32, color: u32) {
+fn draw_number_fb(mut x: i32, y: i32, mut num: u32, scale: i32, color: u32) {
     if num == 0 {
-        draw_digit_buf(buf, w, h, x, y, 0, scale, color);
+        draw_digit_fb(x, y, 0, scale, color);
         return;
     }
     
@@ -55,7 +45,7 @@ fn draw_number_buf(buf: &mut [u32], w: usize, h: usize, mut x: i32, y: i32, mut 
     }
     
     for digit in digits.iter().rev() {
-        draw_digit_buf(buf, w, h, x, y, *digit, scale, color);
+        draw_digit_fb(x, y, *digit, scale, color);
         x += 6 * scale; // 5 wide + 1 gap
     }
 }
@@ -78,7 +68,8 @@ fn get_color_for_value(value: u32) -> (u32, u32) { // (bg, fg)
     }
 }
 
-struct Game2048 {
+#[derive(Clone)]
+pub struct Game2048 {
     grid: [[u32; 4]; 4],
     score: u32,
     game_over: bool,
@@ -225,71 +216,78 @@ pub fn run() {
     video::clear();
     let (w, h) = video::get_resolution();
     
-    let mut game = Game2048::new();
+    let mut game = ACTIVE_STATE.lock().take().unwrap_or_else(|| Game2048::new());
 
     let top_margin = 80;
     let render_h = if h > top_margin { h - top_margin } else { h };
-    let mut backbuffer = alloc::vec![0xFFFAF8EF; w * render_h];
+
+    
+    let available_dim = (render_h as i32 - 40).min(w as i32 - 40).max(100);
+    let spacing = available_dim / 30;
+    let cell_size = (available_dim - (5 * spacing)) / 4;
+    let board_size = 4 * cell_size + 5 * spacing;
+    
+    let start_x = (w as i32 / 2) - (board_size / 2);
+    let start_y = (render_h as i32 / 2) - (board_size / 2) + top_margin as i32;
+    
+    let mut needs_redraw = true;
 
     // Draw header once
     video::fill_rect(0, 0, w as i64, top_margin as i64, 0xFFFAF8EF);
     video::put_str_at(2, 1, "2048 - AINUX GAMES", 0xFF776E65, 0xFFFAF8EF);
     video::put_str_at(2, 2, "Use ARROW KEYS/WASD to merge numbers. Q to quit.", 0xFF776E65, 0xFFFAF8EF);
 
-    let cell_size = 100;
-    let spacing = 15;
-    let board_size = 4 * cell_size + 5 * spacing;
-    let start_x = (w as i32 / 2) - (board_size / 2);
-    let start_y = (render_h as i32 / 2) - (board_size / 2);
-
     loop {
-        backbuffer.fill(0xFFFAF8EF); // Page bg
-        
-        // Draw score
-        let score_str = format!("SCORE: {}", game.score);
-        // We'll just draw the score string by custom bitmap, or just use the shell put_str
-        
-        // Board Background
-        fill_rect_buf(&mut backbuffer, w, render_h, start_x, start_y, board_size, board_size, 0xFFBBADA0);
+        if needs_redraw {
+            // Page bg
+            video::fill_rect(0, top_margin as i64, w as i64, render_h as i64, 0xFFFAF8EF);
+            
+            // Draw score
+            let score_str = format!("SCORE: {}", game.score);
+            video::put_str_at(2, 4, &score_str, 0xFF776E65, 0xFFFAF8EF);
+            
+            // Board Background
+            video::fill_rect(start_x as i64, start_y as i64, board_size as i64, board_size as i64, 0xFFBBADA0);
 
-        for y in 0..4 {
-            for x in 0..4 {
-                let val = game.grid[y][x];
-                let (bg, fg) = get_color_for_value(val);
-                
-                let px = start_x + spacing + (x as i32 * (cell_size + spacing));
-                let py = start_y + spacing + (y as i32 * (cell_size + spacing));
-                
-                fill_rect_buf(&mut backbuffer, w, render_h, px, py, cell_size, cell_size, bg);
-                
-                if val > 0 {
-                    let mut num_len = 0;
-                    let mut temp = val;
-                    while temp > 0 { num_len += 1; temp /= 10; }
+            for y in 0..4 {
+                for x in 0..4 {
+                    let val = game.grid[y][x];
+                    let (bg, fg) = get_color_for_value(val);
                     
-                    let scale = if num_len >= 4 { 3 } else { 4 };
-                    let text_w = num_len as i32 * 6 * scale;
-                    let text_x = px + (cell_size / 2) - (text_w / 2);
-                    let text_y = py + (cell_size / 2) - (5 * scale / 2);
+                    let px = start_x + spacing + (x as i32 * (cell_size + spacing));
+                    let py = start_y + spacing + (y as i32 * (cell_size + spacing));
                     
-                    draw_number_buf(&mut backbuffer, w, render_h, text_x, text_y, val, scale, fg);
+                    video::fill_rect(px as i64, py as i64, cell_size as i64, cell_size as i64, bg);
+                    
+                    if val > 0 {
+                        let mut num_len = 0;
+                        let mut temp = val;
+                        while temp > 0 { num_len += 1; temp /= 10; }
+                        
+                        let scale = if num_len >= 4 { (cell_size / 30).max(1) } else { (cell_size / 25).max(1) };
+                        let text_w = num_len as i32 * 6 * scale;
+                        let text_x = px + (cell_size / 2) - (text_w / 2);
+                        let text_y = py + (cell_size / 2) - (5 * scale / 2);
+                        
+                        draw_number_fb(text_x, text_y, val, scale, fg);
+                    }
                 }
             }
-        }
 
-        if game.game_over {
-            // Draw overlay
-            fill_rect_buf(&mut backbuffer, w, render_h, start_x, start_y, board_size, board_size, 0x88EDC22E);
-            // Draw "Game Over" but we don't have font easily, so just let them see they can't move
+            if game.game_over {
+                // Game Over overlay doesn't support alpha blending in fill_rect currently, just solid color
+                // Instead, draw a border or string
+                video::put_str_at((w/8/2) - 4, (h/16/2) + 2, " GAME OVER ", 0xFFFFFFFF, 0xFFEDC22E);
+            }
+            
+            needs_redraw = false;
         }
-
-        video::copy_buffer_region(&backbuffer, top_margin * w);
 
         let c = keyboard::get_char();
         
         let mut moved = false;
         match c {
-            'q' | 'Q' => break,
+            'q' | 'Q' | '\x03' => break,
             'w' | 'W' | keyboard::KEY_UP => moved = game.move_up(),
             's' | 'S' | keyboard::KEY_DOWN => moved = game.move_down(),
             'a' | 'A' | keyboard::KEY_LEFT => moved = game.move_left(),
@@ -300,7 +298,10 @@ pub fn run() {
         if moved {
             game.spawn_tile();
             game.check_game_over();
+            needs_redraw = true;
         }
     }
+    
+    *ACTIVE_STATE.lock() = Some(game);
     video::clear();
 }

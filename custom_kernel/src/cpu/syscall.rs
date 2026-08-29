@@ -194,13 +194,12 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
 
             let mut buf = alloc::vec![0u8; len];
             if crate::mm::user::copy_from_user(a2 as *const u8, &mut buf).is_ok() {
-                // Hack: if fd 1/2, still go to video
                 if fd <= 2 {
-                     if let Ok(s) = core::str::from_utf8(&buf) {
-                        video::put_str(s);
-                        crate::klog_serial!("{}", s);
-                        return len as u64;
-                     }
+                     // Always write to video, replacing invalid UTF-8 with 
+                     let s = alloc::string::String::from_utf8_lossy(&buf);
+                     video::put_str(&s);
+                     crate::klog_serial!("{}", s);
+                     return len as u64;
                 } else {
                      let n = crate::process::scheduler::process_write(fd, &buf);
                      if n >= 0 {

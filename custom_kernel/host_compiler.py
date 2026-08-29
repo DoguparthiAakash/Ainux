@@ -22,19 +22,30 @@ class CompilerHandler(http.server.BaseHTTPRequestHandler):
         with open(source_file, "w", encoding="utf-8") as f:
             f.write(source_code)
             
-        # Clang command to build a freestanding x86_64 ELF binary
-        cmd = [
-            "clang",
-            "-target", "x86_64-pc-none-elf",
-            "-ffreestanding",
-            "-nostdlib",
-            "-static",
-            "-fuse-ld=lld",
-            "-Wl,-e,main" if not is_asm else "-Wl,-e,_start",
-            "-Wl,-Ttext=0x400000",
-            source_file,
-            "-o", target_file
-        ]
+        if not is_asm:
+            cmd = [
+                "./musl-libc/sysroot/bin/musl-gcc",
+                "-static",
+                "-fno-pie",
+                "-mno-red-zone",
+                "-fno-asynchronous-unwind-tables",
+                "-Wl,-Ttext=0x400000",
+                source_file,
+                "-o", target_file
+            ]
+        else:
+            cmd = [
+                "clang",
+                "-target", "x86_64-pc-none-elf",
+                "-ffreestanding",
+                "-nostdlib",
+                "-static",
+                "-fuse-ld=lld",
+                "-Wl,-e,_start",
+                "-Wl,-Ttext=0x400000",
+                source_file,
+                "-o", target_file
+            ]
         
         print(f"Executing: {' '.join(cmd)}")
         

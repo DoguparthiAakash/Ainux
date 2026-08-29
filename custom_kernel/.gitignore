@@ -15,6 +15,7 @@ ainux_disk.vmdk
 *.img
 *.vdi
 *.vmdk
+disk3_root/
 
 # Object files and binaries
 *.o

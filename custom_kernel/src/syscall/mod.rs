@@ -98,24 +98,14 @@ pub fn init() {
 /// Main entry point from assembly for system calls.
 #[no_mangle]
 pub extern "C" fn syscall_handler(sys_no: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "Syscall: {}\n", sys_no);
-
     match sys_no {
         SYS_READ => fs::sys_read(arg1, arg2 as *mut u8, arg3),
         SYS_WRITE => fs::sys_write(arg1, arg2 as *const u8, arg3),
         SYS_OPEN => fs::sys_open(arg1 as *const u8, arg2 as i32, arg3 as i32),
         SYS_CLOSE => fs::sys_close(arg1),
-        SYS_FSTAT => {
-            // Stub: zero-fill the stat buffer
-            let buf = arg2 as *mut u8;
-            if !buf.is_null() {
-                unsafe { core::ptr::write_bytes(buf, 0, 144); } // sizeof(struct stat) = 144
-            }
-            0
-        },
-        SYS_LSEEK => 0, // Stub: pretend we're at offset 0
+        SYS_FSTAT => fs::sys_fstat(arg1, arg2 as *mut crate::fs::vfs::CStat),
+        SYS_STAT => fs::sys_stat(arg1 as *const u8, arg2 as *mut crate::fs::vfs::CStat),
+        SYS_LSEEK => fs::sys_lseek(arg1, arg2 as isize, arg3 as i32),
         SYS_MMAP => mm::sys_mmap(arg1, arg2, arg3 as i32, arg4 as i32, arg5, arg6),
         SYS_MPROTECT => 0, // Stub: always succeed
         SYS_MUNMAP => mm::sys_munmap(arg1, arg2),
@@ -262,11 +252,10 @@ pub extern "C" fn syscall_handler(sys_no: usize, arg1: usize, arg2: usize, arg3:
         SYS_SET_TID_ADDRESS => 1,  // Return TID 1
         SYS_SET_ROBUST_LIST => 0,  // Stub: succeed
         SYS_EXIT | SYS_EXIT_GROUP => {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            use core::fmt::Write;
-            let _ = write!(serial, "Process exited with status {}\n", arg1);
-            crate::hlt();
-            0
+            // Terminate the current process and return to scheduler
+            crate::process::scheduler::sys_exit(arg1 as isize);
+            // sys_exit does not return — if we somehow get here, yield to scheduler
+            loop { unsafe { core::arch::x86_64::_mm_pause(); } }
         },
         SYS_KILL => {
             // arg1 = pid, arg2 = sig

@@ -73,26 +73,16 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
     int py = y * 12;
 
     if (is_synth) {
-        for (int dy = 0; dy < 12; dy++) {
-            uint8_t row = synth[dy];
-            for (int dx = 0; dx < 8; dx++) {
-                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
-                gfx_put_pixel_safe(px + dx, py + dy, color);
-            }
-        }
+        gfx_draw_char_fast(px, py, fg_color, bg_color, synth, 0);
     } else {
-        for (int dy = 0; dy < 8; dy++) {
-            uint8_t row = glyph8x8[dy];
-            for (int dx = 0; dx < 8; dx++) {
-                uint32_t color = (row & (1 << dx)) ? fg_color : bg_color;
-                gfx_put_pixel_safe(px + dx, py + dy, color);
-            }
+        uint8_t full_bitmap[12];
+        for (int i = 0; i < 8; i++) {
+            full_bitmap[i] = glyph8x8[i];
         }
-        for (int dy = 8; dy < 12; dy++) {
-            for (int dx = 0; dx < 8; dx++) {
-                gfx_put_pixel_safe(px + dx, py + dy, bg_color);
-            }
+        for (int i = 8; i < 12; i++) {
+            full_bitmap[i] = 0;
         }
+        gfx_draw_char_fast(px, py, fg_color, bg_color, full_bitmap, 0);
     }
 }
 

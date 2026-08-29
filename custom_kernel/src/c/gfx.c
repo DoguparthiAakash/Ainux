@@ -83,14 +83,54 @@ void gfx_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
 }
 
 void gfx_clear(uint32_t color) {
-    uint64_t total = fb_height * fb_pitch;
-    for (uint64_t i = 0; i < total; i += (fb_bpp / 8)) {
-        if (fb_bpp == 32) {
-            *((uint32_t*)(fb_addr + i)) = color;
-        } else if (fb_bpp == 24) {
+    if (!fb_addr) return;
+    if (fb_bpp == 32) {
+        uint32_t *dest = (uint32_t *)fb_addr;
+        uint64_t pixels = (fb_height * fb_pitch) / 4;
+        for (uint64_t i = 0; i < pixels; i++) {
+            dest[i] = color;
+        }
+    } else if (fb_bpp == 24) {
+        uint64_t total = fb_height * fb_pitch;
+        for (uint64_t i = 0; i < total; i += 3) {
             fb_addr[i] = color & 0xFF;
             fb_addr[i + 1] = (color >> 8) & 0xFF;
             fb_addr[i + 2] = (color >> 16) & 0xFF;
+        }
+    }
+}
+
+void gfx_draw_char_fast(int x, int y, uint32_t fg, uint32_t bg, const uint8_t *bitmap, int transparent) {
+    if (!fb_addr) return;
+    if (x < 0 || y < 0 || x + 8 > (int)fb_width || y + 12 > (int)fb_height) return;
+    
+    if (fb_bpp == 32) {
+        for (int j = 0; j < 12; j++) {
+            uint32_t *row_ptr = (uint32_t *)(fb_addr + (y + j) * fb_pitch + x * 4);
+            uint8_t row = bitmap[j];
+            for (int i = 0; i < 8; i++) {
+                if ((row >> i) & 1) {
+                    row_ptr[i] = fg;
+                } else if (!transparent) {
+                    row_ptr[i] = bg;
+                }
+            }
+        }
+    } else if (fb_bpp == 24) {
+        for (int j = 0; j < 12; j++) {
+            uint8_t *row_ptr = fb_addr + (y + j) * fb_pitch + x * 3;
+            uint8_t row = bitmap[j];
+            for (int i = 0; i < 8; i++) {
+                if ((row >> i) & 1) {
+                    row_ptr[i * 3] = fg & 0xFF;
+                    row_ptr[i * 3 + 1] = (fg >> 8) & 0xFF;
+                    row_ptr[i * 3 + 2] = (fg >> 16) & 0xFF;
+                } else if (!transparent) {
+                    row_ptr[i * 3] = bg & 0xFF;
+                    row_ptr[i * 3 + 1] = (bg >> 8) & 0xFF;
+                    row_ptr[i * 3 + 2] = (bg >> 16) & 0xFF;
+                }
+            }
         }
     }
 }

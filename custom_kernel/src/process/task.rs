@@ -77,6 +77,7 @@ pub struct Task {
     pub rgid: u32,
     pub egid: u32,
     pub umask: u16,
+    pub namespace: crate::ipc::styx::Namespace,
 }
 
 impl KernelObject for Task {
@@ -161,6 +162,7 @@ impl Task {
             rgid: 0,
             egid: 0,
             umask: 0o022,
+            namespace: crate::ipc::styx::Namespace::new(),
         }
     }
 }

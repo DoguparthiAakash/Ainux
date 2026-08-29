@@ -24,65 +24,117 @@ echo "Building ISO..."
 chmod +x build_iso.sh
 ./build_iso.sh || { echo "ISO creation failed"; exit 1; }
 
-# Create Disk Image (EXT4) if not exists
-if [ ! -f disk3.img ]; then
-    echo "Creating disk3.img (32MB)..."
-    dd if=/dev/zero of=disk3.img bs=1M count=32
-    mkfs.ext4 -O ^extents,^64bit -F disk3.img || { echo "mkfs.ext4 failed"; exit 1; }
-fi
+# Create Staging Directory for Disk3
+echo "Preparing disk3.img contents..."
+rm -rf disk3_root
+mkdir -p disk3_root
+mkdir -p disk3_root/bin
+mkdir -p disk3_root/usr/include
+mkdir -p disk3_root/usr/lib
+mkdir -p disk3_root/lib
 
-# Populate with hello.txt
-echo "Hello World from Ext4!" > hello.txt
-debugfs -w -R "rm hello.txt" disk3.img || true
-debugfs -w -R "write hello.txt hello.txt" disk3.img || echo "debugfs failed (optional)"
+# Populate with sample sources for the built-in compiler
+echo "Hello World from Ext4!" > disk3_root/hello.txt
+
+# Sample C program: hello.c
+cp src/c/hello.c disk3_root/hello.c
+
+
+# Sample C program: counter.c
+cat > disk3_root/counter.c << 'EOF'
+int main() {
+    int i = 0;
+    while (i < 5) {
+        puts("counting...");
+        i = i + 1;
+    }
+    return 0;
+}
+EOF
+
+# Sample C program: branch.c
+cat > disk3_root/branch.c << 'EOF'
+int main() {
+    int x = 42;
+    if (x == 42) {
+        puts("x is 42!");
+    } else {
+        puts("x is not 42");
+    }
+    return 0;
+}
+EOF
+
+# Sample Assembly: hello.s
+cat > disk3_root/hello.s << 'EOF'
+.section .data
+msg:
+    .ascii "Hello from Ainux Assembler!\n"
+msglen = . - msg
+.section .text
+.global main
+main:
+    movq $1, %rax
+    movq $1, %rdi
+    leaq msg(%rip), %rsi
+    movq $msglen, %rdx
+    syscall
+    movq $60, %rax
+    xor %rdi, %rdi
+    syscall
+EOF
+
+echo "Sample source files created."
 
 # Build and Inject Userspace Musl Test
 echo "Building test_musl.c..."
-./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_musl.c -o test_musl.elf
-debugfs -w -R "rm test_musl.elf" disk3.img || true
-debugfs -w -R "write test_musl.elf test_musl.elf" disk3.img || echo "debugfs (test_musl.elf) failed"
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_musl.c -o disk3_root/bin/test_musl.elf
 
 echo "Building test_drm.c..."
-./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_drm.c -o test_drm.elf
-debugfs -w -R "rm test_drm.elf" disk3.img || true
-debugfs -w -R "write test_drm.elf test_drm.elf" disk3.img || echo "debugfs (test_drm.elf) failed"
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_drm.c -o disk3_root/bin/test_drm.elf
+
+echo "Building test_fork.c..."
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_progs/test_fork.c -o disk3_root/bin/test_fork.elf
 
 echo "Building user_space Rust binaries..."
 (cd user_space && cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
-debugfs -w -R "rm ls.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ls ls.elf" disk3.img || echo "debugfs (ls) failed"
-debugfs -w -R "rm cat.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/cat cat.elf" disk3.img || echo "debugfs (cat) failed"
-debugfs -w -R "rm ping.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ping ping.elf" disk3.img || echo "debugfs (ping) failed"
-debugfs -w -R "rm nc.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/nc nc.elf" disk3.img || echo "debugfs (nc) failed"
-debugfs -w -R "rm ps.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/ps ps.elf" disk3.img || echo "debugfs (ps) failed"
-debugfs -w -R "rm kill.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/kill kill.elf" disk3.img || echo "debugfs (kill) failed"
-debugfs -w -R "rm wget.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/wget wget.elf" disk3.img || echo "debugfs (wget) failed"
-debugfs -w -R "rm deskd.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/deskd deskd.elf" disk3.img || echo "debugfs (deskd) failed"
-debugfs -w -R "rm posixd.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/posixd posixd.elf" disk3.img || echo "debugfs (posixd) failed"
-debugfs -w -R "rm fsd.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/fsd fsd.elf" disk3.img || echo "debugfs (fsd) failed"
-debugfs -w -R "rm hwtest.elf" disk3.img || true
-debugfs -w -R "write user_space/target/x86_64-unknown-none/release/hwtest hwtest.elf" disk3.img || echo "debugfs (hwtest) failed"
+cp user_space/target/x86_64-unknown-none/release/ls disk3_root/bin/ls.elf
+cp user_space/target/x86_64-unknown-none/release/cat disk3_root/bin/cat.elf
+cp user_space/target/x86_64-unknown-none/release/ping disk3_root/bin/ping.elf
+cp user_space/target/x86_64-unknown-none/release/nc disk3_root/bin/nc.elf
+cp user_space/target/x86_64-unknown-none/release/ps disk3_root/bin/ps.elf
+cp user_space/target/x86_64-unknown-none/release/kill disk3_root/bin/kill.elf
+cp user_space/target/x86_64-unknown-none/release/wget disk3_root/bin/wget.elf
+cp user_space/target/x86_64-unknown-none/release/deskd disk3_root/bin/deskd.elf
+cp user_space/target/x86_64-unknown-none/release/posixd disk3_root/bin/posixd.elf
+cp user_space/target/x86_64-unknown-none/release/fsd disk3_root/bin/fsd.elf
+cp user_space/target/x86_64-unknown-none/release/hwtest disk3_root/bin/hwtest.elf
+
+echo "Injecting compilers..."
+cp compilers/picoc/picoc disk3_root/bin/picoc
+cp compilers/tinycc/tcc disk3_root/bin/tcc
+# Copy musl-libc headers and libraries for TCC self-hosting
+cp -r musl-libc/sysroot/include/* disk3_root/usr/include/
+cp -r musl-libc/sysroot/lib/* disk3_root/usr/lib/
+# TinyCC also needs its own headers (like stdarg.h) and libtcc1.a
+mkdir -p disk3_root/usr/lib/tcc/include
+cp compilers/tinycc/include/*.h disk3_root/usr/lib/tcc/include/
+cp compilers/tinycc/libtcc1.a disk3_root/usr/lib/tcc/
 
 # Hybrid Nux-LLVM Compiler Step
 echo "Building test.nux using LLVM Hybrid Compiler..."
 python3 tools/nux_llvm.py tools/test.nux tools/test.ll
 if command -v clang >/dev/null 2>&1; then
-    clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 tools/test.ll -o test.elf
-    debugfs -w -R "rm test.elf" disk3.img || true
-    debugfs -w -R "write test.elf test.elf" disk3.img || echo "debugfs (test.elf) failed"
+    clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 tools/test.ll -o disk3_root/bin/test.elf
 else
     echo "Warning: Clang not installed. Skipping LLVM backend compilation step."
     echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
 fi
+
+echo "Creating disk3.img (128MB)..."
+dd if=/dev/zero of=disk3.img bs=1M count=128
+mkfs.ext4 -d disk3_root -O ^extents,^64bit,^dir_index -F disk3.img || { echo "mkfs.ext4 failed"; exit 1; }
+
 
 # Export for external VMs
 if command -v qemu-img >/dev/null 2>&1; then

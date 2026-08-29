@@ -1,5 +1,12 @@
 use spin::Mutex;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
+
+pub static BRIGHTNESS_LEVEL: AtomicU8 = AtomicU8::new(100);
+
+pub fn set_brightness(level: u8) {
+    BRIGHTNESS_LEVEL.store(core::cmp::min(level, 100), Ordering::Relaxed);
+}
+use core::sync::atomic::AtomicU32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
@@ -483,6 +490,9 @@ pub fn put_char(c: char) {
     let fg = theme.fg;
     let bg = theme.bg;
     drop(theme);
+    
+    crate::drivers::serial::SERIAL.lock().write_byte(c as u8);
+    
     put_char_colored(c, fg, bg);
 }
 

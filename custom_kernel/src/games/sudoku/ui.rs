@@ -1,6 +1,31 @@
 use crate::drivers::video;
 use crate::drivers::keyboard;
 use super::logic::get_default_grid;
+use spin::Mutex;
+
+pub static ACTIVE_STATE: Mutex<Option<GameSudoku>> = Mutex::new(None);
+pub static SAVED_STATE: Mutex<Option<GameSudoku>> = Mutex::new(None);
+
+#[derive(Clone)]
+pub struct GameSudoku {
+    grid: [[u8; 9]; 9],
+    original_grid: [[u8; 9]; 9],
+    cursor_x: usize,
+    cursor_y: usize,
+}
+
+impl GameSudoku {
+    fn new() -> Self {
+        let grid = get_default_grid();
+        let original_grid = grid.clone();
+        Self {
+            grid,
+            original_grid,
+            cursor_x: 0,
+            cursor_y: 0,
+        }
+    }
+}
 
 fn draw_line_fb(w: usize, h: usize, mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: u32, top_margin: usize) {
     let dx = (x1 - x0).abs();
@@ -48,16 +73,13 @@ pub fn run() {
     video::clear();
     let (w, h) = video::get_resolution();
     
-    let mut grid = get_default_grid();
-    let original_grid = grid.clone();
-
-    let mut cursor_x = 0;
-    let mut cursor_y = 0;
+    let mut game = ACTIVE_STATE.lock().take().unwrap_or_else(|| GameSudoku::new());
 
     let top_margin = 80;
     let render_h = if h > top_margin { h - top_margin } else { h };
 
-    let cell_size = 60; // Scale up for 2D only
+    let available_dim = (render_h as i32 - 40).min(w as i32 - 40).max(81);
+    let cell_size = available_dim / 9;
     let board_size_2d = cell_size * 9;
     let start_x = (w as i32 / 2) - (board_size_2d / 2);
     let start_y = (render_h as i32 / 2) - (board_size_2d / 2);
@@ -77,7 +99,7 @@ pub fn run() {
                 let px = start_x + (x as i32 * cell_size);
                 let py = start_y + (y as i32 * cell_size);
                 
-                let bg_color = if x == cursor_x && y == cursor_y {
+                let bg_color = if x == game.cursor_x && y == game.cursor_y {
                     0xFF333333
                 } else if ((x / 3) + (y / 3)) % 2 == 0 {
                     0xFF111111
@@ -91,10 +113,11 @@ pub fn run() {
                 draw_line_fb(w, render_h, px, py, px + cell_size, py, 0xFF444444, top_margin);
                 draw_line_fb(w, render_h, px, py, px, py + cell_size, 0xFF444444, top_margin);
 
-                let val = grid[y][x];
+                let val = game.grid[y][x];
                 if val != 0 {
-                    let text_color = if original_grid[y][x] != 0 { 0xFFFFFFFF } else { 0xFF00FFCC };
-                    draw_digit_fb(w, render_h, px + (cell_size / 2) - 10, py + (cell_size / 2) - 10, val, 4, text_color, top_margin);
+                    let text_color = if game.original_grid[y][x] != 0 { 0xFFFFFFFF } else { 0xFF00FFCC };
+                    let scale = (cell_size / 15).max(1);
+                    draw_digit_fb(w, render_h, px + (cell_size / 2) - (5 * scale / 2), py + (cell_size / 2) - (5 * scale / 2), val, scale, text_color, top_margin);
                 }
             }
         }
@@ -110,23 +133,25 @@ pub fn run() {
         // Handle input (Blocking so we don't spin rendering if not needed, improving performance)
         let c = keyboard::get_char();
         match c {
-            'q' | 'Q' => break,
-            'w' | 'W' | keyboard::KEY_UP => if cursor_y > 0 { cursor_y -= 1 },
-            's' | 'S' | keyboard::KEY_DOWN => if cursor_y < 8 { cursor_y += 1 },
-            'a' | 'A' | keyboard::KEY_LEFT => if cursor_x > 0 { cursor_x -= 1 },
-            'd' | 'D' | keyboard::KEY_RIGHT => if cursor_x < 8 { cursor_x += 1 },
+            'q' | 'Q' | '\x1B' | '\x03' => break,
+            'w' | 'W' | keyboard::KEY_UP => if game.cursor_y > 0 { game.cursor_y -= 1 },
+            's' | 'S' | keyboard::KEY_DOWN => if game.cursor_y < 8 { game.cursor_y += 1 },
+            'a' | 'A' | keyboard::KEY_LEFT => if game.cursor_x > 0 { game.cursor_x -= 1 },
+            'd' | 'D' | keyboard::KEY_RIGHT => if game.cursor_x < 8 { game.cursor_x += 1 },
             '1'..='9' => {
-                if original_grid[cursor_y][cursor_x] == 0 {
-                    grid[cursor_y][cursor_x] = c.to_digit(10).unwrap() as u8;
+                if game.original_grid[game.cursor_y][game.cursor_x] == 0 {
+                    game.grid[game.cursor_y][game.cursor_x] = c.to_digit(10).unwrap() as u8;
                 }
             },
             '0' | ' ' | '\x08' => { // Backspace or 0 or space to clear
-                if original_grid[cursor_y][cursor_x] == 0 {
-                    grid[cursor_y][cursor_x] = 0;
+                if game.original_grid[game.cursor_y][game.cursor_x] == 0 {
+                    game.grid[game.cursor_y][game.cursor_x] = 0;
                 }
             }
             _ => {}
         }
     }
+    
+    *ACTIVE_STATE.lock() = Some(game);
     video::clear();
 }

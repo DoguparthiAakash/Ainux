@@ -1,6 +1,8 @@
 pub mod port;
 pub use port::Port;
 
+pub mod styx;
+
 pub mod shm {
     pub fn map_shared_memory(size: usize) -> Option<u64> {
         // 1. Allocate Frames

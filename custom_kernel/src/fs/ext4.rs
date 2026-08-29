@@ -269,93 +269,106 @@ impl Ext4FsInner {
     }
     
     fn get_bgd(&self, group: u32) -> BlockGroupDescriptor {
-        // Read BGDT (Block 1 or 2)
-        // Stub: Assume Group 0
         let bgdt_block = if self.block_size == 1024 { 2 } else { 1 };
+        let bgd_size = core::mem::size_of::<BlockGroupDescriptor>();
+        let bgds_per_block = (self.block_size as usize) / bgd_size;
+
+        // Which block within the BGDT holds this group's descriptor?
+        let block_offset = (group as usize) / bgds_per_block;
+        let index_in_block = (group as usize) % bgds_per_block;
+
         let mut block_buf = alloc::vec![0u8; self.block_size as usize];
-        self.read_block(bgdt_block, &mut block_buf);
-        
+        self.read_block(bgdt_block + block_offset as u32, &mut block_buf);
+
         unsafe {
-            let ptr = block_buf.as_ptr() as *const BlockGroupDescriptor;
-            *ptr // Group 0
+            let ptr = block_buf.as_ptr().add(index_in_block * bgd_size) as *const BlockGroupDescriptor;
+            *ptr
         }
     }
-    
+
     fn update_bgd(&self, group: u32, bgd: BlockGroupDescriptor) {
-         // Write back Group 0 descriptor
-         let bgdt_block = if self.block_size == 1024 { 2 } else { 1 };
-         let mut block_buf = alloc::vec![0u8; self.block_size as usize];
-         self.read_block(bgdt_block, &mut block_buf); // RMW
-         
-         unsafe {
-             let ptr = block_buf.as_ptr() as *mut BlockGroupDescriptor;
-             *ptr = bgd;
-         }
-         self.write_block(bgdt_block, &block_buf);
+        let bgdt_block = if self.block_size == 1024 { 2 } else { 1 };
+        let bgd_size = core::mem::size_of::<BlockGroupDescriptor>();
+        let bgds_per_block = (self.block_size as usize) / bgd_size;
+
+        let block_offset = (group as usize) / bgds_per_block;
+        let index_in_block = (group as usize) % bgds_per_block;
+
+        let mut block_buf = alloc::vec![0u8; self.block_size as usize];
+        self.read_block(bgdt_block + block_offset as u32, &mut block_buf);
+
+        unsafe {
+            let ptr = block_buf.as_mut_ptr().add(index_in_block * bgd_size) as *mut BlockGroupDescriptor;
+            *ptr = bgd;
+        }
+        self.write_block(bgdt_block + block_offset as u32, &block_buf);
+    }
+
+    fn num_groups(&self) -> u32 {
+        let total = self.sb.blocks_count_lo as u64;
+        let per_group = self.sb.blocks_per_group as u64;
+        if per_group == 0 { return 1; }
+        ((total + per_group - 1) / per_group) as u32
     }
 
     pub fn alloc_inode(&self) -> VfsResult<u32> {
-        let mut bgd = self.get_bgd(0);
-        if bgd.free_inodes_count_lo == 0 { return Err(VfsError::NoSpace); }
-        
-        let mut bitmap = self.read_inode_bitmap(&bgd).ok_or(VfsError::IOError)?;
-        
-        // Find 0 bit
-        for i in 0..bitmap.len() {
-            if bitmap[i] != 0xFF {
-                for bit in 0..8 {
+        let num_groups = self.num_groups();
+
+        for group in 0..num_groups {
+            let mut bgd = self.get_bgd(group);
+            if bgd.free_inodes_count_lo == 0 { continue; }
+
+            let mut bitmap = self.read_inode_bitmap(&bgd).ok_or(VfsError::IOError)?;
+
+            for i in 0..bitmap.len() {
+                if bitmap[i] == 0xFF { continue; }
+                for bit in 0..8u32 {
                     if (bitmap[i] & (1 << bit)) == 0 {
-                        // Found free
-                        let inode_idx = (i * 8 + bit) as u32;
-                        let inode_num = inode_idx + 1; // 1-based
-                        
-                        // Reserved check
-                        if inode_num < 11 { continue; } // First 10 usually reserved
-                        
+                        let idx_in_group = (i * 8) as u32 + bit;
+                        let inode_num = group * self.sb.inodes_per_group + idx_in_group + 1;
+
+                        // Skip reserved inodes (first 10 in group 0)
+                        if group == 0 && inode_num < 11 { continue; }
+
                         bitmap[i] |= 1 << bit;
                         self.write_inode_bitmap(&bgd, &bitmap);
-                        
-                        bgd.free_inodes_count_lo -= 1;
-                        bgd.used_dirs_count_lo += 1; // Approx?
-                        self.update_bgd(0, bgd);
-                        
-                        // Init Inode Table Entry to clean state?
-                        // Let caller do it via write_inode
-                        
+
+                        bgd.free_inodes_count_lo = bgd.free_inodes_count_lo.saturating_sub(1);
+                        self.update_bgd(group, bgd);
+
                         return Ok(inode_num);
                     }
                 }
             }
         }
-        
         Err(VfsError::NoSpace)
     }
 
     pub fn alloc_block(&self) -> VfsResult<u32> {
-        let mut bgd = self.get_bgd(0);
-        if bgd.free_blocks_count_lo == 0 { return Err(VfsError::NoSpace); }
-        
-        let mut bitmap = self.read_block_bitmap(&bgd).ok_or(VfsError::IOError)?;
-        
-        for i in 0..bitmap.len() {
-            if bitmap[i] != 0xFF {
-                for bit in 0..8 {
+        let num_groups = self.num_groups();
+
+        for group in 0..num_groups {
+            let mut bgd = self.get_bgd(group);
+            if bgd.free_blocks_count_lo == 0 { continue; }
+
+            let mut bitmap = self.read_block_bitmap(&bgd).ok_or(VfsError::IOError)?;
+
+            for i in 0..bitmap.len() {
+                if bitmap[i] == 0xFF { continue; }
+                for bit in 0..8u32 {
                     if (bitmap[i] & (1 << bit)) == 0 {
-                        let block_idx = (i * 8 + bit) as u32;
-                        
-                        // Offset by First Data Block?
-                        // If block_idx is relative to group?
-                        // For Group 0, it's absolute + first_data_block usually?
-                        // Block Bitmap tracks blocks in the group.
-                        // Group 0 starts at self.sb.first_data_block.
-                        let actual_block = self.sb.first_data_block + block_idx;
-                        
+                        let block_in_group = (i * 8) as u32 + bit;
+                        // Absolute block number
+                        let actual_block = group * self.sb.blocks_per_group
+                            + self.sb.first_data_block
+                            + block_in_group;
+
                         bitmap[i] |= 1 << bit;
                         self.write_block_bitmap(&bgd, &bitmap);
-                        
-                        bgd.free_blocks_count_lo -= 1;
-                        self.update_bgd(0, bgd);
-                        
+
+                        bgd.free_blocks_count_lo = bgd.free_blocks_count_lo.saturating_sub(1);
+                        self.update_bgd(group, bgd);
+
                         return Ok(actual_block);
                     }
                 }
@@ -367,10 +380,10 @@ impl Ext4FsInner {
     pub fn write_inode(&self, inode_num: u32, inode: DiskInode) -> VfsResult<()> {
         let index = inode_num - 1;
         // Group logic (Stub Group 0)
-        let _group = index / self.sb.inodes_per_group; 
+        let group = index / self.sb.inodes_per_group; 
         let index_in_group = index % self.sb.inodes_per_group;
         
-        let bgd = self.get_bgd(0);
+        let bgd = self.get_bgd(group);
         let inode_table_block = bgd.inode_table_lo;
         let inode_size = 256; // Fixed size for now
         
@@ -442,13 +455,6 @@ impl Inode for Ext4Inode {
         // Read Directory content.
         // Simplified: Read direct blocks.
         // Assuming linear directory (no H-tree).
-        
-        {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            use core::fmt::Write;
-            let flags = self.disk_inode.flags;
-            let _ = write!(serial, "EXT4 LOOKUP: name={} inode={} flags={:#x}\n", name, self.inode_num, flags);
-        }
 
         let mut buf = alloc::vec![0u8; self.fs.block_size as usize];
         
@@ -476,11 +482,7 @@ impl Inode for Ext4Inode {
                     ) };
                 
                     if let Ok(s) = core::str::from_utf8(name_slice) {
-                        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                        use core::fmt::Write;
-                        let _ = write!(serial, "  -> scan: '{}' (len {}) == '{}' (len {}) ?\n", s, s.len(), name, name.len());
                         if s == name {
-                            let _ = write!(serial, "  -> MATCHED!\n");
                             // Found!
                             match self.fs.read_inode(entry.inode) {
                                 Ok(child_inode) => {
@@ -654,7 +656,6 @@ impl Inode for Ext4Inode {
     }
 
     fn chmod(&self, mode: u16) -> VfsResult<()> {
-        video::put_str("Ext4: chmod called\n");
         match self.fs.read_inode(self.inode_num) {
             Ok(mut disk_inode) => {
                  let type_mask = 0xF000;
@@ -662,47 +663,32 @@ impl Inode for Ext4Inode {
                  disk_inode.mode = new_mode;
                  match self.fs.write_inode(self.inode_num, disk_inode) {
                      Ok(_) => Ok(()),
-                     Err(e) => {
-                         video::put_str("Ext4: Write Inode Failed\n");
-                         Err(e)
-                     }
+                     Err(e) => Err(e)
                  }
             },
-            Err(e) => {
-                video::put_str("Ext4: Read Inode Failed\n");
-                Err(e)
-            }
+            Err(e) => Err(e)
         }
     }
 
     fn chown(&self, uid: u16, gid: u16) -> VfsResult<()> {
-        video::put_str(&format!("Ext4: chown inode {} to {}:{}\n", self.inode_num, uid, gid));
         match self.fs.read_inode(self.inode_num) {
             Ok(mut disk_inode) => {
                 disk_inode.uid = uid;
                 disk_inode.gid = gid;
                  match self.fs.write_inode(self.inode_num, disk_inode) {
                      Ok(_) => Ok(()),
-                     Err(e) => {
-                         video::put_str("Ext4: Write Inode Failed\n");
-                         Err(e)
-                     }
+                     Err(e) => Err(e)
                  }
             },
-            Err(e) => {
-                video::put_str("Ext4: Read Inode Failed\n");
-                Err(e)
-            }
+            Err(e) => Err(e)
         }
     }
 }
 
 impl Ext4Inode {
     fn make_entry(&self, name: &str, file_type: FileType) -> VfsResult<Arc<dyn Inode>> {
-        crate::drivers::video::put_str("Ext4: make_entry start\n");
         // 1. Allocate Inode
         let inode_num = self.fs.alloc_inode()?;
-        crate::drivers::video::put_str("Ext4: Inode Allocated\n");
         
         // 2. Init Inode
         let mode = match file_type {
@@ -731,7 +717,6 @@ impl Ext4Inode {
         if file_type == FileType::Directory {
             // Allocate 1 block for directory data (. and ..)
             let block = self.fs.alloc_block()?;
-            crate::drivers::video::put_str("Ext4: Dir Block Allocated\n");
             
             new_inode.block[0] = block;
             new_inode.blocks_lo = (self.fs.block_size / 512) as u32; 
@@ -765,15 +750,12 @@ impl Ext4Inode {
         }
         
         self.fs.write_inode(inode_num, new_inode)?;
-        crate::drivers::video::put_str("Ext4: Inode Written\n");
         
         // 3. Add Entry to Parent (self)
         // We need to write a DirEntry2 to 'self's blocks.
         if !self.add_dir_entry(self.inode_num, name, inode_num, file_type) {
-             crate::drivers::video::put_str("Ext4: Failed to add dir entry\n");
              return Err(VfsError::IOError);
         }
-        crate::drivers::video::put_str("Ext4: Dir Entry Added\n");
         
         Ok(Arc::new(Ext4Inode {
             fs: self.fs.clone(),
@@ -793,8 +775,8 @@ impl Ext4Inode {
         crate::drivers::video::put_str("Ext4: add_dir_entry start\n");
 
         while offset < buf.len() {
-             let entry_ptr = unsafe { buf.as_ptr().add(offset) as *mut DirEntry2 };
-             let entry = unsafe { &mut *entry_ptr };
+             let entry_ptr = unsafe { buf.as_mut_ptr().add(offset) as *mut DirEntry2 };
+             let mut entry = unsafe { core::ptr::read_unaligned(entry_ptr) };
              // if entry.inode == 0 { break; } 
              if entry.rec_len == 0 { 
                  if offset == 0 {
@@ -808,35 +790,58 @@ impl Ext4Inode {
              }
              
              let entry_header_size = core::mem::size_of::<DirEntry2>();
-             let real_len = (entry_header_size as u16 + entry.name_len as u16 + 3) & !3;
-             let available = entry.rec_len - real_len;
              let needed = (entry_header_size as u16 + name.len() as u16 + 3) & !3;
-                 
-             if available >= needed {
-                 crate::drivers::video::put_str("Ext4: Found Space! Splitting.\n");
-                 // Split!
-                 entry.rec_len = real_len; // Shrink current
-                     
-                 let new_offset = offset + real_len as usize;
-                 let new_ptr = unsafe { buf.as_ptr().add(new_offset) as *mut DirEntry2 };
-                 let new_entry = unsafe { &mut *new_ptr };
-                     
-                 new_entry.inode = child_inode;
-                 new_entry.rec_len = available; // Take rest
-                 new_entry.name_len = name.len() as u8;
-                 new_entry.file_type = match ftype { FileType::Directory => 2, _ => 1 };
 
-                 // Write Name
+             // If this entry is deleted (inode == 0) and big enough, reuse it directly.
+             if entry.inode == 0 && entry.rec_len >= needed {
+                 entry.inode = child_inode;
+                 entry.name_len = name.len() as u8;
+                 entry.file_type = match ftype { FileType::Directory => 2, _ => 1 };
                  unsafe {
+                     core::ptr::write_unaligned(entry_ptr, entry);
                      core::ptr::copy_nonoverlapping(
                          name.as_ptr(), 
-                         buf.as_ptr().add(new_offset + 8) as *mut u8, 
+                         buf.as_mut_ptr().add(offset + 8), 
                          name.len()
                      );
                  }
-                     
-                 // Write back block
                  return self.fs.write_block(block_id, &buf);
+             }
+             
+             // If this entry is in use, check if there's space at the end to split it.
+             let real_len = (entry_header_size as u16 + entry.name_len as u16 + 3) & !3;
+             if entry.inode != 0 && entry.rec_len >= real_len {
+                 let available = entry.rec_len - real_len;
+                 if available >= needed {
+                     crate::drivers::video::put_str("Ext4: Found Space! Splitting.\n");
+                     // Split!
+                     entry.rec_len = real_len; // Shrink current
+                     unsafe { core::ptr::write_unaligned(entry_ptr, entry) };
+                         
+                     let new_offset = offset + real_len as usize;
+                     let new_ptr = unsafe { buf.as_mut_ptr().add(new_offset) as *mut DirEntry2 };
+                     
+                     let mut new_entry = DirEntry2 {
+                         inode: child_inode,
+                         rec_len: available,
+                         name_len: name.len() as u8,
+                         file_type: match ftype { FileType::Directory => 2, _ => 1 },
+                     };
+                     
+                     unsafe { core::ptr::write_unaligned(new_ptr, new_entry) };
+
+                     // Write Name
+                     unsafe {
+                         core::ptr::copy_nonoverlapping(
+                             name.as_ptr(), 
+                             buf.as_mut_ptr().add(new_offset + 8), 
+                             name.len()
+                         );
+                     }
+                         
+                     // Write back block
+                     return self.fs.write_block(block_id, &buf);
+                 }
              }
              
              offset += entry.rec_len as usize;
@@ -973,29 +978,50 @@ impl FileHandle for Ext4File {
         
         let block_size = self.fs.block_size;
         let start_block = (offset / block_size) as usize;
+        let pointers_per_block = (block_size / 4) as usize;
         
         // Simplified: Read one block at a time.
         // Does not handle cross-block reads efficiently.
         
         let block_id = if start_block < 12 {
             self.inode.block[start_block]
-        } else {
+        } else if start_block < 12 + pointers_per_block {
             let indirect_block = self.inode.block[12];
             if indirect_block == 0 {
                 0
             } else {
                 let mut ind_buf = alloc::vec![0u8; block_size as usize];
                 self.fs.read_block(indirect_block, &mut ind_buf);
-                let pointers_per_block = (block_size / 4) as usize;
                 let ind_index = start_block - 12;
-                if ind_index < pointers_per_block {
-                    let ptr = ind_buf.as_ptr() as *const u32;
-                    unsafe { *ptr.add(ind_index) }
+                let ptr = ind_buf.as_ptr() as *const u32;
+                unsafe { *ptr.add(ind_index) }
+            }
+        } else if start_block < 12 + pointers_per_block + pointers_per_block * pointers_per_block {
+            let d_indirect_block = self.inode.block[13];
+            if d_indirect_block == 0 {
+                0
+            } else {
+                let mut d_ind_buf = alloc::vec![0u8; block_size as usize];
+                self.fs.read_block(d_indirect_block, &mut d_ind_buf);
+                let dind_index = start_block - 12 - pointers_per_block;
+                let level1_index = dind_index / pointers_per_block;
+                let level2_index = dind_index % pointers_per_block;
+                
+                let ptr1 = d_ind_buf.as_ptr() as *const u32;
+                let level1_block = unsafe { *ptr1.add(level1_index) };
+                
+                if level1_block == 0 {
+                    0
                 } else {
-                    crate::drivers::video::put_str("Ext4: Read exceeded singly indirect block!\n");
-                    return Err(VfsError::IOError); // Doubly-indirect not supported yet
+                    let mut ind_buf = alloc::vec![0u8; block_size as usize];
+                    self.fs.read_block(level1_block, &mut ind_buf);
+                    let ptr2 = ind_buf.as_ptr() as *const u32;
+                    unsafe { *ptr2.add(level2_index) }
                 }
             }
+        } else {
+            crate::drivers::video::put_str("Ext4: Read exceeded doubly indirect block!\n");
+            return Err(VfsError::IOError);
         };
 
         if block_id == 0 {
@@ -1117,6 +1143,18 @@ impl FileHandle for Ext4File {
 
     fn close(&self) -> VfsResult<()> {
         Ok(())
+    }
+
+    fn stat(&self) -> VfsResult<FileStat> {
+        let inode = self.fs.read_inode(self.inode_num)?;
+        Ok(FileStat {
+            size: inode.size_lo as u64,
+            file_type: if (inode.mode & 0x4000) != 0 { FileType::Directory } else { FileType::File },
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+            mtime: inode.mtime,
+        })
     }
 }
 

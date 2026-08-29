@@ -8,7 +8,7 @@ use core::slice;
 // For now, since we only have one main process context, a global FD table will suffice.
 // In a real OS, this would be per-process in the Process Control Block (PCB).
 lazy_static! {
-    pub static ref FD_TABLE: Mutex<BTreeMap<usize, Arc<dyn FileHandle>>> = Mutex::new(BTreeMap::new());
+    pub static ref FD_TABLE: Mutex<BTreeMap<usize, (Arc<dyn FileHandle>, usize)>> = Mutex::new(BTreeMap::new());
 }
 
 lazy_static! {
@@ -32,9 +32,6 @@ pub fn sys_open(path_ptr: *const u8, flags: i32, mode: i32) -> isize {
         Ok(s) => s,
         Err(_) => return -22, // EINVAL
     };
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_open: path={}, flags={}, mode={}\n", path_str, flags, mode);
 
     // Call the VFS open here.
     if let Ok(inode) = crate::fs::vfs::resolve_path(path_str) {
@@ -55,7 +52,7 @@ pub fn sys_open(path_ptr: *const u8, flags: i32, mode: i32) -> isize {
                 let mut next_fd = NEXT_FD.lock();
                 let fd = *next_fd;
                 *next_fd += 1;
-                table.insert(fd, handle);
+                table.insert(fd, (handle, 0));
                 return fd as isize;
             }
         }
@@ -74,7 +71,7 @@ pub fn sys_open(path_ptr: *const u8, flags: i32, mode: i32) -> isize {
                             let mut next_fd = NEXT_FD.lock();
                             let fd = *next_fd;
                             *next_fd += 1;
-                            table.insert(fd, handle);
+                            table.insert(fd, (handle, 0));
                             return fd as isize;
                         }
                     }
@@ -91,11 +88,14 @@ pub fn sys_open(path_ptr: *const u8, flags: i32, mode: i32) -> isize {
 }
 
 pub fn sys_read(fd: usize, buf: *mut u8, count: usize) -> isize {
-    let table = FD_TABLE.lock();
-    if let Some(handle) = table.get(&fd) {
+    let mut table = FD_TABLE.lock();
+    if let Some((handle, offset)) = table.get_mut(&fd) {
         let slice = unsafe { slice::from_raw_parts_mut(buf, count) };
-        match handle.read(slice, 0) { // Offset tracking should be per-FD, omitted for simplicity
-            Ok(bytes) => bytes as isize,
+        match handle.read(slice, *offset as u64) {
+            Ok(bytes) => {
+                *offset += bytes;
+                bytes as isize
+            },
             Err(_) => -5, // EIO
         }
     } else {
@@ -105,21 +105,22 @@ pub fn sys_read(fd: usize, buf: *mut u8, count: usize) -> isize {
 
 pub fn sys_write(fd: usize, buf: *const u8, count: usize) -> isize {
     if fd == 1 || fd == 2 {
-        // stdout / stderr -> print to kernel console
+        // stdout / stderr -> print to kernel video console AND serial
         let slice = unsafe { slice::from_raw_parts(buf, count) };
         if let Ok(s) = core::str::from_utf8(slice) {
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            use core::fmt::Write;
-            let _ = write!(serial, "{}", s);
+            crate::drivers::video::put_str(s);
         }
         return count as isize;
     }
 
-    let table = FD_TABLE.lock();
-    if let Some(handle) = table.get(&fd) {
+    let mut table = FD_TABLE.lock();
+    if let Some((handle, offset)) = table.get_mut(&fd) {
         let slice = unsafe { slice::from_raw_parts(buf, count) };
-        match handle.write(slice, 0) {
-            Ok(bytes) => bytes as isize,
+        match handle.write(slice, *offset as u64) {
+            Ok(bytes) => {
+                *offset += bytes;
+                bytes as isize
+            },
             Err(_) => -5, // EIO
         }
     } else {
@@ -129,12 +130,107 @@ pub fn sys_write(fd: usize, buf: *const u8, count: usize) -> isize {
 
 pub fn sys_close(fd: usize) -> isize {
     let mut table = FD_TABLE.lock();
-    if let Some(handle) = table.remove(&fd) {
+    if let Some((handle, _offset)) = table.remove(&fd) {
         let _ = handle.close();
         0
     } else {
         -9 // EBADF
     }
+}
+
+pub fn sys_lseek(fd: usize, offset: isize, whence: i32) -> isize {
+    let mut table = FD_TABLE.lock();
+    if let Some((handle, curr_offset)) = table.get_mut(&fd) {
+        let file_size = if whence == 2 {
+            if let Ok(stat) = handle.stat() {
+                stat.size as usize
+            } else {
+                return -29; // ESPIPE
+            }
+        } else {
+            0
+        };
+
+        let new_offset = match whence {
+            0 => offset as isize, // SEEK_SET
+            1 => *curr_offset as isize + offset, // SEEK_CUR
+            2 => file_size as isize + offset, // SEEK_END
+            _ => return -22, // EINVAL
+        };
+
+        if new_offset < 0 {
+            return -22; // EINVAL
+        }
+
+        *curr_offset = new_offset as usize;
+        *curr_offset as isize
+    } else {
+        -9 // EBADF
+    }
+}
+
+pub fn sys_fstat(fd: usize, buf: *mut crate::fs::vfs::CStat) -> isize {
+    let table = FD_TABLE.lock();
+    if let Some((handle, _offset)) = table.get(&fd) {
+        if buf.is_null() {
+            return -14; // EFAULT
+        }
+        if let Ok(stat) = handle.stat() {
+            let mut cstat = crate::fs::vfs::CStat::default();
+            cstat.st_size = stat.size as i64;
+            cstat.st_mode = stat.mode as u32;
+            cstat.st_uid = stat.uid as u32;
+            cstat.st_gid = stat.gid as u32;
+            cstat.st_mtime = stat.mtime as i64;
+            unsafe { *buf = cstat; }
+            0
+        } else {
+            -5 // EIO
+        }
+    } else {
+        -9 // EBADF
+    }
+}
+
+pub fn sys_stat(path_ptr: *const u8, buf: *mut crate::fs::vfs::CStat) -> isize {
+    let mut len = 0;
+    unsafe {
+        while *path_ptr.add(len) != 0 {
+            len += 1;
+            if len > 4096 { return -36; } // ENAMETOOLONG
+        }
+    }
+    let path_slice = unsafe { slice::from_raw_parts(path_ptr, len) };
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return -22, // EINVAL
+    };
+    
+    if buf.is_null() {
+        return -14; // EFAULT
+    }
+    
+    let path = if path_str.starts_with("/") {
+        crate::alloc::string::String::from(path_str)
+    } else {
+        // Assume root for now
+        crate::alloc::format!("/{}", path_str)
+    };
+    
+    if let Some((inode, _)) = crate::fs::resolve_path(&path) {
+        if let Ok(stat) = inode.stat() {
+            let mut cstat = crate::fs::vfs::CStat::default();
+            cstat.st_size = stat.size as i64;
+            cstat.st_mode = stat.mode as u32;
+            cstat.st_uid = stat.uid as u32;
+            cstat.st_gid = stat.gid as u32;
+            cstat.st_mtime = stat.mtime as i64;
+            unsafe { *buf = cstat; }
+            return 0;
+        }
+    }
+    
+    -2 // ENOENT
 }
 
 pub const AT_FDCWD: i32 = -100;
@@ -150,10 +246,7 @@ pub fn sys_openat(dirfd: i32, path_ptr: *const u8, flags: i32, mode: i32) -> isi
     sys_open(path_ptr, flags, mode)
 }
 
-pub fn sys_readv(fd: usize, iov_ptr: *const u8, iovcnt: usize) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_readv: fd={}, iovcnt={}\n", fd, iovcnt);
+pub fn sys_readv(fd: usize, _iov_ptr: *const u8, _iovcnt: usize) -> isize {
     -38 // ENOSYS
 }
 
@@ -165,41 +258,25 @@ pub fn sys_writev(fd: usize, iov_ptr: *const u8, iovcnt: usize) -> isize {
         for iov in iovs {
             let base = iov.iov_base as *const u8;
             let len = iov.iov_len;
-            let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-            unsafe {
-                for chunk in core::slice::from_raw_parts(base, len) {
-                    serial.write_byte(*chunk);
-                }
+            let slice = unsafe { core::slice::from_raw_parts(base, len) };
+            if let Ok(s) = core::str::from_utf8(slice) {
+                crate::drivers::video::put_str(s);
             }
             bytes_written += len;
         }
         return bytes_written as isize;
     }
-    
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_writev: fd={}, iovcnt={}\n", fd, iovcnt);
     -38 // ENOSYS
 }
 
-pub fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_ioctl: fd={}, req={:#x}, arg={:#x}\n", fd, request, argp);
-    
-    // Stub for TCGETS (0x5401) on stdout/stdin to tell musl it's a TTY (or not)
-    // -25 is ENOTTY
-    -25
+pub fn sys_ioctl(fd: usize, _request: usize, _argp: usize) -> isize {
+    // Stub for TCGETS etc — tell callers it's not a TTY
+    -25 // ENOTTY
 }
 
 pub fn sys_disk_read(lba: u32, sectors: u8, buf: *mut u8) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_disk_read: lba={}, sectors={}\n", lba, sectors);
-    
     let total_bytes = (sectors as usize) * 512;
     let mut tmp = alloc::vec![0u16; (sectors as usize) * 256];
-    
     if crate::drivers::ata::read_sectors(&mut tmp, lba, sectors) {
         let tmp_bytes = unsafe { core::slice::from_raw_parts(tmp.as_ptr() as *const u8, total_bytes) };
         let user_slice = unsafe { core::slice::from_raw_parts_mut(buf, total_bytes) };
@@ -211,17 +288,11 @@ pub fn sys_disk_read(lba: u32, sectors: u8, buf: *mut u8) -> isize {
 }
 
 pub fn sys_disk_write(lba: u32, sectors: u8, buf: *const u8) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_disk_write: lba={}, sectors={}\n", lba, sectors);
-    
     let total_bytes = (sectors as usize) * 512;
     let user_slice = unsafe { core::slice::from_raw_parts(buf, total_bytes) };
     let mut tmp = alloc::vec![0u16; (sectors as usize) * 256];
-    
     let tmp_bytes = unsafe { core::slice::from_raw_parts_mut(tmp.as_mut_ptr() as *mut u8, total_bytes) };
     tmp_bytes.copy_from_slice(user_slice);
-    
     if crate::drivers::ata::write_sectors(&tmp, lba, sectors) {
         total_bytes as isize
     } else {
@@ -310,13 +381,8 @@ pub fn sys_chown(path_ptr: *const u8, uid: u16, gid: u16) -> isize {
 
 
 pub fn sys_disk_identify(buf: *mut u8) -> isize {
-    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    use core::fmt::Write;
-    let _ = write!(serial, "sys_disk_identify\n");
-    
     let total_bytes = 512;
     let mut tmp = alloc::vec![0u16; 256];
-    
     if crate::drivers::ata::identify_buffer(&mut tmp) {
         let tmp_bytes = unsafe { core::slice::from_raw_parts(tmp.as_ptr() as *const u8, total_bytes) };
         let user_slice = unsafe { core::slice::from_raw_parts_mut(buf, total_bytes) };

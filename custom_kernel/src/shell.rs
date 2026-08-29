@@ -750,10 +750,11 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "shutdown" => cmd_shutdown(),
             "passwd" => cmd_passwd(&args),
             "nvix" => crate::apps::nvi::cmd_nvix(&args),
+            "acc" | "tcc" => cmd_exec(args, background),
             "nuxc" | "gcc" | "clang" | "llvm" | "cc" => crate::apps::nuxc::cmd_nuxc(&args),
             "nuxa" => crate::apps::nuxa::cmd_nuxa(&args),
             "nuxv" => crate::apps::nuxv::cmd_nuxv(&args),
-            "disk" | "deskd" => cmd_exec(&["exec", "deskd.elf"], background),
+            "disk" | "deskd" => cmd_exec(&["exec", "/bin/deskd.elf"], background),
             "run" => cmd_run(&args),
             "basename" => cmd_basename(&args),
             "dirname" => cmd_dirname(&args),
@@ -847,10 +848,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "fetch" => crate::apps::fetch::main(&args),
             "format" => cmd_format(&args),
             "gputest" => cmd_gputest(&args, background),
-            "sudoku" => crate::games::sudoku::run(),
-            "chess3d" | "chess" => crate::games::chess::run(),
-            "2048" => crate::games::game2048::run(),
-            "minesweeper" => crate::games::minesweeper::run(),
+            "game" => cmd_game(&args),
             "cd" => cmd_cd(&args),
             "play" => cmd_play(&args),
             "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
@@ -881,25 +879,95 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "timezone" => cmd_timezone(&args),
             "sh" | "bash" => { video::put_str("Ainux Shell 2.0 (Native)\n"); },
             "kill" => cmd_kill(&args),
+            "top" => cmd_top(),
+            "pm" => crate::tui_pm::launch_pm(),
             _ => {
                 if args.len() >= 2 && args[1] == "-prop" {
                     cmd_prop(&args);
                 } else {
-                    if cmd.ends_with(".elf") {
-                        cmd_exec(&["exec", cmd], background);
-                    } else {
-                        let elf_target = alloc::format!("{}.elf", cmd);
-                        if find_inode(&elf_target).is_ok() {
-                            cmd_exec(&["exec", &elf_target], background);
-                        } else {
-                            video::put_str("Unknown command. Type 'help'.\n");
+                    let targets = [
+                        alloc::format!("{}", cmd),
+                        alloc::format!("{}.elf", cmd),
+                        alloc::format!("/bin/{}", cmd),
+                        alloc::format!("/bin/{}.elf", cmd),
+                    ];
+                    let mut found = false;
+                    for target in targets.iter() {
+                        if find_inode(target).is_ok() {
+                            let mut exec_args = alloc::vec::Vec::new();
+                            exec_args.push("exec");
+                            exec_args.push(target.as_str());
+                            if args.len() > 1 {
+                                exec_args.extend_from_slice(&args[1..]);
+                            }
+                            cmd_exec(&exec_args, background);
+                            found = true;
+                            break;
                         }
+                    }
+                    if !found {
+                        video::put_str("Unknown command. Type 'help'.\n");
                     }
                 }
             },
         }
     }
+fn cmd_game(args: &[&str]) {
+    if args.len() < 2 {
+        video::put_str("Available games: tetris, minesweeper, 2048, sudoku, chess, snake, pong\n");
+        video::put_str("Usage: game <name> [new|load|save|reload]\n");
+        return;
+    }
+    let game_name = args[1];
+    let action = if args.len() >= 3 { args[2] } else { "run" };
+    
+    macro_rules! handle_game {
+        ($run:path, $active:expr, $saved:expr) => {
+            match action {
+                "run" => $run(),
+                "new" | "newgame" => {
+                    *$active.lock() = None;
+                    $run();
+                },
+                "save" => {
+                    let active_val = $active.lock().clone();
+                    if active_val.is_some() {
+                        *$saved.lock() = active_val;
+                        video::put_str("Game saved successfully.\n");
+                    } else {
+                        video::put_str("No active game to save.\n");
+                    }
+                },
+                "load" | "loadgame" => {
+                    let saved_val = $saved.lock().clone();
+                    if saved_val.is_some() {
+                        *$active.lock() = saved_val;
+                        $run();
+                    } else {
+                        video::put_str("No saved game found.\n");
+                    }
+                },
+                "reload" => {
+                    *$active.lock() = None;
+                    *$saved.lock() = None;
+                    video::put_str("Game state cleared.\n");
+                },
+                _ => video::put_str("Invalid action. Use run, new, save, load, or reload.\n"),
+            }
+        };
+    }
 
+    match game_name {
+        "tetris" => { handle_game!(crate::games::tetris::run, crate::games::tetris::ACTIVE_STATE, crate::games::tetris::SAVED_STATE); },
+        "minesweeper" => { handle_game!(crate::games::minesweeper::run, crate::games::minesweeper::ACTIVE_STATE, crate::games::minesweeper::SAVED_STATE); },
+        "2048" => { handle_game!(crate::games::game2048::run, crate::games::game2048::ACTIVE_STATE, crate::games::game2048::SAVED_STATE); },
+        "sudoku" => { handle_game!(crate::games::sudoku::run, crate::games::sudoku::ui::ACTIVE_STATE, crate::games::sudoku::ui::SAVED_STATE); },
+        "chess" | "chess3d" => { handle_game!(crate::games::chess::run, crate::games::chess::ui::ACTIVE_STATE, crate::games::chess::ui::SAVED_STATE); },
+        "snake" => { handle_game!(crate::games::snake::run, crate::games::snake::ACTIVE_STATE, crate::games::snake::SAVED_STATE); },
+        "pong" => { handle_game!(crate::games::pong::run, crate::games::pong::ACTIVE_STATE, crate::games::pong::SAVED_STATE); },
+        _ => video::put_str("Unknown game.\n"),
+    }
+}
 
 // ... existing help ...
 
@@ -926,18 +994,18 @@ fn cmd_help() {
     video::put_str("Use 'man <command>' to view the manual for a specific command.\n\n");
 
     let commands = [
-        "2048", "alias", "arch", "awm", "basename", "cal", "cat", "cd [dir]", "checkpoint", "chess3d", "clang",
+        "alias", "arch", "awm", "basename", "cal", "cat", "cd [dir]", "checkpoint", "clang",
         "clear", "clock", "code", "cp <src> <dst>", "df", "dirname", "discover", "dmesg", "du",
         "echo [args]", "env", "exec <file>", "export", "fetch", "file <file>", "find", "format",
-        "free", "fuel", "gcc", "gputest", "grant", "grep <pat>", "groups", "head", "help",
+        "free", "fuel", "game [name]", "gcc", "gputest", "grant", "grep <pat>", "groups", "head", "help",
         "hfetch", "history", "id", "ip", "less", "ln", "locate", "ls [dir]", "lsblk",
-        "lspci", "lsusb", "man <cmd>", "metus", "minesweeper", "mkdir <dir>",
+        "lspci", "lsusb", "man <cmd>", "metus", "mkdir <dir>",
         "mount", "mv <src> <dst>", "netstat", "nuxa <in> -o <out>", "nuxc <in> -o <out>",
         "nuxv <in> -o <out>", "nvix", "passwd", "ping <host>", "pkill <pid>",
         "ps", "pwd", "reboot", "remorph", "restore", "rm <file>", "rmdir <dir>",
         "run <file>", "settings", "sshd", "shutdown", "sort", "stat <file>",
-        "su", "sudoku", "sync", "tail", "test_iso", "time", "top", "touch <file>",
-        "time", "top", "touch <file>", "tree", "umount", "uname", "unalias", "uptime", "useradd", "users",
+        "su", "sync", "tail", "test_iso", "time", "top", "touch <file>",
+        "tree", "umount", "uname", "unalias", "uptime", "useradd", "users",
         "view <file>", "watch", "wc", "wget <url>", "whereis", "whoami", "wifi"
     ];
 
@@ -1686,11 +1754,16 @@ fn cmd_test_write() {
 }
 
 pub fn cmd_exec(args: &[&str], background: bool) {
-    if args.len() < 2 {
+    if args.len() < 2 && args[0] != "acc" && args[0] != "tcc" {
         video::put_str("Usage: exec <filename>\n");
         return;
     }
-    let filename = args[1];
+    
+    let filename = if args[0] == "acc" || args[0] == "tcc" {
+        "/bin/tcc"
+    } else {
+        args[1]
+    };
     
     // Check file exists and read magic
     let mut magic = [0u8; 4];
@@ -1712,9 +1785,19 @@ pub fn cmd_exec(args: &[&str], background: bool) {
     video::put_str(&format!("Executing {}...\n", filename));
 
     let result = if &magic == b"ALO\x02" || &magic == b"ALO\0" {
-        crate::process::loader::load_alo_from_file(filename)
+        crate::process::loader::load_alo_from_file(filename) // alo doesn't take args for now
     } else if magic[0] == 0x7F && &magic[1..4] == b"ELF" {
-        crate::process::loader::load_elf_from_file(filename)
+        let mut pass_args = alloc::vec::Vec::new();
+        if args[0] == "acc" || args[0] == "tcc" {
+            // the command itself is 'acc' or 'tcc' which maps to '/tcc'
+            // pass the original args (e.g. acc hello.c)
+            pass_args.extend_from_slice(args);
+            // wait, we should replace the filename we pass if we used acc/tcc? No, the loader takes filename and args separately
+        } else {
+            // standard exec
+            pass_args.extend_from_slice(&args[1..]);
+        }
+        crate::process::loader::load_elf_from_file(filename, &pass_args)
     } else {
         video::put_str("exec: Unknown executable format.\n");
         return;
@@ -1759,22 +1842,33 @@ fn cmd_top() {
 fn cmd_run(args: &[&str]) {
     if args.len() < 2 {
         video::put_str("Usage: run <filename>\n");
+        video::put_str("  Supported: .c .s .asm .v .q\n");
         return;
     }
     let filename = args[1];
-    
+
     if filename.ends_with(".v") || filename.ends_with(".q") {
         crate::process::voyager_vm::run_voyager_file(filename);
     } else if filename.ends_with(".s") || filename.ends_with(".asm") {
-        let target = "/tmp/exec.alo";
+        // Assemble with nuxa → run_asm.elf in root, then exec
+        let target = "run_asm.elf";
         crate::apps::nuxa::cmd_nuxa(&["nuxa", filename, "-o", target]);
         cmd_exec(&["exec", target], false);
     } else if filename.ends_with(".c") {
-        let target = "/tmp/exec.alo";
+        // Compile with nuxc (built-in native compiler) → a.elf in root, then exec
+        let target = "a.elf";
         crate::apps::nuxc::cmd_nuxc(&["nuxc", filename, "-o", target]);
-        cmd_exec(&["exec", target], false);
+        // Try CWD first, then /bin fallback
+        let exec_target = if find_inode(target).is_ok() { target } else { "/bin/a.elf" };
+        if find_inode(exec_target).is_ok() {
+            video::put_str("Running compiled binary...\n");
+            cmd_exec(&["exec", exec_target], false);
+        } else {
+            video::put_str("[run] Compilation failed or output not found.\n");
+        }
     } else {
         video::put_str("run: Unsupported file extension.\n");
+        video::put_str("     Supported: .c, .s, .asm, .v, .q\n");
     }
 }
 
@@ -2229,7 +2323,7 @@ fn cmd_nc(args: &[&str]) {
         // Poll for outgoing keystrokes
         if crate::drivers::keyboard::has_char() {
             let c = crate::drivers::keyboard::get_char();
-            if c == '\x1B' { // ESC
+            if c == '\x1B' || c == '\x03' { // ESC or Ctrl+C
                 break;
             }
             // Send keystroke
@@ -3507,6 +3601,24 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       2048\n\n");
             sh_put_str("DESCRIPTION\n       play 2048. See Ainux documentation for more info.\n");
         },
+        "acc" => {
+            sh_put_str("ACC(1)              Sovereign User Commands             ACC(1)\n\n");
+            sh_put_str("NAME\n       acc - execute the acc command\n\n");
+            sh_put_str("SYNOPSIS\n       acc\n\n");
+            sh_put_str("DESCRIPTION\n       execute the acc command. See Ainux documentation for more info.\n");
+        },
+        "alias" => {
+            sh_put_str("ALIAS(1)              Sovereign User Commands             ALIAS(1)\n\n");
+            sh_put_str("NAME\n       alias - define or display aliases\n\n");
+            sh_put_str("SYNOPSIS\n       alias [NAME[=VALUE]]\n\n");
+            sh_put_str("DESCRIPTION\n       define or display aliases. See Ainux documentation for more info.\n");
+        },
+        "arch" => {
+            sh_put_str("ARCH(1)              Sovereign User Commands             ARCH(1)\n\n");
+            sh_put_str("NAME\n       arch - execute the arch command\n\n");
+            sh_put_str("SYNOPSIS\n       arch\n\n");
+            sh_put_str("DESCRIPTION\n       execute the arch command. See Ainux documentation for more info.\n");
+        },
         "audio" => {
             sh_put_str("AUDIO(1)              Sovereign User Commands             AUDIO(1)\n\n");
             sh_put_str("NAME\n       audio - execute the audio command\n\n");
@@ -3518,6 +3630,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       awm - execute the awm command\n\n");
             sh_put_str("SYNOPSIS\n       awm\n\n");
             sh_put_str("DESCRIPTION\n       execute the awm command. See Ainux documentation for more info.\n");
+        },
+        "basename" => {
+            sh_put_str("BASENAME(1)              Sovereign User Commands             BASENAME(1)\n\n");
+            sh_put_str("NAME\n       basename - execute the basename command\n\n");
+            sh_put_str("SYNOPSIS\n       basename\n\n");
+            sh_put_str("DESCRIPTION\n       execute the basename command. See Ainux documentation for more info.\n");
         },
         "bash" => {
             sh_put_str("BASH(1)              Sovereign User Commands             BASH(1)\n\n");
@@ -3627,17 +3745,35 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       dcustom\n\n");
             sh_put_str("DESCRIPTION\n       execute the dcustom command. See Ainux documentation for more info.\n");
         },
+        "deskd" => {
+            sh_put_str("DESKD(1)              Sovereign User Commands             DESKD(1)\n\n");
+            sh_put_str("NAME\n       deskd - execute the deskd command\n\n");
+            sh_put_str("SYNOPSIS\n       deskd\n\n");
+            sh_put_str("DESCRIPTION\n       execute the deskd command. See Ainux documentation for more info.\n");
+        },
         "df" => {
             sh_put_str("DF(1)              Sovereign User Commands             DF(1)\n\n");
             sh_put_str("NAME\n       df - report file system disk space usage\n\n");
             sh_put_str("SYNOPSIS\n       df\n\n");
             sh_put_str("DESCRIPTION\n       report file system disk space usage. See Ainux documentation for more info.\n");
         },
+        "dirname" => {
+            sh_put_str("DIRNAME(1)              Sovereign User Commands             DIRNAME(1)\n\n");
+            sh_put_str("NAME\n       dirname - execute the dirname command\n\n");
+            sh_put_str("SYNOPSIS\n       dirname\n\n");
+            sh_put_str("DESCRIPTION\n       execute the dirname command. See Ainux documentation for more info.\n");
+        },
         "discover" => {
             sh_put_str("DISCOVER(1)              Sovereign User Commands             DISCOVER(1)\n\n");
             sh_put_str("NAME\n       discover - discover devices\n\n");
             sh_put_str("SYNOPSIS\n       discover\n\n");
             sh_put_str("DESCRIPTION\n       discover devices. See Ainux documentation for more info.\n");
+        },
+        "disk" => {
+            sh_put_str("DISK(1)              Sovereign User Commands             DISK(1)\n\n");
+            sh_put_str("NAME\n       disk - execute the disk command\n\n");
+            sh_put_str("SYNOPSIS\n       disk\n\n");
+            sh_put_str("DESCRIPTION\n       execute the disk command. See Ainux documentation for more info.\n");
         },
         "dmesg" => {
             sh_put_str("DMESG(1)              Sovereign User Commands             DMESG(1)\n\n");
@@ -3663,17 +3799,17 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       env\n\n");
             sh_put_str("DESCRIPTION\n       run a program in a modified environment. See Ainux documentation for more info.\n");
         },
-        "examples" => {
-            sh_put_str("EXAMPLES(1)              Sovereign User Commands             EXAMPLES(1)\n\n");
-            sh_put_str("NAME\n       examples - execute the examples command\n\n");
-            sh_put_str("SYNOPSIS\n       examples\n\n");
-            sh_put_str("DESCRIPTION\n       execute the examples command. See Ainux documentation for more info.\n");
-        },
         "exec" => {
             sh_put_str("EXEC(1)              Sovereign User Commands             EXEC(1)\n\n");
             sh_put_str("NAME\n       exec - execute a command\n\n");
             sh_put_str("SYNOPSIS\n       exec [COMMAND]\n\n");
             sh_put_str("DESCRIPTION\n       execute a command. See Ainux documentation for more info.\n");
+        },
+        "export" => {
+            sh_put_str("EXPORT(1)              Sovereign User Commands             EXPORT(1)\n\n");
+            sh_put_str("NAME\n       export - set the export attribute for variables\n\n");
+            sh_put_str("SYNOPSIS\n       export [NAME[=VALUE]]\n\n");
+            sh_put_str("DESCRIPTION\n       set the export attribute for variables. See Ainux documentation for more info.\n");
         },
         "fdisk" => {
             sh_put_str("FDISK(1)              Sovereign User Commands             FDISK(1)\n\n");
@@ -3735,6 +3871,18 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       ftp\n\n");
             sh_put_str("DESCRIPTION\n       execute the ftp command. See Ainux documentation for more info.\n");
         },
+        "ftpd" => {
+            sh_put_str("FTPD(1)              Sovereign User Commands             FTPD(1)\n\n");
+            sh_put_str("NAME\n       ftpd - execute the ftpd command\n\n");
+            sh_put_str("SYNOPSIS\n       ftpd\n\n");
+            sh_put_str("DESCRIPTION\n       execute the ftpd command. See Ainux documentation for more info.\n");
+        },
+        "game" => {
+            sh_put_str("GAME(1)              Sovereign User Commands             GAME(1)\n\n");
+            sh_put_str("NAME\n       game - execute the game command\n\n");
+            sh_put_str("SYNOPSIS\n       game\n\n");
+            sh_put_str("DESCRIPTION\n       execute the game command. See Ainux documentation for more info.\n");
+        },
         "gputest" => {
             sh_put_str("GPUTEST(1)              Sovereign User Commands             GPUTEST(1)\n\n");
             sh_put_str("NAME\n       gputest - test the GPU\n\n");
@@ -3758,6 +3906,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       groupadd - execute the groupadd command\n\n");
             sh_put_str("SYNOPSIS\n       groupadd\n\n");
             sh_put_str("DESCRIPTION\n       execute the groupadd command. See Ainux documentation for more info.\n");
+        },
+        "groups" => {
+            sh_put_str("GROUPS(1)              Sovereign User Commands             GROUPS(1)\n\n");
+            sh_put_str("NAME\n       groups - execute the groups command\n\n");
+            sh_put_str("SYNOPSIS\n       groups\n\n");
+            sh_put_str("DESCRIPTION\n       execute the groups command. See Ainux documentation for more info.\n");
         },
         "head" => {
             sh_put_str("HEAD(1)              Sovereign User Commands             HEAD(1)\n\n");
@@ -3801,11 +3955,11 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       hostname\n\n");
             sh_put_str("DESCRIPTION\n       execute the hostname command. See Ainux documentation for more info.\n");
         },
-        "httpd" => {
-            sh_put_str("HTTPD(1)              Sovereign User Commands             HTTPD(1)\n\n");
-            sh_put_str("NAME\n       httpd - execute the httpd command\n\n");
-            sh_put_str("SYNOPSIS\n       httpd\n\n");
-            sh_put_str("DESCRIPTION\n       execute the httpd command. See Ainux documentation for more info.\n");
+        "id" => {
+            sh_put_str("ID(1)              Sovereign User Commands             ID(1)\n\n");
+            sh_put_str("NAME\n       id - execute the id command\n\n");
+            sh_put_str("SYNOPSIS\n       id\n\n");
+            sh_put_str("DESCRIPTION\n       execute the id command. See Ainux documentation for more info.\n");
         },
         "ifconfig" => {
             sh_put_str("IFCONFIG(1)              Sovereign User Commands             IFCONFIG(1)\n\n");
@@ -3824,6 +3978,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       jobs - display status of jobs in the current session\n\n");
             sh_put_str("SYNOPSIS\n       jobs\n\n");
             sh_put_str("DESCRIPTION\n       display status of jobs in the current session. See Ainux documentation for more info.\n");
+        },
+        "kill" => {
+            sh_put_str("KILL(1)              Sovereign User Commands             KILL(1)\n\n");
+            sh_put_str("NAME\n       kill - send a signal to a process\n\n");
+            sh_put_str("SYNOPSIS\n       kill [PID]\n\n");
+            sh_put_str("DESCRIPTION\n       send a signal to a process. See Ainux documentation for more info.\n");
         },
         "killall" => {
             sh_put_str("KILLALL(1)              Sovereign User Commands             KILLALL(1)\n\n");
@@ -3848,6 +4008,18 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       ln - make links between files\n\n");
             sh_put_str("SYNOPSIS\n       ln [TARGET] [LINK_NAME]\n\n");
             sh_put_str("DESCRIPTION\n       make links between files. See Ainux documentation for more info.\n");
+        },
+        "load" => {
+            sh_put_str("LOAD(1)              Sovereign User Commands             LOAD(1)\n\n");
+            sh_put_str("NAME\n       load - execute the load command\n\n");
+            sh_put_str("SYNOPSIS\n       load\n\n");
+            sh_put_str("DESCRIPTION\n       execute the load command. See Ainux documentation for more info.\n");
+        },
+        "loadgame" => {
+            sh_put_str("LOADGAME(1)              Sovereign User Commands             LOADGAME(1)\n\n");
+            sh_put_str("NAME\n       loadgame - execute the loadgame command\n\n");
+            sh_put_str("SYNOPSIS\n       loadgame\n\n");
+            sh_put_str("DESCRIPTION\n       execute the loadgame command. See Ainux documentation for more info.\n");
         },
         "locate" => {
             sh_put_str("LOCATE(1)              Sovereign User Commands             LOCATE(1)\n\n");
@@ -3939,6 +4111,18 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       netstat\n\n");
             sh_put_str("DESCRIPTION\n       print network connections, routing tables, interface statistics. See Ainux documentation for more info.\n");
         },
+        "new" => {
+            sh_put_str("NEW(1)              Sovereign User Commands             NEW(1)\n\n");
+            sh_put_str("NAME\n       new - execute the new command\n\n");
+            sh_put_str("SYNOPSIS\n       new\n\n");
+            sh_put_str("DESCRIPTION\n       execute the new command. See Ainux documentation for more info.\n");
+        },
+        "newgame" => {
+            sh_put_str("NEWGAME(1)              Sovereign User Commands             NEWGAME(1)\n\n");
+            sh_put_str("NAME\n       newgame - execute the newgame command\n\n");
+            sh_put_str("SYNOPSIS\n       newgame\n\n");
+            sh_put_str("DESCRIPTION\n       execute the newgame command. See Ainux documentation for more info.\n");
+        },
         "nice" => {
             sh_put_str("NICE(1)              Sovereign User Commands             NICE(1)\n\n");
             sh_put_str("NAME\n       nice - execute the nice command\n\n");
@@ -3969,6 +4153,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       passwd [USER]\n\n");
             sh_put_str("DESCRIPTION\n       change user password. See Ainux documentation for more info.\n");
         },
+        "ping" => {
+            sh_put_str("PING(1)              Sovereign User Commands             PING(1)\n\n");
+            sh_put_str("NAME\n       ping - send ICMP ECHO_REQUEST to network hosts\n\n");
+            sh_put_str("SYNOPSIS\n       ping [HOST]\n\n");
+            sh_put_str("DESCRIPTION\n       send ICMP ECHO_REQUEST to network hosts. See Ainux documentation for more info.\n");
+        },
         "pkill" => {
             sh_put_str("PKILL(1)              Sovereign User Commands             PKILL(1)\n\n");
             sh_put_str("NAME\n       pkill - look up or signal processes based on name and other attributes\n\n");
@@ -3980,6 +4170,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       play - execute the play command\n\n");
             sh_put_str("SYNOPSIS\n       play\n\n");
             sh_put_str("DESCRIPTION\n       execute the play command. See Ainux documentation for more info.\n");
+        },
+        "pong" => {
+            sh_put_str("PONG(1)              Sovereign User Commands             PONG(1)\n\n");
+            sh_put_str("NAME\n       pong - execute the pong command\n\n");
+            sh_put_str("SYNOPSIS\n       pong\n\n");
+            sh_put_str("DESCRIPTION\n       execute the pong command. See Ainux documentation for more info.\n");
         },
         "ps" => {
             sh_put_str("PS(1)              Sovereign User Commands             PS(1)\n\n");
@@ -3998,6 +4194,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       reboot - reboot the system\n\n");
             sh_put_str("SYNOPSIS\n       reboot\n\n");
             sh_put_str("DESCRIPTION\n       reboot the system. See Ainux documentation for more info.\n");
+        },
+        "reload" => {
+            sh_put_str("RELOAD(1)              Sovereign User Commands             RELOAD(1)\n\n");
+            sh_put_str("NAME\n       reload - execute the reload command\n\n");
+            sh_put_str("SYNOPSIS\n       reload\n\n");
+            sh_put_str("DESCRIPTION\n       execute the reload command. See Ainux documentation for more info.\n");
         },
         "remorph" => {
             sh_put_str("REMORPH(1)              Sovereign User Commands             REMORPH(1)\n\n");
@@ -4041,12 +4243,6 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       save\n\n");
             sh_put_str("DESCRIPTION\n       save the current state. See Ainux documentation for more info.\n");
         },
-        "scp" => {
-            sh_put_str("SCP(1)              Sovereign User Commands             SCP(1)\n\n");
-            sh_put_str("NAME\n       scp - execute the scp command\n\n");
-            sh_put_str("SYNOPSIS\n       scp\n\n");
-            sh_put_str("DESCRIPTION\n       execute the scp command. See Ainux documentation for more info.\n");
-        },
         "sensors" => {
             sh_put_str("SENSORS(1)              Sovereign User Commands             SENSORS(1)\n\n");
             sh_put_str("NAME\n       sensors - print sensors information\n\n");
@@ -4071,6 +4267,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       shutdown\n\n");
             sh_put_str("DESCRIPTION\n       halt, power-off or reboot the machine. See Ainux documentation for more info.\n");
         },
+        "snake" => {
+            sh_put_str("SNAKE(1)              Sovereign User Commands             SNAKE(1)\n\n");
+            sh_put_str("NAME\n       snake - execute the snake command\n\n");
+            sh_put_str("SYNOPSIS\n       snake\n\n");
+            sh_put_str("DESCRIPTION\n       execute the snake command. See Ainux documentation for more info.\n");
+        },
         "sort" => {
             sh_put_str("SORT(1)              Sovereign User Commands             SORT(1)\n\n");
             sh_put_str("NAME\n       sort - sort lines of text files\n\n");
@@ -4082,12 +4284,6 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       speakertest - test the PC speaker audio\n\n");
             sh_put_str("SYNOPSIS\n       speakertest\n\n");
             sh_put_str("DESCRIPTION\n       test the PC speaker audio. See Ainux documentation for more info.\n");
-        },
-        "ssh" => {
-            sh_put_str("SSH(1)              Sovereign User Commands             SSH(1)\n\n");
-            sh_put_str("NAME\n       ssh - OpenSSH SSH client (remote login program)\n\n");
-            sh_put_str("SYNOPSIS\n       ssh [USER@]HOST\n\n");
-            sh_put_str("DESCRIPTION\n       OpenSSH SSH client (remote login program). See Ainux documentation for more info.\n");
         },
         "sshd" => {
             sh_put_str("SSHD(1)              Sovereign User Commands             SSHD(1)\n\n");
@@ -4131,11 +4327,17 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       tail [FILE]\n\n");
             sh_put_str("DESCRIPTION\n       output the last part of files. See Ainux documentation for more info.\n");
         },
-        "taskmgr" => {
-            sh_put_str("TASKMGR(1)              Sovereign User Commands             TASKMGR(1)\n\n");
-            sh_put_str("NAME\n       taskmgr - execute the taskmgr command\n\n");
-            sh_put_str("SYNOPSIS\n       taskmgr\n\n");
-            sh_put_str("DESCRIPTION\n       execute the taskmgr command. See Ainux documentation for more info.\n");
+        "tcc" => {
+            sh_put_str("TCC(1)              Sovereign User Commands             TCC(1)\n\n");
+            sh_put_str("NAME\n       tcc - execute the tcc command\n\n");
+            sh_put_str("SYNOPSIS\n       tcc\n\n");
+            sh_put_str("DESCRIPTION\n       execute the tcc command. See Ainux documentation for more info.\n");
+        },
+        "telnetd" => {
+            sh_put_str("TELNETD(1)              Sovereign User Commands             TELNETD(1)\n\n");
+            sh_put_str("NAME\n       telnetd - execute the telnetd command\n\n");
+            sh_put_str("SYNOPSIS\n       telnetd\n\n");
+            sh_put_str("DESCRIPTION\n       execute the telnetd command. See Ainux documentation for more info.\n");
         },
         "test_ipc" => {
             sh_put_str("TEST_IPC(1)              Sovereign User Commands             TEST_IPC(1)\n\n");
@@ -4161,6 +4363,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       test_write\n\n");
             sh_put_str("DESCRIPTION\n       execute the test_write command. See Ainux documentation for more info.\n");
         },
+        "tetris" => {
+            sh_put_str("TETRIS(1)              Sovereign User Commands             TETRIS(1)\n\n");
+            sh_put_str("NAME\n       tetris - execute the tetris command\n\n");
+            sh_put_str("SYNOPSIS\n       tetris\n\n");
+            sh_put_str("DESCRIPTION\n       execute the tetris command. See Ainux documentation for more info.\n");
+        },
         "time" => {
             sh_put_str("TIME(1)              Sovereign User Commands             TIME(1)\n\n");
             sh_put_str("NAME\n       time - run programs and summarize system resource usage\n\n");
@@ -4172,12 +4380,6 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       timezone - set or display timezone\n\n");
             sh_put_str("SYNOPSIS\n       timezone [ZONE]\n\n");
             sh_put_str("DESCRIPTION\n       set or display timezone. See Ainux documentation for more info.\n");
-        },
-        "tm" => {
-            sh_put_str("TM(1)              Sovereign User Commands             TM(1)\n\n");
-            sh_put_str("NAME\n       tm - execute the tm command\n\n");
-            sh_put_str("SYNOPSIS\n       tm\n\n");
-            sh_put_str("DESCRIPTION\n       execute the tm command. See Ainux documentation for more info.\n");
         },
         "touch" => {
             sh_put_str("TOUCH(1)              Sovereign User Commands             TOUCH(1)\n\n");
@@ -4196,6 +4398,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       umount - unmount file systems\n\n");
             sh_put_str("SYNOPSIS\n       umount [DIR]\n\n");
             sh_put_str("DESCRIPTION\n       unmount file systems. See Ainux documentation for more info.\n");
+        },
+        "unalias" => {
+            sh_put_str("UNALIAS(1)              Sovereign User Commands             UNALIAS(1)\n\n");
+            sh_put_str("NAME\n       unalias - remove alias definitions\n\n");
+            sh_put_str("SYNOPSIS\n       unalias [NAME]\n\n");
+            sh_put_str("DESCRIPTION\n       remove alias definitions. See Ainux documentation for more info.\n");
         },
         "uname" => {
             sh_put_str("UNAME(1)              Sovereign User Commands             UNAME(1)\n\n");
@@ -4221,6 +4429,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("SYNOPSIS\n       userdel [USER]\n\n");
             sh_put_str("DESCRIPTION\n       delete a user. See Ainux documentation for more info.\n");
         },
+        "users" => {
+            sh_put_str("USERS(1)              Sovereign User Commands             USERS(1)\n\n");
+            sh_put_str("NAME\n       users - execute the users command\n\n");
+            sh_put_str("SYNOPSIS\n       users\n\n");
+            sh_put_str("DESCRIPTION\n       execute the users command. See Ainux documentation for more info.\n");
+        },
         "view" => {
             sh_put_str("VIEW(1)              Sovereign User Commands             VIEW(1)\n\n");
             sh_put_str("NAME\n       view - view a file\n\n");
@@ -4238,6 +4452,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       wc - print newline, word, and byte counts for each file\n\n");
             sh_put_str("SYNOPSIS\n       wc [FILE]\n\n");
             sh_put_str("DESCRIPTION\n       print newline, word, and byte counts for each file. See Ainux documentation for more info.\n");
+        },
+        "wget" => {
+            sh_put_str("WGET(1)              Sovereign User Commands             WGET(1)\n\n");
+            sh_put_str("NAME\n       wget - the non-interactive network downloader\n\n");
+            sh_put_str("SYNOPSIS\n       wget [URL]\n\n");
+            sh_put_str("DESCRIPTION\n       the non-interactive network downloader. See Ainux documentation for more info.\n");
         },
         "whereis" => {
             sh_put_str("WHEREIS(1)              Sovereign User Commands             WHEREIS(1)\n\n");
@@ -4262,6 +4482,12 @@ fn cmd_man(args: &[&str]) {
             sh_put_str("NAME\n       write - write text to a file\n\n");
             sh_put_str("SYNOPSIS\n       write [FILE] [TEXT]\n\n");
             sh_put_str("DESCRIPTION\n       write text to a file. See Ainux documentation for more info.\n");
+        },
+        "youtube" => {
+            sh_put_str("YOUTUBE(1)              Sovereign User Commands             YOUTUBE(1)\n\n");
+            sh_put_str("NAME\n       youtube - execute the youtube command\n\n");
+            sh_put_str("SYNOPSIS\n       youtube\n\n");
+            sh_put_str("DESCRIPTION\n       execute the youtube command. See Ainux documentation for more info.\n");
         },
         _ => sh_put_str(&alloc::format!("No manual entry for {}\n", args[1])),
     }

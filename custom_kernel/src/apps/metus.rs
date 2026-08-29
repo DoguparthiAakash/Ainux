@@ -183,7 +183,7 @@ fn prompt_and_kill() {
             pid_str.pop();
         } else if ch.is_ascii_digit() && pid_str.len() < 8 {
             pid_str.push(ch);
-        } else if ch == '\x1B' {
+        } else if ch == '\x1B' || ch == '\x03' {
             return; // Esc to cancel
         }
     }

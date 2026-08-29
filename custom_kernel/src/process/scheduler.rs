@@ -246,10 +246,13 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
                 // Implement COW Fork for the address space (stub for Phase 2)
                 let new_address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
                 task.cr3 = new_address_space.lock().pml4_phys;
-                task.address_space = Some(new_address_space); 
-                
+                if task.cr3 == 0 {
+                    return -1; // OOM allocating page tables
+                }
+                task.address_space = Some(new_address_space);
                 task.caps = caps; // Inherit Caps
                 task.fds = fds; // Clone FDs 
+                task.namespace = tasks[current_pid].as_ref().unwrap().namespace.clone();
                 
                 task.userspace_stack_top = stack_ptr;
                 
@@ -444,12 +447,21 @@ fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize
     }
 
     // 2. Fallback to global bitmask (Very fast O(1))
-    let mask = READY_BITMAP.load(core::sync::atomic::Ordering::Relaxed);
-    if mask != 0 {
+    let mut mask = READY_BITMAP.load(core::sync::atomic::Ordering::Relaxed);
+    while mask != 0 {
         let next_pid = mask.trailing_zeros() as usize;
         if next_pid < MAX_TASKS {
-            return Some(next_pid);
+            if let Some(task) = &tasks[next_pid] {
+                if task.state == TaskState::Ready {
+                    return Some(next_pid);
+                } else {
+                    clear_ready(next_pid); // Stale bit
+                }
+            } else {
+                clear_ready(next_pid); // Stale bit
+            }
         }
+        mask &= !(1 << next_pid); // clear the bit we just checked
     }
     
     None
@@ -743,6 +755,7 @@ pub fn kill_task(pid: usize) -> isize {
 
         if pid == 0 { return -1; } 
         
+        let mut parent_to_wake = None;
         if let Some(target) = &mut tasks[pid] {
             let target_cell_id = target.cell.id;
             
@@ -754,10 +767,25 @@ pub fn kill_task(pid: usize) -> isize {
             if target.state != TaskState::Free && target.state != TaskState::Zombie {
                  target.state = TaskState::Zombie;
                  target.exit_code = -9; 
-                 return 0;
+                 parent_to_wake = target.parent_id;
+                 clear_ready(pid);
+            } else {
+                 return -1;
             }
+        } else {
+            return -1;
         }
-        -1
+
+        if let Some(parent_pid) = parent_to_wake {
+             if let Some(parent) = &mut tasks[parent_pid] {
+                 if parent.state == TaskState::Waiting {
+                     parent.state = TaskState::Ready;
+                     set_ready(parent_pid);
+                 }
+             }
+        }
+        
+        0
     })
 }
 

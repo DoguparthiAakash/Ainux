@@ -60,3 +60,45 @@ pub fn parse_mbr() -> Vec<MbrPartition> {
     
     partitions
 }
+
+pub fn write_mbr(partitions: &[MbrPartition]) -> bool {
+    let mut buf = [0u16; 256];
+    
+    // Read LBA 0 to preserve boot code (first 446 bytes / 223 words)
+    if !ata::read_sectors(&mut buf, 0, 1) {
+        unsafe { video::put_str("MBR: Failed to read LBA 0 for writing\n"); }
+        return false;
+    }
+    
+    // Set boot signature 0xAA55
+    buf[255] = 0xAA55;
+    
+    // Clear the existing partition table area
+    for i in 223..223 + 32 {
+        buf[i] = 0;
+    }
+    
+    // Write the new partitions
+    for (i, p) in partitions.iter().take(4).enumerate() {
+        let offset = 223 + (i * 8);
+        
+        buf[offset] = p.status as u16;
+        buf[offset + 1] = 0; // CHS
+        buf[offset + 2] = p.partition_type as u16;
+        buf[offset + 3] = 0; // CHS
+        
+        buf[offset + 4] = (p.lba_start & 0xFFFF) as u16;
+        buf[offset + 5] = ((p.lba_start >> 16) & 0xFFFF) as u16;
+        
+        buf[offset + 6] = (p.num_sectors & 0xFFFF) as u16;
+        buf[offset + 7] = ((p.num_sectors >> 16) & 0xFFFF) as u16;
+    }
+    
+    // Write back to LBA 0
+    if !ata::write_sectors(&buf, 0, 1) {
+        unsafe { video::put_str("MBR: Failed to write LBA 0\n"); }
+        return false;
+    }
+    
+    true
+}

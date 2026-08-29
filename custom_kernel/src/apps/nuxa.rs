@@ -1,36 +1,57 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 use crate::drivers::video;
-use crate::fs::vfs::FileHandle;
+use crate::fs::vfs::FileType;
 
 pub fn cmd_nuxa(args: &[&str]) {
-    if args.len() < 4 || args[2] != "-o" {
-        video::put_str("Usage: nuxa <source.s> -o <target.alo>\n");
-        return;
-    }
-    
-    let source_file = args[1];
-    let target_file = args[3];
-    
-    // Load Source
-    let mut source_code = String::new();
-    if let Ok(inode) = crate::shell::find_inode(source_file) {
-        if let Ok(handle) = inode.open(0) {
-             let mut data = alloc::vec![0u8; 16384];
-             if let Ok(bytes) = handle.read(&mut data, 0) {
-                 source_code = String::from(core::str::from_utf8(&data[..bytes]).unwrap_or(""));
-             }
-        }
-    } else {
-        video::put_str("nuxa: Source not found.\n");
+    if args.len() < 2 {
+        video::put_str("Usage: nuxa <source.s> [-o output.elf]\n");
+        video::put_str("Ainux Native Assembler — AT&T syntax x86_64\n");
         return;
     }
 
-    if source_code.is_empty() {
+    let source_file = args[1];
+    let output_file = if args.len() >= 4 && args[2] == "-o" {
+        args[3]
+    } else {
+        "/bin/a.elf"
+    };
+
+    // Read source
+    let mut source = String::new();
+    match crate::shell::find_inode(source_file) {
+        Ok(inode) => {
+            if let Ok(handle) = inode.open(0) {
+                let mut buf = alloc::vec![0u8; 32768];
+                if let Ok(n) = handle.read(&mut buf, 0) {
+                    source = String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
+                }
+            }
+        }
+        Err(_) => {
+            video::put_str(&alloc::format!("nuxa: Cannot open '{}'\n", source_file));
+            return;
+        }
+    }
+
+    if source.is_empty() {
         video::put_str("nuxa: Source file is empty.\n");
         return;
     }
 
-    video::put_str(&alloc::format!("Forwarding {} to Host LLVM Backend...\n", source_file));
-    crate::apps::nuxc::compile_via_host(&source_code, target_file);
+    video::put_str(&alloc::format!("[nuxa] Assembling {} ...\n", source_file));
+
+    // Reuse nuxc's assembler
+    let machine_code = crate::apps::nuxc::assemble_asm_pub(&source);
+    video::put_str(&alloc::format!("[nuxa] {} bytes of machine code generated\n", machine_code.len()));
+
+    if machine_code.is_empty() {
+        video::put_str("[nuxa] Error: No code produced. Check your assembly syntax.\n");
+        return;
+    }
+
+    if crate::apps::nuxc::write_elf64_pub(&machine_code, output_file) {
+        video::put_str(&alloc::format!("[nuxa] Done! ELF written to '{}'\n", output_file));
+    } else {
+        video::put_str("[nuxa] Error: Could not write output ELF.\n");
+    }
 }

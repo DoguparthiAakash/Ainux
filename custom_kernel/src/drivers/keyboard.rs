@@ -167,7 +167,7 @@ pub fn get_char() -> char {
         if let Some(c) = pop_char() {
             return c;
         }
-        core::hint::spin_loop();
+        crate::process::scheduler::yield_now();
     }
 }
 
@@ -289,25 +289,7 @@ extern "C" fn rust_keyboard_handler() {
                             'c' | 'C' => {
                                 let fg = crate::process::scheduler::get_foreground_pid();
                                 if fg != 0 {
-                                    crate::cpu::without_interrupts(|| {
-                                        let mut tasks = crate::process::scheduler::TASKS.lock();
-                                        let mut parent_to_wake = None;
-                                        if let Some(target) = &mut tasks[fg] {
-                                            if target.state != crate::process::task::TaskState::Free && target.state != crate::process::task::TaskState::Zombie {
-                                                target.state = crate::process::task::TaskState::Zombie;
-                                                target.exit_code = -9;
-                                                parent_to_wake = target.parent_id;
-                                            }
-                                        }
-                                        if let Some(pid) = parent_to_wake {
-                                            if let Some(parent) = &mut tasks[pid] {
-                                                if parent.state == crate::process::task::TaskState::Waiting {
-                                                    parent.state = crate::process::task::TaskState::Ready;
-                                                    crate::process::scheduler::set_ready(pid);
-                                                }
-                                            }
-                                        }
-                                    });
+                                    crate::process::scheduler::kill_task(fg);
                                 }
                                 c = Some('\x03'); // Still push char for polling apps
                             },
