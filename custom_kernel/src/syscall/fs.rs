@@ -532,3 +532,21 @@ pub fn sys_link(old_ptr: *const u8, new_ptr: *const u8) -> isize {
     }
     -2
 }
+
+pub fn sys_pipe(_pipefd: *mut i32) -> isize {
+    // Stub for creating a pipe. A real implementation would:
+    // 1. Create a pipe VFS node (in-memory buffer).
+    // 2. Allocate two file descriptors (one for read, one for write).
+    // 3. Write them to `pipefd[0]` and `pipefd[1]`.
+    -38 // ENOSYS
+}
+
+pub fn sys_dup(_oldfd: usize) -> isize {
+    // Stub for duplicating a file descriptor.
+    -38 // ENOSYS
+}
+
+pub fn sys_dup2(_oldfd: usize, _newfd: usize) -> isize {
+    // Stub for duplicating a file descriptor to a specific new fd.
+    -38 // ENOSYS
+}

@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod fs;
 pub mod mm;
+pub mod process;
 
 /// System call numbers based on Linux x86_64
 pub const SYS_READ: usize = 0;
@@ -24,7 +25,15 @@ pub const SYS_READV: usize = 19;
 pub const SYS_WRITEV: usize = 20;
 pub const SYS_GETPID: usize = 39;
 pub const SYS_CLONE: usize = 56;
+pub const SYS_FORK: usize = 57;
+pub const SYS_VFORK: usize = 58;
+pub const SYS_EXECVE: usize = 59;
 pub const SYS_EXIT: usize = 60;
+pub const SYS_WAIT4: usize = 61;
+pub const SYS_KILL: usize = 62;
+pub const SYS_PIPE: usize = 22;
+pub const SYS_DUP: usize = 32;
+pub const SYS_DUP2: usize = 33;
 pub const SYS_KILL: usize = 62;
 pub const SYS_UNAME: usize = 63;
 pub const SYS_FCNTL: usize = 72;
@@ -212,6 +221,12 @@ pub extern "C" fn syscall_handler(sys_no: usize, arg1: usize, arg2: usize, arg3:
         SYS_DISK_WRITE => fs::sys_disk_write(arg1 as u32, arg2 as u8, arg3 as *const u8),
         SYS_DISK_IDENTIFY => fs::sys_disk_identify(arg1 as *mut u8),
         SYS_GETPID => 1,           // PID 1 (init)
+        SYS_FORK => process::sys_fork(),
+        SYS_EXECVE => process::sys_execve(arg1 as *const u8, arg2 as *const *const u8, arg3 as *const *const u8),
+        SYS_WAIT4 => process::sys_wait4(arg1 as i32, arg2 as *mut i32, arg3 as i32, arg4 as *mut u8),
+        SYS_PIPE => fs::sys_pipe(arg1 as *mut i32),
+        SYS_DUP => fs::sys_dup(arg1),
+        SYS_DUP2 => fs::sys_dup2(arg1, arg2),
 
         SYS_GETTID => crate::process::scheduler::sys_gettid(),
         SYS_GETUID => crate::process::scheduler::sys_getuid(),
