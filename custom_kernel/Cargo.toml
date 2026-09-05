@@ -3,6 +3,10 @@ name = "ainux_kernel"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "ainux_kernel"
+path = "core/main.rs"
+
 [dependencies]
 volatile = "0.6.1"
 spin = "0.9.8" # Spinlocks for synchronization

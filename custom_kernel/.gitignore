@@ -50,3 +50,4 @@ replay_pid*.log
 # OS-specific
 Thumbs.db
 desktop.ini
+/src/bsd_external/
