@@ -1,0 +1,2 @@
+#!/bin/bash
+x86_64-linux-gnu-gcc -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone -mno-sse -mno-sse2 -mcmodel=kernel -nostdlib -O2 -DDEF_WEAK\(x\)= -I/mnt/e/lh/lsr/Ainux/custom_kernel/src/c -I/mnt/e/lh/lsr/Ainux/custom_kernel/src/c/libc -I/mnt/e/lh/lsr/Ainux/custom_kernel/src/c/include -I/mnt/e/lh/lsr/Ainux/custom_kernel/src/bsd_compat/include -I/mnt/e/lh/lsr/Ainux/custom_kernel/src/bsd_external/freebsd/sys -c /mnt/e/lh/lsr/Ainux/custom_kernel/src/bsd_external/freebsd/sys/kern/vfs_init.c -o /dev/null

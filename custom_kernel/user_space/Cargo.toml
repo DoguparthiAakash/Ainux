@@ -15,8 +15,11 @@ members = [
     "programs/mv",
     "programs/posixd", 
     "programs/fsd",
-    "programs/httpd"
-, "programs/hwtest"]
+    "programs/httpd",
+    "programs/hwtest",
+    "programs/sh",
+    "programs/terminald"
+]
 resolver = "2"
 
 [profile.dev]

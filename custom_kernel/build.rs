@@ -22,46 +22,57 @@ fn main() {
         build_via_cc(&out_dir);
     }
 
-    println!("cargo:rerun-if-changed=src/c");
+    println!("cargo:rerun-if-changed=c_src");
 }
 
 fn c_source_files() -> Vec<String> {
     let mut files = vec![
-        "src/c/gfx.c".to_string(),
-        "src/c/font.c".to_string(),
-        "src/c/text.c".to_string(),
-        "src/c/ps2.c".to_string(),
-        "src/c/log.c".to_string(),
-        "src/c/libc/ctype.c".to_string(),
-        "src/c/libc/stdio.c".to_string(),
-        "src/c/libc/stdlib.c".to_string(),
-        "src/c/libc/string.c".to_string(),
+        "c_src/gfx.c".to_string(),
+        "c_src/font.c".to_string(),
+        "c_src/text.c".to_string(),
+        "c_src/ps2.c".to_string(),
+        "c_src/log.c".to_string(),
+        "c_src/libc/ctype.c".to_string(),
+        "c_src/libc/stdio.c".to_string(),
+        "c_src/libc/stdlib.c".to_string(),
+        "c_src/libc/string.c".to_string(),
     ];
 
     let io_files = [
         "initrd.c", "vfs.c", "axfs.c", "elf.c", "ext2.c", "fat32.c", "gpt.c", "mbr.c", "pipe.c",
     ];
     for f in io_files.iter() {
-        files.push(format!("src/c/ex/io/{}", f));
+        files.push(format!("c_src/ex/io/{}", f));
     }
 
     let driver_files = [
         "ata.c", "keyboard.c", "mouse.c", "pci.c", "pci_msi.c", "rtc.c", "timer.c",
     ];
     for f in driver_files.iter() {
-        files.push(format!("src/c/drivers/{}", f));
+        files.push(format!("c_src/drivers/{}", f));
     }
 
-    files.push("src/c/drivers/usb/xhci.c".to_string());
+    files.push("c_src/drivers/usb/xhci.c".to_string());
 
     let net_files = [
         "arp.c", "dns.c", "ethernet.c", "icmp.c", "ip.c", "netdev.c", "sim_wifi.c", "tcp.c", "udp.c",
     ];
     for f in net_files.iter() {
-        files.push(format!("src/c/net/{}", f));
+        files.push(format!("c_src/net/{}", f));
     }
 
-    files.push("src/c/crypto/aes.c".to_string());
+    files.push("c_src/crypto/aes.c".to_string());
+    
+    // BSD Multi-Kernel C-Integration testing
+    // Compiling OpenBSD's explicit_bzero.c to verify the cross-compiler and shim
+    files.push("c_src/bsd_external/openbsd/lib/libc/string/explicit_bzero.c".to_string());
+    
+    // FreeBSD VFS integration
+    files.push("c_src/bsd_external/freebsd/sys/kern/vfs_init.c".to_string());
+    
+    // NetBSD Networking Source
+    files.push("external/netbsd-src/sys/net/if.c".to_string());
+    
     files
 }
 
@@ -82,6 +93,9 @@ fn kernel_cflags() -> Vec<&'static str> {
         "-Wno-address-of-packed-member",
         "-nostdlib",
         "-O2",
+        "-DDEF_WEAK(x)=", // Ignore OpenBSD weak symbol macros
+        "-D__KERNEL_RCSID(x,y)=", // Ignore NetBSD RCS ID macros
+        "-D__NetBSD__", // Fake NetBSD for networking code
     ]
 }
 
@@ -100,6 +114,20 @@ fn build_via_wsl(out_dir: &str) {
 
     let mut object_files: Vec<String> = Vec::new();
 
+    let manifest_path = std::path::Path::new(&manifest_dir);
+
+    // BSD Shims
+    let bsd_compat_dir = windows_to_wsl_path(manifest_path.join("c_src/bsd_compat/include").to_str().unwrap());
+    
+    // FreeBSD VFS Source
+    let freebsd_sys_dir = windows_to_wsl_path(manifest_path.join("c_src/bsd_external/freebsd/sys").to_str().unwrap());
+    let c_dir = manifest_path.join("c_src");
+    let c_dir_wsl = windows_to_wsl_path(c_dir.to_str().unwrap());
+
+    // NetBSD Networking Source
+    let netbsd_sys_dir = windows_to_wsl_path(manifest_path.join("external/netbsd-src/sys").to_str().unwrap());
+    let netbsd_if_c = windows_to_wsl_path(manifest_path.join("external/netbsd-src/sys/net/if.c").to_str().unwrap());
+
     for src in &sources {
         let src_path = format!("{}/{}", wsl_manifest, src);
         // Object file name: flatten path separator
@@ -110,23 +138,30 @@ fn build_via_wsl(out_dir: &str) {
         let mut args: Vec<String> = vec![gcc.clone()];
         args.extend(flags.iter().map(|s| s.to_string()));
         args.extend([
-            format!("-I{}/src/c", wsl_manifest),
-            format!("-I{}/src/c/libc", wsl_manifest),
-            format!("-I{}/src/c/include", wsl_manifest),
-            format!("-I{}/src/c/ex", wsl_manifest),
-            format!("-I{}/src/c/net", wsl_manifest),
-            format!("-I{}/src/c/crypto", wsl_manifest),
-            format!("-I{}/src/c/drivers", wsl_manifest),
-            format!("-I{}/src/c/drivers/usb", wsl_manifest),
+            format!("-I{}", c_dir_wsl),
+            format!("-I{}/libc", c_dir_wsl),
+            format!("-I{}/include", wsl_manifest),
+            format!("-I{}", bsd_compat_dir),
+            format!("-I{}/external/netbsd-src/sys", wsl_manifest),
+        ]);
+        
+        if src.contains("freebsd") {
+            args.push(format!("-I{}", freebsd_sys_dir));
+        }
+
+        args.extend([
             "-c".to_string(),
             src_path,
             "-o".to_string(),
             obj_path,
         ]);
 
-        let wsl_cmd = args.join(" ");
+        let mut bash_cmd = String::new();
+        for arg in &args {
+            bash_cmd.push_str(&format!("'{}' ", arg));
+        }
         let status = Command::new("wsl")
-            .args(["-e", "bash", "-c", &wsl_cmd])
+            .args(["-e", "bash", "-c", &bash_cmd])
             .status()
             .unwrap_or_else(|_| panic!("Failed to run wsl gcc for {}", src));
 
@@ -137,16 +172,15 @@ fn build_via_wsl(out_dir: &str) {
     }
 
     // Compile ASM files via NASM in WSL
-    let asm_sources = ["src/asm/boot.asm", "src/asm/utils.asm"];
+    let asm_sources = ["arch/x86_64/asm/boot.asm", "arch/x86_64/asm/utils.asm"];
     for src in &asm_sources {
         let src_path = format!("{}/{}", wsl_manifest, src);
         let obj_name = src.replace("/", "_").replace(".asm", ".o");
         let obj_path = format!("{}/{}", wsl_out, obj_name);
         object_files.push(obj_path.clone());
 
-        let wsl_cmd = format!("nasm -f elf64 {} -o {}", src_path, obj_path);
         let status = Command::new("wsl")
-            .args(["-e", "bash", "-c", &wsl_cmd])
+            .args(["nasm", "-f", "elf64", &src_path, "-o", &obj_path])
             .status()
             .unwrap_or_else(|_| panic!("Failed to run nasm for {}", src));
 
@@ -163,13 +197,10 @@ fn build_via_wsl(out_dir: &str) {
         .collect();
 
     if !existing_objs.is_empty() {
-        let ar_cmd = format!(
-            "ar rcs {}/liblegacy_kernel.a {}",
-            wsl_out,
-            existing_objs.join(" ")
-        );
+        let mut ar_args = vec!["ar".to_string(), "rcs".to_string(), format!("{}/liblegacy_kernel.a", wsl_out)];
+        ar_args.extend(existing_objs.clone());
         let status = Command::new("wsl")
-            .args(["-e", "bash", "-c", &ar_cmd])
+            .args(&ar_args)
             .status()
             .expect("Failed to run wsl ar");
 
@@ -195,14 +226,19 @@ fn build_via_cc(out_dir: &str) {
     for flag in &flags {
         build.flag(flag);
     }
-    build.include("src/c")
-        .include("src/c/libc")
-        .include("src/c/include")
-        .include("src/c/ex")
-        .include("src/c/net")
-        .include("src/c/crypto")
-        .include("src/c/drivers")
-        .include("src/c/drivers/usb")
+    build.include("c_src")
+        .include("c_src/libc")
+        .include("include")
+        .include("c_src/ex")
+        .include("c_src/net")
+        .include("c_src/crypto")
+        .include("c_src/drivers")
+        .include("c_src/drivers/usb")
+        .include("c_src/bsd_compat/include")
+        // Note: For cc::Build we ideally split builds, but for now we include both.
+        // If there are conflicts, we should split cc::Build into two libraries.
+        .include("c_src/bsd_external/freebsd/sys")
+        .include("external/netbsd-src/sys")
         .compile("legacy_kernel");
 }
 

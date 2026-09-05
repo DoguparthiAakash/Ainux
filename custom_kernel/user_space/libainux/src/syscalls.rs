@@ -84,8 +84,32 @@ pub fn sys_fork() -> isize {
     unsafe { syscall(57, 0, 0, 0, 0, 0, 0) as isize }
 }
 
+pub fn sys_pipe(fds: &mut [i32; 2]) -> isize {
+    unsafe { syscall(22, fds.as_mut_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
+    unsafe { syscall(33, oldfd as u64, newfd as u64, 0, 0, 0, 0) as isize }
+}
+
 pub fn sys_wait4(pid: isize, status: *mut i32, options: i32, rusage: u64) -> isize {
     unsafe { syscall(61, pid as u64, status as u64, options as u64, rusage, 0, 0) as isize }
+}
+
+pub fn sys_kill(pid: usize, sig: u32) -> isize {
+    unsafe { syscall(62, pid as u64, sig as u64, 0, 0, 0, 0) as isize }
+}
+
+#[repr(C)]
+pub struct SigAction {
+    pub handler: usize,
+    pub flags: u64,
+    pub restorer: usize,
+    pub mask: u64,
+}
+
+pub fn sys_sigaction(sig: usize, act: *const SigAction, oact: *mut SigAction) -> isize {
+    unsafe { syscall(13, sig as u64, act as u64, oact as u64, 8, 0, 0) as isize }
 }
 
 pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: usize, offset: u64) -> u64 {

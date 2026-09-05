@@ -4,3 +4,15 @@
 [submodule "custom_kernel/limine"]
 	path = custom_kernel/limine
 	url = https://github.com/limine-bootloader/limine.git
+[submodule "custom_kernel/external/musl"]
+	path = custom_kernel/external/musl
+	url = git://git.musl-libc.org/musl
+[submodule "custom_kernel/external/llvm-project"]
+	path = custom_kernel/external/llvm-project
+	url = https://github.com/llvm/llvm-project.git
+[submodule "custom_kernel/external/netbsd-src"]
+	path = custom_kernel/external/netbsd-src
+	url = https://github.com/NetBSD/src.git
+[submodule "custom_kernel/external/newlib"]
+	path = custom_kernel/external/newlib
+	url = https://sourceware.org/git/newlib-cygwin.git
