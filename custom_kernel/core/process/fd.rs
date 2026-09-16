@@ -18,18 +18,14 @@ pub struct FileDescriptorTable {
 impl FileDescriptorTable {
     pub fn new() -> Self {
         let mut files = Vec::with_capacity(MAX_FDS);
-        // Initialize with standard streams (0, 1, 2)
-        // For now, they are None or Todo: SerialFileHandle?
         for _ in 0..MAX_FDS {
              files.push(None);
         }
-        
         Self { files }
     }
     
-    
+    /// Allocate the next free fd starting from 3 (preserving stdin/stdout/stderr slots).
     pub fn alloc_fd(&mut self, handle: Arc<dyn FileHandle>) -> Option<usize> {
-        // fd 0, 1, 2 are reserved for stdin, stdout, stderr
         for (i, slot) in self.files.iter_mut().enumerate().skip(3) {
             if slot.is_none() {
                 *slot = Some(FileDescriptor { handle, offset: 0 });
@@ -38,12 +34,25 @@ impl FileDescriptorTable {
         }
         None
     }
+
+    /// Allocate fd 0 specifically (for first pipe-read end before any dup2 from terminald).
+    pub fn alloc_fd_at(&mut self, fd: usize, handle: Arc<dyn FileHandle>) -> Option<usize> {
+        if fd >= MAX_FDS { return None; }
+        self.files[fd] = Some(FileDescriptor { handle, offset: 0 });
+        Some(fd)
+    }
     
     pub fn get_entry(&self, fd: usize) -> Option<FileDescriptor> {
         if fd >= self.files.len() {
              return None;
         }
         self.files[fd].clone()
+    }
+
+    /// Returns true if the given fd slot has a real file handle.
+    pub fn get_fd(&self, fd: usize) -> Option<&FileDescriptor> {
+        if fd >= self.files.len() { return None; }
+        self.files[fd].as_ref()
     }
 
     pub fn get_handle(&self, fd: usize) -> Result<Arc<dyn FileHandle>, ()> {

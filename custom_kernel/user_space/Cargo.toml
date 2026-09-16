@@ -18,7 +18,9 @@ members = [
     "programs/httpd",
     "programs/hwtest",
     "programs/sh",
-    "programs/terminald"
+    "programs/terminald",
+    "programs/grep",
+    "programs/netd"
 ]
 resolver = "2"
 

@@ -14,6 +14,17 @@ pub struct AddressSpace {
     pub pml4_phys: u64,
 }
 
+impl Clone for AddressSpace {
+    fn clone(&self) -> Self {
+        let new_pml4_phys = unsafe { vmm::clone_address_space(self.pml4_phys) };
+        Self {
+            is_kernel: self.is_kernel,
+            regions: self.regions.clone(),
+            pml4_phys: new_pml4_phys,
+        }
+    }
+}
+
 impl Drop for AddressSpace {
     fn drop(&mut self) {
         if !self.is_kernel && self.pml4_phys != 0 {

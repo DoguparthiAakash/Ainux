@@ -96,9 +96,6 @@ pub fn sys_wait4(pid: isize, status: *mut i32, options: i32, rusage: u64) -> isi
     unsafe { syscall(61, pid as u64, status as u64, options as u64, rusage, 0, 0) as isize }
 }
 
-pub fn sys_kill(pid: usize, sig: u32) -> isize {
-    unsafe { syscall(62, pid as u64, sig as u64, 0, 0, 0, 0) as isize }
-}
 
 #[repr(C)]
 pub struct SigAction {

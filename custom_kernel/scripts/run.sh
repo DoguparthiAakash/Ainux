@@ -3,6 +3,7 @@
 # Runs QEMU with the already-built disk3.img and ainux.iso
 # Run build_only.sh first to build the kernel and disk image.
 set -e
+cd "$(dirname "$0")/.."
 
 if [ ! -f disk3.img ]; then
     echo "disk3.img not found. Run build_only.sh first."

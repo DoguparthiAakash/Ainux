@@ -1,0 +1,93 @@
+# ainux::drivers::serial
+# Native Nux implementation of the 16550 UART Serial Driver.
+
+import std::arch::io;
+import std::ptr;
+import std::fmt;
+
+class SerialPort {
+    var port: u16;
+    
+    func init(port_addr: u16) {
+        this.port = port_addr;
+        
+        # Disable all interrupts
+        io::outb(this.port + 1, 0x00);
+        
+        # Enable DLAB (set baud rate divisor)
+        io::outb(this.port + 3, 0x80);
+        
+        # Set divisor to 3 (lo byte) 38400 baud
+        io::outb(this.port + 0, 0x03);
+        io::outb(this.port + 1, 0x00);
+        
+        # 8 bits, no parity, one stop bit
+        io::outb(this.port + 3, 0x03);
+        
+        # Enable FIFO, clear them, with 14-byte threshold
+        io::outb(this.port + 2, 0xC7);
+        
+        # IRQs enabled, RTS/DSR set
+        io::outb(this.port + 4, 0x0B);
+    }
+    
+    func data_ready() -> bool {
+        var status = io::inb(this.port + 5);
+        if (status == 0xFF) {
+            return false;
+        }
+        return (status & 0x01) != 0;
+    }
+    
+    func write_byte(byte: u8) {
+        # Wait for THRE (Transmitter Holding Register Empty)
+        # Bit 5 of LSR (Line Status Register, Port + 5)
+        var status: u8 = 0;
+        while (true) {
+            status = io::inb(this.port + 5);
+            if ((status & 0x20) != 0) {
+                break;
+            }
+        }
+        io::outb(this.port, byte);
+    }
+    
+    func read_byte() -> u8 {
+        while (!this.data_ready()) {
+            # Spin until data is ready
+        }
+        return io::inb(this.port);
+    }
+    
+    func write_str(s: String) {
+        var i = 0;
+        var bytes = s.bytes();
+        while (i < bytes.len()) {
+            this.write_byte(bytes.get(i));
+            i = i + 1;
+        }
+    }
+}
+
+# Global Instance
+var SERIAL: SerialPort;
+
+func init(port: u16) {
+    SERIAL = new SerialPort(port);
+}
+
+func puts(s: String) {
+    if (SERIAL != 0) {
+        SERIAL.write_str(s);
+    }
+}
+
+func print_hex_8(val: u8) {
+    var hex_str = fmt::format_hex(val, 2);
+    puts(hex_str);
+}
+
+func print_hex_32(val: u32) {
+    var hex_str = fmt::format_hex(val, 8);
+    puts(hex_str);
+}

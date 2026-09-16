@@ -1,0 +1,133 @@
+# ainux::drivers::video
+# Native Nux implementation of the VGA/Framebuffer Video Driver.
+
+import std::ptr;
+import ainux::cpu;
+
+# VGA Buffer Address in Higher Half (0xFFFFFFFF80000000 + 0xB8000)
+var VGA_HHDM_ADDR: u64 = 0xFFFFFFFF800B8000;
+
+class Theme {
+    var bg: u32;
+    var fg: u32;
+    var accent: u32;
+    var root: u32;
+    var font_size: u8;
+    
+    func init() {
+        this.bg = 0x001A1B26;     # TokyoNight Dark
+        this.fg = 0x00C0CAF5;     # Soft Blue-White Text
+        this.accent = 0x007AA2F7;
+        this.root = 0x009ECE6A;
+        this.font_size = 1;
+    }
+}
+
+var THEME = new Theme();
+
+var CONSOLE_X: u32 = 0;
+var CONSOLE_Y: u32 = 0;
+var CONSOLE_WIDTH: u32 = 80;
+var CONSOLE_HEIGHT: u32 = 25;
+
+# Framebuffer Info
+var FRAMEBUFFER_ADDR: u64 = 0;
+var FRAMEBUFFER_WIDTH: u32 = 0;
+var FRAMEBUFFER_HEIGHT: u32 = 0;
+var FRAMEBUFFER_PITCH: u32 = 0;
+var FRAMEBUFFER_BPP: u8 = 0;
+
+extern {
+    func c_draw_char(x: i32, y: i32, c: u32, fg_color: u32, bg_color: u32);
+}
+
+func fast_clear(color: u32) {
+    # Disable interrupts during screen clear
+    cpu::cli();
+    
+    if (FRAMEBUFFER_ADDR == 0) {
+        # VGA Text mode clear
+        var vga_buffer = VGA_HHDM_ADDR as *u16;
+        var vga_char: u16 = 0x0F00 | 32; # ' '
+        
+        var i = 0;
+        while (i < (80 * 25)) {
+            ptr::write_volatile(vga_buffer + i * 2, vga_char);
+            i += 1;
+        }
+    } else {
+        # Graphics Mode Framebuffer Clear
+        var height = FRAMEBUFFER_HEIGHT;
+        var pitch = FRAMEBUFFER_PITCH;
+        var total_bytes = pitch * height;
+        
+        var fb_ptr = FRAMEBUFFER_ADDR as *u32;
+        var final_color = color;
+        if (final_color == 0) {
+            final_color = THEME.bg;
+        }
+        
+        var i = 0;
+        while (i < (total_bytes / 4)) {
+            ptr::write_volatile(fb_ptr + i * 4, final_color);
+            i += 1;
+        }
+    }
+    
+    cpu::sti();
+}
+
+func clear() {
+    fast_clear(THEME.bg);
+    CONSOLE_X = 0;
+    CONSOLE_Y = 0;
+}
+
+func panic_clear() {
+    fast_clear(0x000000FF); # Red Background for Panic
+    CONSOLE_X = 0;
+    CONSOLE_Y = 0;
+}
+
+func put_char(c: u8) {
+    var fg = THEME.fg;
+    var bg = THEME.bg;
+    
+    if (c == 10) { # '\n'
+        CONSOLE_X = 0;
+        CONSOLE_Y += 1;
+        if (CONSOLE_Y >= CONSOLE_HEIGHT) {
+            CONSOLE_Y = CONSOLE_HEIGHT - 1;
+            # scroll_screen(1); # TO-DO
+        }
+    } else if (c == 13) { # '\r'
+        CONSOLE_X = 0;
+    } else {
+        if (FRAMEBUFFER_ADDR != 0) {
+            # Graphics Mode
+            c_draw_char(CONSOLE_X as i32, CONSOLE_Y as i32, c as u32, fg, bg);
+        } else {
+            # VGA Text Mode
+            var vga_buffer = VGA_HHDM_ADDR as *u16;
+            var offset = (CONSOLE_Y * 80) + CONSOLE_X;
+            var vga_char: u16 = (c as u16) | (0x0F << 8);
+            ptr::write_volatile(vga_buffer + offset * 2, vga_char);
+        }
+        
+        CONSOLE_X += 1;
+        if (CONSOLE_X >= CONSOLE_WIDTH) {
+            CONSOLE_X = 0;
+            CONSOLE_Y += 1;
+        }
+    }
+}
+
+func emergency_put_str(s: String) {
+    # Lightweight, lock-free print for panics
+    var i = 0;
+    var bytes = s.bytes();
+    while (i < bytes.len()) {
+        put_char(bytes.get(i));
+        i += 1;
+    }
+}

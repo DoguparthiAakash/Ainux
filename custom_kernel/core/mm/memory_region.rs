@@ -85,7 +85,7 @@ impl MemoryRegion {
 
 /// A cache-friendly tree map for memory regions.
 /// Currently implemented via BTreeMap.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RegionMap {
     /// Maps region `start` address to the `MemoryRegion`.
     regions: BTreeMap<u64, MemoryRegion>,

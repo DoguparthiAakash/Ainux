@@ -350,26 +350,41 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         61 => { // sys_wait4(pid, status, options, rusage)
             crate::process::scheduler::sys_wait4(a1 as isize, a2, a3 as i32, a4) as u64
         },
-        0 => { // Sys_read (fd, buf, len)
+        0 => { // sys_read(fd, buf, len)
              let fd = a1 as usize;
              let len = a3 as usize;
              if len == 0 || len > 8192 { return u64::MAX; }
              
-             // Check if STDIN
-             if fd == 0 {
-                 if let Some(c) = crate::drivers::keyboard::pop_char() {
-                     let mut buf = [c as u8; 1];
-                     if crate::mm::user::copy_to_user(a2 as *mut u8, &buf[0..1]).is_ok() {
-                         return 1;
+             // Check if process has remapped fd 0 (e.g. via dup2 from a pipe).
+             // If fd 0 is backed by a real file/pipe, route through process_read.
+             let has_real_fd0 = if fd == 0 {
+                 crate::cpu::without_interrupts(|| {
+                     let tasks = crate::process::scheduler::TASKS.lock();
+                     let pid = crate::process::scheduler::get_current_pid();
+                     tasks[pid].as_ref()
+                         .map_or(false, |t| t.fds.get_fd(0).is_some())
+                 })
+             } else { true };
+             
+             if fd == 0 && !has_real_fd0 {
+                 // Raw keyboard input (no pipe redirection)
+                 loop {
+                     if let Some(c) = crate::drivers::keyboard::pop_char() {
+                         let buf = [c as u8; 1];
+                         if crate::mm::user::copy_to_user(a2 as *mut u8, &buf[0..1]).is_ok() {
+                             return 1;
+                         } else {
+                             return u64::MAX;
+                         }
                      }
+                     crate::process::scheduler::yield_now();
                  }
-                 return 0; // Would block (0 bytes read for now)
              }
              
+             // fd is either non-zero, or fd=0 remapped to a pipe
              let mut buf = alloc::vec![0u8; len];
              let n = crate::process::scheduler::process_read(fd, &mut buf);
              if n >= 0 {
-                  // Copy back
                   if crate::mm::user::copy_to_user(a2 as *mut u8, &buf[0..n as usize]).is_ok() {
                       n as u64
                   } else {
@@ -922,10 +937,19 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
                 u64::MAX
             }
         },
-        22 => { // sys_pipe() -> (r << 32 | w)
+        22 => { // sys_pipe(pipefd) — Linux ABI: write (r_fd, w_fd) to pipefd[0..1]
+             let pipefd_ptr = a1 as *mut i32;
+             if pipefd_ptr.is_null() || !crate::mm::user::validate_user_range(a1, 8) {
+                 return u64::MAX;
+             }
              let (r, w) = crate::process::scheduler::process_pipe();
-             if r == -1 { u64::MAX }
-             else { ((r as u64) << 32) | (w as u64) }
+             if r == -1 { return u64::MAX; }
+             // Write fds back to user-space buffer
+             unsafe {
+                 core::ptr::write_unaligned(pipefd_ptr, r as i32);
+                 core::ptr::write_unaligned(pipefd_ptr.add(1), w as i32);
+             }
+             0 // success
         },
         56 => { // sys_clone(entry, stack) -> pid
              if !crate::mm::user::validate_user_range(a2, 8) { return 0xFFFFFFFFFFFFFFFF; }

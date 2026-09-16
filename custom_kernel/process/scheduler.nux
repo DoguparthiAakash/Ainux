@@ -1,0 +1,129 @@
+# ainux::process::scheduler
+# Native Nux translation of the CPU Task Scheduler and Context Switcher
+
+import ainux::cpu;
+import ainux::process::task;
+import ainux::process::cell;
+import ainux::mm::vmm;
+
+var MAX_TASKS: usize = 16;
+var TASKS: task::TaskArray;
+var FOREGROUND_PID: usize = 0;
+var TICKS: u64 = 0;
+var READY_BITMAP: u32 = 0;
+
+extern {
+    func __switch(old_ctx: *task::Context, new_ctx: *task::Context);
+}
+
+func set_ready(pid: usize) {
+    if (pid < MAX_TASKS) {
+        READY_BITMAP = READY_BITMAP | (1 << pid);
+    }
+}
+
+func clear_ready(pid: usize) {
+    if (pid < MAX_TASKS) {
+        READY_BITMAP = READY_BITMAP & (~(1 << pid));
+    }
+}
+
+func init() {
+    cpu::cli();
+    
+    TASKS = new task::TaskArray(MAX_TASKS);
+    var root_cell = cell::CELL_MANAGER.cells.get(0);
+    
+    var task0 = new task::Task();
+    task0.init(0, "kernel", root_cell);
+    task0.state = task::RUNNING;
+    
+    TASKS.set(0, task0);
+    clear_ready(0);
+    
+    cpu::sti();
+}
+
+func schedule() {
+    cpu::cli();
+    
+    var current_pid = cpu::smp::get_current_pid();
+    
+    # 1. Very fast O(1) bitmask check for next ready task
+    var mask = READY_BITMAP;
+    var next_pid: usize = 0;
+    var found = false;
+    
+    # Trailing zeros bit-scan
+    var i = 1;
+    while (i < MAX_TASKS) {
+        if ((mask & (1 << i)) != 0) {
+            next_pid = i;
+            found = true;
+            break;
+        }
+        i += 1;
+    }
+    
+    if (!found) {
+        var current_task = TASKS.get(current_pid);
+        if (current_task.state == task::RUNNING) {
+            cpu::sti();
+            return;
+        }
+        next_pid = 0; # Idle task
+    }
+    
+    if (next_pid == current_pid) {
+        cpu::sti();
+        return;
+    }
+    
+    var old_task = TASKS.get(current_pid);
+    var next_task = TASKS.get(next_pid);
+    
+    if (old_task.state == task::RUNNING) {
+        old_task.state = task::READY;
+        set_ready(current_pid);
+    }
+    
+    next_task.state = task::RUNNING;
+    clear_ready(next_pid);
+    
+    cpu::smp::set_current_pid(next_pid);
+    
+    # Switch CR3 (Page Tables)
+    var next_cr3 = next_task.cr3;
+    if (next_cr3 != 0) {
+        asm { "mov cr3, {next_cr3}" }
+    } else {
+        var kernel_cr3 = vmm::KERNEL_PML4;
+        asm { "mov cr3, {kernel_cr3}" }
+    }
+    
+    # The actual register swap
+    var old_ctx_ptr = old_task.context_ptr();
+    var next_ctx_ptr = next_task.context_ptr();
+    
+    __switch(old_ctx_ptr, next_ctx_ptr);
+    
+    cpu::sti();
+}
+
+func tick() {
+    TICKS += 1;
+    
+    # Find next task to run
+    if (TICKS % 20 == 0) {
+        # reap_any_zombie();
+    }
+    
+    schedule();
+}
+
+@[interrupt]
+func timer_isr() {
+    # Send End Of Interrupt
+    io::outb(0x20, 0x20);
+    tick();
+}

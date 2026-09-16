@@ -1,5 +1,7 @@
 #!/bin/bash
-set -ex
+set -x
+cd "$(dirname "$0")/.."
+set -e
 export PATH="$PATH:$HOME/.cargo/bin"
 
 # Build C and ASM
@@ -21,8 +23,8 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-m
 
 # Build ISO
 echo "Building ISO..."
-chmod +x build_iso.sh
-./build_iso.sh || { echo "ISO creation failed"; exit 1; }
+chmod +x scripts/build_iso.sh
+./scripts/build_iso.sh || { echo "ISO creation failed"; exit 1; }
 
 # Create Staging Directory for Disk3
 echo "Preparing disk3.img contents..."
@@ -109,30 +111,34 @@ cp user_space/target/x86_64-unknown-none/release/deskd disk3_root/bin/deskd.elf
 cp user_space/target/x86_64-unknown-none/release/posixd disk3_root/bin/posixd.elf
 cp user_space/target/x86_64-unknown-none/release/fsd disk3_root/bin/fsd.elf
 cp user_space/target/x86_64-unknown-none/release/hwtest disk3_root/bin/hwtest.elf
+cp user_space/target/x86_64-unknown-none/release/grep disk3_root/bin/grep.elf
+cp user_space/target/x86_64-unknown-none/release/netd disk3_root/bin/netd.elf
+cp user_space/target/x86_64-unknown-none/release/terminald disk3_root/bin/terminald
+cp user_space/target/x86_64-unknown-none/release/sh disk3_root/bin/sh
 
-echo "Injecting compilers..."
-cp compilers/picoc/picoc disk3_root/bin/picoc
-cp compilers/tinycc/tcc disk3_root/bin/tcc
-# Copy musl-libc headers and libraries for TCC self-hosting
-cp -r musl-libc/sysroot/include/* disk3_root/usr/include/
-cp -r musl-libc/sysroot/lib/* disk3_root/usr/lib/
-# TinyCC also needs its own headers (like stdarg.h) and libtcc1.a
-mkdir -p disk3_root/usr/lib/tcc/include
-cp compilers/tinycc/include/*.h disk3_root/usr/lib/tcc/include/
-cp compilers/tinycc/libtcc1.a disk3_root/usr/lib/tcc/
+echo "Injecting LLVM compiler (via statically linked Zig as clang)..."
+if [ -f "compilers/zig-linux-x86_64-0.11.0/zig" ]; then
+    cp compilers/zig-linux-x86_64-0.11.0/zig disk3_root/bin/clang
+    # Optionally symlink or copy as lld, cc, etc.
+    # ln -s clang disk3_root/bin/cc
+else
+    echo "Warning: Zig/LLVM static binary not found in compilers/zig-linux-x86_64-0.11.0/zig"
+fi
 
 # Hybrid Nux-LLVM Compiler Step
 echo "Building test.nux using LLVM Hybrid Compiler..."
 python3 tools/nux_llvm.py tools/test.nux tools/test.ll
 if command -v clang >/dev/null 2>&1; then
     clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 tools/test.ll -o disk3_root/bin/test.elf
+    echo "Building C programs (awk) using LLVM..."
+    clang -target x86_64-unknown-none-elf -nostdlib -fno-pic -fPIE -O3 c_src/programs/awk.c -o disk3_root/bin/awk.elf
 else
     echo "Warning: Clang not installed. Skipping LLVM backend compilation step."
     echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
 fi
 
-echo "Creating disk3.img (128MB)..."
-dd if=/dev/zero of=disk3.img bs=1M count=128
+echo "Creating disk3.img (256MB)..."
+dd if=/dev/zero of=disk3.img bs=1M count=256
 mkfs.ext4 -d disk3_root -O ^extents,^64bit,^dir_index -F disk3.img || { echo "mkfs.ext4 failed"; exit 1; }
 
 

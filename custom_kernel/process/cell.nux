@@ -1,0 +1,122 @@
+# ainux::process::cell
+# Nux Native translation of the Sovereign Execution Cell.
+
+import std::collections::List;
+import ainux::fs::vfs;
+import ainux::security::cap;
+import ainux::net;
+import ainux::process::room;
+
+class CellQuota {
+    var max_tasks: u32;
+    var max_memory_pages: u32;
+    var max_fds: u32;
+    var max_fuel: u64;
+    
+    func init() {
+        this.max_tasks = 32;
+        this.max_memory_pages = 4096;
+        this.max_fds = 64;
+        this.max_fuel = 1000000;
+    }
+}
+
+class Namespace {
+    var root_inode: vfs::ArcInode;
+    var mounts: List;
+    
+    func init() {
+        this.mounts = new List();
+        this.mounts.init();
+    }
+}
+
+class CellState {
+    var state: u8;
+    # 0 = Active, 1 = Suspended, 2 = Dormant, 3 = Degraded
+    func init(s: u8) { this.state = s; }
+}
+
+class ExecutionCell {
+    var id: u32;
+    var name: String;
+    var quota: CellQuota;
+    var parent_id: u32; # 0 for root
+    var namespace: Namespace;
+    var caps: cap::CapTable;
+    var state: CellState;
+    var fuel: u64;
+    var fuel_limit: u64;
+    # Strategy could be an interface/trait, represented here as an ID or class
+    var strategy_id: u8; 
+    
+    func init(id: u32, name: String, parent_id: u32, strat_id: u8) {
+        this.id = id;
+        this.name = name;
+        this.parent_id = parent_id;
+        this.strategy_id = strat_id;
+        
+        this.quota = new CellQuota();
+        this.quota.init();
+        
+        this.fuel = this.quota.max_fuel;
+        this.fuel_limit = this.quota.max_fuel;
+        
+        this.namespace = new Namespace();
+        this.namespace.init();
+        
+        this.caps = new cap::CapTable();
+        this.caps.init();
+        
+        this.state = new CellState();
+        this.state.init(0);
+    }
+    
+    func consume_fuel(amount: u64) {
+        if (this.fuel > amount) {
+            this.fuel = this.fuel - amount;
+        } else {
+            this.fuel = 0;
+        }
+    }
+    
+    func replenish_fuel() {
+        this.fuel = this.fuel_limit;
+    }
+}
+
+class CellManager {
+    var cells: List;
+    var next_id: u32;
+    
+    func init() {
+        this.cells = new List();
+        this.cells.init();
+        this.next_id = 1;
+    }
+    
+    func add_cell(cell: ExecutionCell) {
+        this.cells.append(cell);
+    }
+}
+
+var CELL_MANAGER = new CellManager();
+
+func init() {
+    CELL_MANAGER.init();
+    var root_cell = new ExecutionCell();
+    # 0 for parent, 1 for FairShareStrategy
+    root_cell.init(0, "root", 0, 1);
+    CELL_MANAGER.add_cell(root_cell);
+}
+
+func create_cell(name: String, parent_id: u32) -> ExecutionCell {
+    var id = CELL_MANAGER.next_id;
+    CELL_MANAGER.next_id += 1;
+    
+    var cell = new ExecutionCell();
+    # Defaulting new cells to inherit strategy, assumed 1 for now
+    cell.init(id, name, parent_id, 1);
+    CELL_MANAGER.add_cell(cell);
+    return cell;
+}

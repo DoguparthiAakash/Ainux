@@ -1,4 +1,5 @@
 pub mod scheduler;
+pub mod ipc;
 
 pub fn init() {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);

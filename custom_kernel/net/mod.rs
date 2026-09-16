@@ -163,12 +163,25 @@ pub fn poll() {
                 if let Some(event) = socket.poll() {
                     match event {
                         dhcpv4::Event::Configured(config) => {
-                            crate::drivers::video::put_str(&alloc::format!("Net: Cell DHCP Configured! IP: {}\n", config.address));
+                            let mut already_configured = false;
                             stack.iface.update_ip_addrs(|addrs| {
-                                addrs.push(IpCidr::Ipv4(config.address)).unwrap();
+                                if !addrs.iter().any(|a| a == &IpCidr::Ipv4(config.address)) {
+                                    addrs.clear();
+                                    if let Err(_) = addrs.push(IpCidr::Ipv4(config.address)) {
+                                        // Ignore push error if full
+                                    }
+                                } else {
+                                    already_configured = true;
+                                }
                             });
-                            if let Some(router) = config.router {
-                                stack.iface.routes_mut().add_default_ipv4_route(router).unwrap();
+                            
+                            if !already_configured {
+                                crate::drivers::video::put_str(&alloc::format!("Net: Cell DHCP Configured! IP: {}\n", config.address));
+                                if let Some(router) = config.router {
+                                    if let Err(_) = stack.iface.routes_mut().add_default_ipv4_route(router) {
+                                        // Ignore route error
+                                    }
+                                }
                             }
                         }
                         dhcpv4::Event::Deconfigured => {

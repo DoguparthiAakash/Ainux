@@ -24,6 +24,24 @@ pub extern "C" fn syscall_handler(
     arg5: usize,
     arg6: usize,
 ) -> usize {
+    let sys_num_i = sys_num as isize;
+    
+    if sys_num_i < 0 {
+        crate::microkernel::ipc::handle_mach_trap(sys_num_i, arg1, arg2, arg3, arg4, arg5, arg6) as usize
+    } else {
+        handle_bsd_syscall(sys_num, arg1, arg2, arg3, arg4, arg5, arg6)
+    }
+}
+
+fn handle_bsd_syscall(
+    sys_num: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+    arg6: usize,
+) -> usize {
     match sys_num {
         SYS_READ => {
             let fd = arg1;
@@ -97,6 +115,21 @@ pub extern "C" fn syscall_handler(
             crate::process::scheduler::exit_current_task(exit_code);
             0
         }
+        41 => { // SYS_SOCKET
+            crate::net::sys_socket(arg1 as i32, arg2 as i32, arg3 as i32) as usize
+        }
+        42 => { // SYS_CONNECT
+            crate::net::sys_connect(arg1, arg2 as *const u8, arg3) as usize
+        }
+        43 => { // SYS_ACCEPT
+            crate::net::sys_accept(arg1) as usize
+        }
+        49 => { // SYS_BIND
+            crate::net::sys_bind(arg1, arg2 as *const u8, arg3) as usize
+        }
+        50 => { // SYS_LISTEN
+            crate::net::sys_listen(arg1, arg2 as i32) as usize
+        }
         _ => {
             crate::println!("Unknown syscall: {}", sys_num);
             usize::MAX
@@ -108,75 +141,5 @@ pub extern "C" fn syscall_handler(
 // Low-Level Syscall Assembly Entry Point
 // ----------------------------------------------------------------------------
 
-// When user-space executes `syscall`, the CPU jumps here.
-// R11 = RFLAGS, RCX = RIP.
-// The syscall number is in RAX. Arguments in RDI, RSI, RDX, R10, R8, R9.
-global_asm!(r#"
-.global syscall_entry
-syscall_entry:
-    // Swap GS base to load kernel stack pointer
-    swapgs
-    
-    // Save user stack pointer
-    mov gs:[0x10], rsp
-    // Load kernel stack pointer
-    mov rsp, gs:[0x08]
-    
-    // Preserve registers according to System V ABI
-    push rcx // User RIP
-    push r11 // User RFLAGS
-    push rbp
-    push rbx
-    push r12
-    push r13
-    push r14
-    push r15
-    
-    // We have:
-    // sys_num = RAX
-    // arg1 = RDI
-    // arg2 = RSI
-    // arg3 = RDX
-    // arg4 = R10
-    // arg5 = R8
-    // arg6 = R9
-    
-    // We need for System V ABI:
-    // arg1 (sys_num) = RDI
-    // arg2 (arg1)    = RSI
-    // arg3 (arg2)    = RDX
-    // arg4 (arg3)    = RCX
-    // arg5 (arg4)    = R8
-    // arg6 (arg5)    = R9
-    // arg7 (arg6)    = stack
-    
-    push r9      // arg6 on stack
-    mov r9, r8   // arg5 to R9
-    mov r8, r10  // arg4 to R8
-    mov rcx, rdx // arg3 to RCX
-    mov rdx, rsi // arg2 to RDX
-    mov rsi, rdi // arg1 to RSI
-    mov rdi, rax // sys_num to RDI
-    
-    call syscall_handler
-    
-    // Clean up the 7th argument from stack
-    add rsp, 8
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbx
-    pop rbp
-    pop r11
-    pop rcx
-    
-    // Restore user stack
-    mov rsp, gs:[0x10]
-    
-    // Swap GS back to user space
-    swapgs
-    
-    // Return to user space
-    sysretq
-"#);
+// The low-level syscall assembly entry point `syscall_entry` is defined in
+// `arch/x86_64/asm/syscall.asm` and linked during the build process.

@@ -450,7 +450,8 @@ fn boot_menu() {
                     } else {
                         crate::drivers::video::put_str("Failed to load /bin/terminald\n");
                     }
-                    return;
+                    // Keep scheduler running — tasks need CPU time
+                    loop { unsafe { asm!("hlt"); } }
                 },
                 '2' => {
                     drivers::video::put_str("2\n");
@@ -511,7 +512,8 @@ fn boot_menu() {
                     } else {
                         crate::drivers::video::put_str("Failed to load /bin/terminald\n");
                     }
-                    return;
+                    // Keep scheduler running — tasks need CPU time
+                    loop { unsafe { asm!("hlt"); } }
                 },
                 '2' => {
                     drivers::video::put_str("2\n");

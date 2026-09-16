@@ -1,0 +1,88 @@
+@[no_std]
+module ainux::core::main;
+
+import std::arch::io;
+import std::ptr;
+import ainux::drivers::serial;
+import ainux::drivers::video;
+import ainux::cpu;
+import ainux::mm;
+
+# Import the physical end of the kernel from the linker script
+extern {
+    var __bss_end: u8;
+}
+
+# The Global Panic Handler for the OS
+@[panic_handler]
+func panic(info: String) {
+    # 1. Emergency Serial Output
+    serial::puts("\n\n!!! KERNEL PANIC !!!\n");
+    serial::puts("Info: ");
+    serial::puts(info);
+    serial::puts("\n");
+    
+    # 2. Emergency Video Output (Lockless & Allocation-Free)
+    video::panic_clear();
+    video::emergency_put_str("               --- KERNEL PANIC ---\n\n");
+    video::emergency_put_str("A system failure has occurred.\n\n");
+    video::emergency_put_str("System Halted.\n");
+    
+    # Halt indefinitely
+    while (true) {
+        asm { "hlt" }
+    }
+}
+
+func hlt() {
+    asm { "hlt" }
+}
+
+func sti() {
+    asm { "sti" }
+}
+
+# The true GRUB/Multiboot entry point
+@[entry]
+func kmain() {
+    serial::init(0x3F8);
+    serial::puts("\n");
+    serial::puts("╔══════════════════════════════════════════════════╗\n");
+    serial::puts("║          AINUX KERNEL v0.3 (Pure Nux)            ║\n");
+    serial::puts("║    Advanced Interrupt & Nucleus Unix eXtended    ║\n");
+    serial::puts("╚══════════════════════════════════════════════════╝\n");
+    serial::puts("\n");
+
+    # ─── Phase 0: CPU Detection & Architecture Foundation ───
+    serial::puts("── Phase 0: CPU/BSS Init ──\n");
+    cpu::cpuid::init();
+
+    serial::puts("Initializing GDT...\n");
+    cpu::gdt::init();
+    serial::puts("GDT Initialized.\n");
+
+    serial::puts("Initializing IDT...\n");
+    cpu::idt::init();
+    serial::puts("IDT Initialized.\n");
+
+    serial::puts("Phase 0 Complete.\n");
+
+    # ─── Phase 1: Memory Subsystem ───
+    serial::puts("\n── Phase 1: Memory Subsystem ──\n");
+    serial::puts("Initializing PMM (Multiboot)...\n");
+    mm::pmm::init();
+    serial::puts("PMM Initialized.\n");
+    
+    # Strict Memory Usage Checks using the extern linker symbol
+    var kernel_end_addr = ptr::address_of(__bss_end);
+    
+    # ─── Finalize Boot & Enable Preemption ───
+    serial::puts("DEBUG: Enabling Interrupts (STI)...\n");
+    sti();
+    serial::puts("Kernel: Fully Sovereign. STI successful.\n");
+
+    # Boot Menu Spinloop
+    while (true) {
+        hlt();
+    }
+}

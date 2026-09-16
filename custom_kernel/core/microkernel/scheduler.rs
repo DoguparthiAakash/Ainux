@@ -76,19 +76,27 @@ pub extern "C" fn microkernel_schedule(old_rsp: u64) -> u64 {
         crate::cpu::pic::notify_eoi(0);
     }
 
-    let mut envs = KERNEL_ENVIRONMENTS.lock();
-    if envs.is_empty() {
-        return old_rsp; // No environments, do nothing.
-    }
+    let is_monolithic = {
+        let mut envs = KERNEL_ENVIRONMENTS.lock();
+        if envs.is_empty() {
+            return old_rsp; // No environments, do nothing.
+        }
 
-    let current_id = unsafe { CURRENT_KERNEL_ID } as usize;
-    envs[current_id].context.rsp = old_rsp;
-    envs[current_id].is_running = false;
+        let current_id = unsafe { CURRENT_KERNEL_ID } as usize;
+        envs[current_id].context.rsp = old_rsp;
+        envs[current_id].is_running = false;
+        envs[current_id].ktype == KernelType::MonolithicCore
+    };
 
-    // Tick the monolithic kernel's internal process scheduler if it was running
-    if envs[current_id].ktype == KernelType::MonolithicCore {
+    // Tick the monolithic kernel's internal process scheduler if it was running.
+    // MUST be called without KERNEL_ENVIRONMENTS lock, because tick() can perform
+    // a context switch and suspend this execution path.
+    if is_monolithic {
         crate::process::scheduler::tick();
     }
+
+    let mut envs = KERNEL_ENVIRONMENTS.lock();
+    let current_id = unsafe { CURRENT_KERNEL_ID } as usize;
 
     // Priority + Round Robin Scheduling Algorithm:
     // 1. Try to schedule the Monolithic Core (highest priority) 75% of the time.
@@ -107,7 +115,11 @@ pub extern "C" fn microkernel_schedule(old_rsp: u64) -> u64 {
     unsafe { CURRENT_KERNEL_ID = next_id as u64 };
 
     // Return the new stack pointer to the assembly stub
-    envs[next_id].context.rsp
+    if next_id == current_id {
+        old_rsp
+    } else {
+        envs[next_id].context.rsp
+    }
 }
 
 // ----------------------------------------------------------------------------

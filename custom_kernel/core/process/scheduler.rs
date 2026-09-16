@@ -1055,8 +1055,12 @@ pub fn sys_fork(state: *const SyscallState) -> isize {
 
         for i in 0..MAX_TASKS {
             if tasks[i].is_none() || tasks[i].as_ref().unwrap().state == TaskState::Free {
-                // Duplicate address space (stub for Phase 2)
-                let new_address_space = alloc::sync::Arc::new(spin::Mutex::new(crate::mm::address_space::AddressSpace::new_user()));
+                // Duplicate address space
+                let new_address_space = if let Some(parent_as) = tasks[current_pid].as_ref().unwrap().address_space.as_ref() {
+                    alloc::sync::Arc::new(spin::Mutex::new(parent_as.lock().clone()))
+                } else {
+                    return -1; // OOM or Error
+                };
                 let new_cr3 = new_address_space.lock().pml4_phys;
                 if new_cr3 == 0 {
                     return -1; // OOM

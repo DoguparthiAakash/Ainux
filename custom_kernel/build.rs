@@ -64,14 +64,14 @@ fn c_source_files() -> Vec<String> {
     files.push("c_src/crypto/aes.c".to_string());
     
     // BSD Multi-Kernel C-Integration testing
-    // Temporarily disabled due to missing untracked bsd_compat headers
-    // files.push("c_src/bsd_external/openbsd/lib/libc/string/explicit_bzero.c".to_string());
+    // Compiling OpenBSD's explicit_bzero.c to verify the cross-compiler and shim
+    files.push("c_src/bsd_external/openbsd/lib/libc/string/explicit_bzero.c".to_string());
     
     // FreeBSD VFS integration
-    // files.push("c_src/bsd_external/freebsd/sys/kern/vfs_init.c".to_string());
+    files.push("c_src/bsd_external/freebsd/sys/kern/vfs_init.c".to_string());
     
     // NetBSD Networking Source
-    // files.push("external/netbsd-src/sys/net/if.c".to_string());
+    files.push("external/netbsd-src/sys/net/if.c".to_string());
     
     files
 }
