@@ -55,7 +55,7 @@ qemu-system-x86_64 \
     $DISK_ARG \
     $ACCEL \
     -vga std \
-    -display gtk \
+    -vnc 127.0.0.1:0 \
     -serial file:"$SCRIPT_DIR/serial.log" \
     -net nic,model=rtl8139 \
     -net user

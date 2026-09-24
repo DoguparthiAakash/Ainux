@@ -132,7 +132,7 @@ impl SettingsApp {
         };
 
         let items = [
-            ("System", "Ainux OS"),
+            ("System", "Mithl OS"),
             ("Version", "1.0.0-alpha"),
             ("Architecture", "x86_64"),
             ("Ticks", ""),

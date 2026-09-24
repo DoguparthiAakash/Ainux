@@ -23,4 +23,5 @@ pub mod bmp;
 pub mod browser_app;
 
 pub mod test3d {
-    pub fn 
+    pub fn run(_arg: &str) {}
+}

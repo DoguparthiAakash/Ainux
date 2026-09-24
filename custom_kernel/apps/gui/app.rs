@@ -115,4 +115,12 @@ impl AppType {
             AppType::Chess(app)       => app.on_key_event(c),
             AppType::Sudoku(app)       => app.on_key_event(c),
             AppType::FileManager(app)  => app.on_key_event(c),
-            AppType::Settings(app)     => app.on_key_event
+            AppType::Settings(app)     => app.on_key_event(c),
+            AppType::TaskManager(app)  => app.on_key_event(c),
+            AppType::SysMon(app)       => app.on_key_event(c),
+            AppType::Paint(app)        => app.on_key_event(c),
+            AppType::Browser(app)      => app.on_key_event(c),
+            AppType::None              => {},
+        }
+    }
+}

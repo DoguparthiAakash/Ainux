@@ -91,4 +91,20 @@ impl Window {
         let by = self.y + self.height - 12;
         mx >= bx && mx <= bx + 12 && my >= by && my <= by + 12
     }
+
+    pub fn check_resize_zone(&self, mx: i32, my: i32) -> Option<u8> {
+        let b = 4;
+        // 0: Right, 1: Bottom, 2: BottomRight, 3: Left, 4: Top
+        let right = mx >= self.x + self.width - b && mx <= self.x + self.width + b && my >= self.y - 24 && my <= self.y + self.height;
+        let bottom = my >= self.y + self.height - b && my <= self.y + self.height + b && mx >= self.x && mx <= self.x + self.width;
+        let left = mx >= self.x - b && mx <= self.x + b && my >= self.y - 24 && my <= self.y + self.height;
+        let top = my >= self.y - 24 - b && my <= self.y - 24 + b && mx >= self.x && mx <= self.x + self.width;
+        
+        if right && bottom { return Some(2); }
+        if right { return Some(0); }
+        if bottom { return Some(1); }
+        if left { return Some(3); }
+        if top { return Some(4); }
+        None
+    }
 }
