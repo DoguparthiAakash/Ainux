@@ -53,33 +53,39 @@ static ALLOCATOR: HybridAllocator = HybridAllocator::empty();
 pub const HEAP_START: usize = 0xFFFF_A000_0000_0000;
 
 pub fn init() {
-    init_custom(512 * 1024); // 512KB heap default for memory constrained environments
+    // Default: 64MB heap. init_custom will auto-scale based on available physical RAM.
+    init_custom(64 * 1024 * 1024);
 }
 
 pub fn init_custom(heap_size: usize) {
     let total_mem = crate::mm::pmm::TOTAL_MEMORY.load(core::sync::atomic::Ordering::Relaxed) as usize;
-    
-    // Strictly enforce 1MB maximum heap for memory constrained environments
-    let actual_size = if total_mem > 0 && total_mem <= 2 * 1024 * 1024 {
-        total_mem / 8 // Use 1/8th of RAM for heap in extremely constrained environments (256KB for 2MB RAM)
-    } else if total_mem > 0 && total_mem < (heap_size * 2) {
+
+    // Auto-scale the heap based on available system RAM:
+    //   <= 32MB  -> use 25% for heap
+    //   <= 128MB -> use 30% for heap
+    //   <= 512MB -> use 40% for heap
+    //   > 512MB  -> use 50% for heap (generous; kernel allocator and user space both benefit)
+    let ideal_heap = if total_mem > 0 && total_mem <= 32 * 1024 * 1024 {
         total_mem / 4
+    } else if total_mem > 0 && total_mem <= 128 * 1024 * 1024 {
+        total_mem * 30 / 100
+    } else if total_mem > 0 && total_mem <= 512 * 1024 * 1024 {
+        total_mem * 40 / 100
+    } else if total_mem > 0 {
+        total_mem / 2
     } else {
-        heap_size
+        heap_size // caller-provided fallback
     };
-    
-    // The user strictly requested < 2MB for the kernel heap footprint.
-    let heap_size = actual_size.min(1900 * 1024); // at most 1.9MB
-    
-    // Also cap by available physical memory
+
+    // Never allocate more than what is physically free.
     let (allocated, usable) = crate::mm::pmm::PMM.lock().as_ref().unwrap().get_stats_fast();
     let free_frames = usable.saturating_sub(allocated);
     let max_possible_heap = free_frames * 4096;
-    let heap_size = if heap_size > max_possible_heap {
-        if max_possible_heap > 4096 * 4 { max_possible_heap - 4096 * 4 } else { 4096 } // leave a few frames for other things
-    } else {
-        heap_size
-    };
+    // Keep at least 512 frames (2MB) free for the OS after the heap is created.
+    let headroom = 512 * 4096;
+    let capped = if max_possible_heap > headroom { max_possible_heap - headroom } else { 4096 };
+
+    let heap_size = ideal_heap.min(capped).max(4096); // always at least one page
 
     let pages = (heap_size + 4095) / 4096;
     let mut current_addr = HEAP_START;

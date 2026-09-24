@@ -51,3 +51,4 @@ replay_pid*.log
 Thumbs.db
 desktop.ini
 custom_kernel/compilers/
+external/

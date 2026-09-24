@@ -47,7 +47,7 @@ impl Drop for FlushGuard {
     fn drop(&mut self) {
         if self.0 {
             crate::drivers::video::AUTO_FLUSH.store(true, core::sync::atomic::Ordering::Relaxed);
-            crate::drivers::video::flush_screen();
+            // flush_screen();
         }
     }
 }
@@ -60,7 +60,7 @@ pub fn sh_put_str(s: &str) {
     if let Some(handle) = out.as_ref() {
         let _ = handle.write(s.as_bytes(), 0);
     } else {
-        video::put_str(s);
+        crate::drivers::video::put_str(s);
     }
 }
 
@@ -71,7 +71,25 @@ pub fn sh_put_char(c: char) {
         let s = c.encode_utf8(&mut buf);
         let _ = handle.write(s.as_bytes(), 0);
     } else {
-        video::put_char(c);
+        crate::drivers::video::put_char(c);
+    }
+}
+
+pub fn sh_put_str_colored(s: &str, f_col: u32, b_col: u32) {
+    let mut out = CURRENT_OUT.lock();
+    if let Some(handle) = out.as_ref() {
+        let _ = handle.write(s.as_bytes(), 0);
+    } else {
+        crate::drivers::video::put_str_colored(s, f_col, b_col);
+    }
+}
+
+pub fn sh_clear() {
+    let out = CURRENT_OUT.lock();
+    if let Some(_) = out.as_ref() {
+        // Ignored when piped
+    } else {
+        crate::drivers::video::clear();
     }
 }
 
@@ -200,16 +218,16 @@ static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn redraw_line(buffer: &str, cursor_pos: usize, clear_trailing: bool) {
     let rest = &buffer[cursor_pos..];
-    crate::drivers::video::put_str(rest);
+    sh_put_str(rest);
     let mut chars_to_move_back = rest.chars().count();
     if clear_trailing {
-        crate::drivers::video::put_char(' '); // Clear potential trailing char
+        sh_put_char(' '); // Clear potential trailing char
         chars_to_move_back += 1;
     }
     
     // Move cursor back to `cursor_pos`
     for _ in 0..chars_to_move_back {
-        crate::drivers::video::put_str("\x08");
+        sh_put_str("\x08");
     }
 }
 
@@ -324,20 +342,20 @@ fn handle_tab_autocomplete(input_buffer: &mut String, cursor_pos: &mut usize) {
         input_buffer.push_str(remainder);
         if is_cmd {
             input_buffer.push(' ');
-            video::put_str(remainder);
-            video::put_char(' ');
+            sh_put_str(remainder);
+            sh_put_char(' ');
             *cursor_pos += remainder.len() + 1;
         } else {
-            video::put_str(remainder);
+            sh_put_str(remainder);
             *cursor_pos += remainder.len();
         }
     } else if matches.len() > 1 {
-        video::put_char('\n');
+        sh_put_char('\n');
         for m in matches {
-            video::put_str(&m);
-            video::put_str("  ");
+            sh_put_str(&m);
+            sh_put_str("  ");
         }
-        video::put_char('\n');
+        sh_put_char('\n');
         
         let cwd = get_cwd();
         let theme = video::THEME.lock();
@@ -346,13 +364,13 @@ fn handle_tab_autocomplete(input_buffer: &mut String, cursor_pos: &mut usize) {
         let b_col = theme.bg;
         drop(theme);
 
-        video::put_str_colored("╭─[", f_col, b_col);
-        video::put_str_colored("ainux@kernel", r_col, b_col);
-        video::put_str_colored("]─[", f_col, b_col);
-        video::put_str_colored(&cwd, 0x0000FF00, b_col);
-        video::put_str_colored("]\n╰─> ", f_col, b_col);
+        sh_put_str_colored("╭─[", f_col, b_col);
+        sh_put_str_colored("ainux@kernel", r_col, b_col);
+        sh_put_str_colored("]─[", f_col, b_col);
+        sh_put_str_colored(&cwd, 0x0000FF00, b_col);
+        sh_put_str_colored("]\n╰─> ", f_col, b_col);
 
-        video::put_str(input_buffer);
+        sh_put_str(input_buffer);
     }
 }
 
@@ -365,7 +383,7 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
     }
 
     if c == '\n' {
-        video::put_char('\n');
+        sh_put_char('\n');
     } else if c == '\x08' || c == '\x7F' { // Backspace or Delete
          if *cursor_pos > 0 && input_buffer.len() > 0 {
              let mut new_pos = *cursor_pos - 1;
@@ -376,7 +394,7 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              *cursor_pos = new_pos;
              
              // Redraw Line
-             video::put_str("\x08"); // Move back visual cursor
+             sh_put_str("\x08"); // Move back visual cursor
              redraw_line(input_buffer, *cursor_pos, true);
          }
     } else if c == '\u{2190}' { // Left Arrow
@@ -387,13 +405,13 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              }
              *cursor_pos = new_pos;
             // Use backspace to visually move left without erasing (video.rs updated)
-            video::put_str("\x08");
+            sh_put_str("\x08");
         }
     } else if c == '\u{2192}' { // Right Arrow
         if *cursor_pos < input_buffer.len() {
             let ch = input_buffer[*cursor_pos..].chars().next().unwrap();
             // Just re-printing the char advances the cursor
-            video::put_char(ch);
+            sh_put_char(ch);
             *cursor_pos += ch.len_utf8();
         }
     } else if c == '\u{2191}' { // Up Arrow (History Prev)
@@ -405,15 +423,15 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              
              // Clear visual line
              let chars_before = input_buffer[..*cursor_pos].chars().count();
-             for _ in 0..chars_before { video::put_str("\x08"); }
+             for _ in 0..chars_before { sh_put_str("\x08"); }
              let total_chars = input_buffer.chars().count();
-             for _ in 0..total_chars { video::put_char(' '); }
-             for _ in 0..total_chars { video::put_str("\x08"); }
+             for _ in 0..total_chars { sh_put_char(' '); }
+             for _ in 0..total_chars { sh_put_str("\x08"); }
              
              // Load history
              *input_buffer = hist[*history_index].clone();
              *cursor_pos = input_buffer.len();
-             video::put_str(input_buffer);
+             sh_put_str(input_buffer);
         }
     } else if c == '\u{2193}' { // Down Arrow (History Next)
         let hist = HISTORY.lock();
@@ -425,10 +443,10 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              
              // Clear visual line
              let chars_before = input_buffer[..*cursor_pos].chars().count();
-             for _ in 0..chars_before { video::put_str("\x08"); }
+             for _ in 0..chars_before { sh_put_str("\x08"); }
              let total_chars = input_buffer.chars().count();
-             for _ in 0..total_chars { video::put_char(' '); }
-             for _ in 0..total_chars { video::put_str("\x08"); }
+             for _ in 0..total_chars { sh_put_char(' '); }
+             for _ in 0..total_chars { sh_put_str("\x08"); }
              
              if *history_index == last_idx {
                  input_buffer.clear();
@@ -436,7 +454,7 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
                  *input_buffer = hist[*history_index].clone();
              }
              *cursor_pos = input_buffer.len();
-             video::put_str(input_buffer);
+             sh_put_str(input_buffer);
         }
     } else if c == '\t' {
         handle_tab_autocomplete(input_buffer, cursor_pos);
@@ -447,12 +465,12 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
              if input_buffer.len() < 128 {
                  if *cursor_pos == input_buffer.len() {
                      input_buffer.push(c);
-                     video::put_char(c);
+                     sh_put_char(c);
                      *cursor_pos += c.len_utf8();
                  } else {
                      // Insert in middle
                      input_buffer.insert(*cursor_pos, c);
-                     video::put_char(c); // Print the new char
+                     sh_put_char(c); // Print the new char
                      *cursor_pos += c.len_utf8();
                      
                      // Print rest (shifted right)
@@ -463,11 +481,16 @@ fn process_char(c: char, input_buffer: &mut String, cursor_pos: &mut usize, hist
      }
 }
 
+pub fn get_prompt() -> String {
+    let cwd = get_cwd();
+    format!("ainux@kernel:{} $ ", cwd)
+}
+
 pub fn run() {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
     let _ = write!(serial, "Shell: Run entered.\n");
 
-    video::put_str("\nWelcome to Ainux Shell! (Heap Enabled)\nType 'help' for commands.\n");
+    sh_put_str("\nWelcome to Ainux Shell! (Heap Enabled)\nType 'help' for commands.\n");
     let _ = write!(serial, "Shell: Welcome printed.\n");
     
     // Heap-based buffer
@@ -487,11 +510,11 @@ pub fn run() {
         let b_col = theme.bg;
         drop(theme);
 
-        video::put_str_colored("╭─[", f_col, b_col);
-        video::put_str_colored("ainux@kernel", r_col, b_col);
-        video::put_str_colored("]─[", f_col, b_col);
-        video::put_str_colored(&cwd, 0x0000FF00, b_col); // Green for path
-        video::put_str_colored("]\n╰─> ", f_col, b_col);
+        sh_put_str_colored("╭─[", f_col, b_col);
+        sh_put_str_colored("ainux@kernel", r_col, b_col);
+        sh_put_str_colored("]─[", f_col, b_col);
+        sh_put_str_colored(&cwd, 0x0000FF00, b_col); // Green for path
+        sh_put_str_colored("]\n╰─> ", f_col, b_col);
         
         input_buffer.clear();
         cursor_pos = 0;
@@ -704,14 +727,14 @@ fn execute_single_command(input: &str) {
              } else {
                  match root.create(filename, FileType::File) {
                      Ok(n) => n,
-                     Err(_) => { video::put_str("Redirection Error: Cannot create file.\n"); return; }
+                     Err(_) => { sh_put_str("Redirection Error: Cannot create file.\n"); return; }
                  }
              };
 
              if let Ok(handle) = target.open(0) {
                  *CURRENT_OUT.lock() = Some(handle);
              } else {
-                 video::put_str("Redirection Error: Cannot open file.\n");
+                 sh_put_str("Redirection Error: Cannot open file.\n");
                  return;
              }
         }
@@ -731,9 +754,9 @@ fn execute_single_command(input: &str) {
             cmd_sudo(&args);
         } else {
             if requires_root(cmd) && !is_root() {
-                video::put_str_colored("Access Denied: ", 0x00FF0000, 0);
-                video::put_str("This command requires Sovereign privileges.\n");
-                video::put_str("Try 'sudo <command>'.\n");
+                sh_put_str_colored("Access Denied: ", 0x00FF0000, 0);
+                sh_put_str("This command requires Sovereign privileges.\n");
+                sh_put_str("Try 'sudo <command>'.\n");
             } else {
                 execute_command_inner(cmd, &args, background);
             }
@@ -744,14 +767,33 @@ fn execute_single_command(input: &str) {
 fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
     match cmd {
             "help" => cmd_help(),
-            "clear" => video::clear(),
+            "clear" => sh_clear(),
             "whoami" => cmd_whoami(),
             "time" => cmd_time(),
             "shutdown" => cmd_shutdown(),
             "passwd" => cmd_passwd(&args),
             "nvix" => crate::apps::nvi::cmd_nvix(&args),
             "acc" | "tcc" => cmd_exec(args, background),
-            "nuxc" | "gcc" | "clang" | "llvm" | "cc" => crate::apps::nuxc::cmd_nuxc(&args),
+            "nuxc" | "nuxc-mini" => crate::apps::nuxc::cmd_nuxc(&args),
+            "clang" | "cc" | "gcc" => {
+                let mut exec_args = alloc::vec::Vec::new();
+                exec_args.push("exec");
+                exec_args.push("/usr/bin/clang.elf");
+                exec_args.push("--sysroot=/usr");
+                if args.len() > 1 {
+                    exec_args.extend_from_slice(&args[1..]);
+                }
+                cmd_exec(&exec_args, background);
+            },
+            "ld" | "lld" => {
+                let mut exec_args = alloc::vec::Vec::new();
+                exec_args.push("exec");
+                exec_args.push("/usr/bin/lld.elf");
+                if args.len() > 1 {
+                    exec_args.extend_from_slice(&args[1..]);
+                }
+                cmd_exec(&exec_args, background);
+            },
             "nuxa" => crate::apps::nuxa::cmd_nuxa(&args),
             "nuxv" => crate::apps::nuxv::cmd_nuxv(&args),
             "disk" | "deskd" => cmd_exec(&["exec", "/bin/deskd.elf"], background),
@@ -769,11 +811,11 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "awm" => crate::apps::awm::cmd_awm(&args),
             "telnetd" => {
                 crate::process::scheduler::spawn(crate::apps::telnetd::main, "telnetd");
-                video::put_str("telnetd spawned in background.\n");
+                sh_put_str("telnetd spawned in background.\n");
             },
             "ftpd" => {
                 crate::process::scheduler::spawn(crate::apps::ftpd::main, "ftpd");
-                video::put_str("ftpd spawned in background.\n");
+                sh_put_str("ftpd spawned in background.\n");
             },
             "ftp" => crate::apps::ftp::cmd_ftp(&args),
             "free" => cmd_free(),
@@ -851,7 +893,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "game" => cmd_game(&args),
             "cd" => cmd_cd(&args),
             "play" => cmd_play(&args),
-            "pwd" => { video::put_str(&get_cwd()); video::put_char('\n'); },
+            "pwd" => { sh_put_str(&get_cwd()); sh_put_char('\n'); },
             "discover" => cmd_discover(&args),
             "checkpoint" => cmd_checkpoint(&args),
             "restore" => cmd_restore(&args),
@@ -877,7 +919,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "fm" | "files" => crate::tui_fm::launch_fm(),
             "date" => cmd_clock(),
             "timezone" => cmd_timezone(&args),
-            "sh" | "bash" => { video::put_str("Ainux Shell 2.0 (Native)\n"); },
+            "sh" | "bash" => { sh_put_str("Ainux Shell 2.0 (Native)\n"); },
             "kill" => cmd_kill(&args),
             "top" => cmd_top(),
             "pm" => crate::tui_pm::launch_pm(),
@@ -890,6 +932,8 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
                         alloc::format!("{}.elf", cmd),
                         alloc::format!("/bin/{}", cmd),
                         alloc::format!("/bin/{}.elf", cmd),
+                        alloc::format!("/usr/bin/{}", cmd),
+                        alloc::format!("/usr/bin/{}.elf", cmd),
                     ];
                     let mut found = false;
                     for target in targets.iter() {
@@ -906,7 +950,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
                         }
                     }
                     if !found {
-                        video::put_str("Unknown command. Type 'help'.\n");
+                        sh_put_str("Unknown command. Type 'help'.\n");
                     }
                 }
             },
@@ -914,8 +958,8 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
     }
 fn cmd_game(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Available games: tetris, minesweeper, 2048, sudoku, chess, snake, pong\n");
-        video::put_str("Usage: game <name> [new|load|save|reload]\n");
+        sh_put_str("Available games: tetris, minesweeper, 2048, sudoku, chess, snake, pong\n");
+        sh_put_str("Usage: game <name> [new|load|save|reload]\n");
         return;
     }
     let game_name = args[1];
@@ -933,9 +977,9 @@ fn cmd_game(args: &[&str]) {
                     let active_val = $active.lock().clone();
                     if active_val.is_some() {
                         *$saved.lock() = active_val;
-                        video::put_str("Game saved successfully.\n");
+                        sh_put_str("Game saved successfully.\n");
                     } else {
-                        video::put_str("No active game to save.\n");
+                        sh_put_str("No active game to save.\n");
                     }
                 },
                 "load" | "loadgame" => {
@@ -944,15 +988,15 @@ fn cmd_game(args: &[&str]) {
                         *$active.lock() = saved_val;
                         $run();
                     } else {
-                        video::put_str("No saved game found.\n");
+                        sh_put_str("No saved game found.\n");
                     }
                 },
                 "reload" => {
                     *$active.lock() = None;
                     *$saved.lock() = None;
-                    video::put_str("Game state cleared.\n");
+                    sh_put_str("Game state cleared.\n");
                 },
-                _ => video::put_str("Invalid action. Use run, new, save, load, or reload.\n"),
+                _ => sh_put_str("Invalid action. Use run, new, save, load, or reload.\n"),
             }
         };
     }
@@ -965,7 +1009,7 @@ fn cmd_game(args: &[&str]) {
         "chess" | "chess3d" => { handle_game!(crate::games::chess::run, crate::games::chess::ui::ACTIVE_STATE, crate::games::chess::ui::SAVED_STATE); },
         "snake" => { handle_game!(crate::games::snake::run, crate::games::snake::ACTIVE_STATE, crate::games::snake::SAVED_STATE); },
         "pong" => { handle_game!(crate::games::pong::run, crate::games::pong::ACTIVE_STATE, crate::games::pong::SAVED_STATE); },
-        _ => video::put_str("Unknown game.\n"),
+        _ => sh_put_str("Unknown game.\n"),
     }
 }
 
@@ -989,9 +1033,9 @@ fn cmd_nuxc(args: &[&str]) {
 
 
 fn cmd_help() {
-    video::put_str("Ainux bash, version 2.0-release (x86_64-pc-ainux)\n");
-    video::put_str("These shell commands are defined internally. Type `help' to see this list.\n");
-    video::put_str("Use 'man <command>' to view the manual for a specific command.\n\n");
+    sh_put_str("Ainux bash, version 2.0-release (x86_64-pc-ainux)\n");
+    sh_put_str("These shell commands are defined internally. Type `help' to see this list.\n");
+    sh_put_str("Use 'man <command>' to view the manual for a specific command.\n\n");
 
     let commands = [
         "alias", "arch", "awm", "basename", "cal", "cat", "cd [dir]", "checkpoint", "clang",
@@ -1016,26 +1060,26 @@ fn cmd_help() {
         while padded.len() < 38 {
             padded.push(' ');
         }
-        video::put_str(&padded);
+        sh_put_str(&padded);
         col += 1;
         if col == 2 {
-            video::put_char('\n');
+            sh_put_char('\n');
             col = 0;
         }
     }
     if col != 0 {
-        video::put_char('\n');
+        sh_put_char('\n');
     }
-    video::put_str("\n");
+    sh_put_str("\n");
 }
 
 
 fn cmd_wget(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: wget <url>\n");
+        sh_put_str("Usage: wget <url>\n");
         return;
     }
-    video::put_str("wget: Network file transfer disabled by policy.\n");
+    sh_put_str("wget: Network file transfer disabled by policy.\n");
 }
 
 static mut GPUTEST_ARG_BUF: [u8; 32] = [0; 32];
@@ -1051,23 +1095,20 @@ fn cmd_gputest(args: &[&str], background: bool) {
     }
     
     let pid = crate::process::scheduler::spawn_kernel_task(gputest_thread_entry as u64, "gputest");
-    video::put_str(&alloc::format!("Spawned gputest with PID {}\n", pid));
+    sh_put_str(&alloc::format!("Spawned gputest with PID {}\n", pid));
     if !background {
         crate::process::scheduler::wait_pid(pid);
-        video::put_str("gputest exited.\n");
+        sh_put_str("gputest exited.\n");
     }
 }
 
 extern "C" fn gputest_thread_entry() {
-    let arg_str = unsafe {
-        core::str::from_utf8_unchecked(&GPUTEST_ARG_BUF[..GPUTEST_ARG_LEN])
-    };
-    crate::gui::test3d::run(arg_str);
+    crate::apps::gputest::run();
     crate::process::scheduler::exit_current_task(0);
 }
 
 fn cmd_btrfs_info() {
-    video::put_str("Reading Btrfs Superblock...\n");
+    sh_put_str("Reading Btrfs Superblock...\n");
     match crate::fs::btrfs::read_superblock() {
         Ok(sb) => {
              // Copy packed fields to locals to avoid unaligned access error
@@ -1076,13 +1117,13 @@ fn cmd_btrfs_info() {
              let root = sb.root;
              let chunk_root = sb.chunk_root;
 
-             video::put_str("Btrfs Superblock Found!\n");
-             video::put_str(&format!("  Label: {:?}\n", core::str::from_utf8(&label).unwrap_or("Invalid UTF8")));
-             video::put_str(&format!("  Total Bytes: {}\n", total_bytes));
-             video::put_str(&format!("  Root: {}\n", root));
-             video::put_str(&format!("  Chunk Root: {}\n", chunk_root));
+             sh_put_str("Btrfs Superblock Found!\n");
+             sh_put_str(&format!("  Label: {:?}\n", core::str::from_utf8(&label).unwrap_or("Invalid UTF8")));
+             sh_put_str(&format!("  Total Bytes: {}\n", total_bytes));
+             sh_put_str(&format!("  Root: {}\n", root));
+             sh_put_str(&format!("  Chunk Root: {}\n", chunk_root));
         },
-        Err(e) => video::put_str(&format!("Error: {}\n", e)),
+        Err(e) => sh_put_str(&format!("Error: {}\n", e)),
     }
 }
 
@@ -1099,17 +1140,17 @@ fn cmd_cd(args: &[&str]) {
                 if stat.file_type == vfs::FileType::Directory {
                     set_cwd(&path);
                 } else {
-                    video::put_str("cd: Not a directory.\n");
+                    sh_put_str("cd: Not a directory.\n");
                 }
             }
         },
-        Err(_) => video::put_str("cd: Directory not found.\n"),
+        Err(_) => sh_put_str("cd: Directory not found.\n"),
     }
 }
 
 fn cmd_kill(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: kill <pid>\n");
+        sh_put_str("Usage: kill <pid>\n");
         return;
     }
     // Parse PID (simple ascii)
@@ -1122,8 +1163,8 @@ fn cmd_kill(args: &[&str]) {
     }
     
     if crate::process::scheduler::kill_task(pid) == 0 {
-         video::put_str("Process Killed.\n");
-         video::put_str("Failed to kill process (NotFound or Kernel).\n");
+         sh_put_str("Process Killed.\n");
+         sh_put_str("Failed to kill process (NotFound or Kernel).\n");
     }
 }
 // --- New Commands ---
@@ -1180,12 +1221,12 @@ fn cmd_prop(args: &[&str]) {
                  for f in fields {
                     *video::CONSOLE_X.lock() = cur_x + 2;
                     *video::CONSOLE_Y.lock() = cur_y + line;
-                    video::put_str(&f);
+                    sh_put_str(&f);
                     line += 1;
                 }
             }
         } else {
-             video::put_str("  Status: Not Found");
+             sh_put_str("  Status: Not Found");
         }
     } else {
         match find_inode(&path) {
@@ -1209,13 +1250,13 @@ fn cmd_prop(args: &[&str]) {
                     for f in fields {
                         *video::CONSOLE_X.lock() = cur_x + 2;
                         *video::CONSOLE_Y.lock() = cur_y + line;
-                        video::put_str(&f);
+                        sh_put_str(&f);
                         line += 1;
                     }
                 }
             },
             Err(_) => {
-                video::put_str("  Status: Not Found");
+                sh_put_str("  Status: Not Found");
             }
         }
     }
@@ -1224,12 +1265,12 @@ fn cmd_prop(args: &[&str]) {
 }
 
 fn cmd_stat(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: stat <file>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: stat <file>\n"); return; }
     cmd_prop(&args[1..]);
 }
 
 fn cmd_examples() {
-    video::put_str("Deploying Universal Industrial Test Suite...\n");
+    sh_put_str("Deploying Universal Industrial Test Suite...\n");
     
     let examples = [
         ("hello.c", "#include <stdio.h>\nint main() {\n  printf(\"Hello from Ainux C!\\n\");\n  return 0;\n}"),
@@ -1250,16 +1291,16 @@ fn cmd_examples() {
                     if let Ok(h) = inode.open(0) {
                         let _ = h.truncate();
                         let _ = h.write(content.as_bytes(), 0);
-                        video::put_str(&format!("  [+] Created {}\n", name));
+                        sh_put_str(&format!("  [+] Created {}\n", name));
                     }
                 }
             },
             Err(_) => {
-                video::put_str(&format!("  [!] Failed to resolve path for {}\n", name));
+                sh_put_str(&format!("  [!] Failed to resolve path for {}\n", name));
             }
         }
     }
-    video::put_str("Done. Try 'run hello.c' or 'sim.q -prop'\n");
+    sh_put_str("Done. Try 'run hello.c' or 'sim.q -prop'\n");
 }
 
 fn u16_from_str(s: &str) -> Option<u16> {
@@ -1282,45 +1323,45 @@ fn octal_from_str(s: &str) -> Option<u16> {
 }
 
 fn cmd_chmod(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: chmod <mode> <file>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: chmod <mode> <file>\n"); return; }
     let mode_str = args[1];
     let path = resolve_path(args[2]);
     
     let mode = match octal_from_str(mode_str) {
         Some(m) => m,
-        None => { video::put_str("Invalid mode (use octal, e.g. 755)\n"); return; }
+        None => { sh_put_str("Invalid mode (use octal, e.g. 755)\n"); return; }
     };
     
     match find_inode(&path) {
         Ok(inode) => {
              match inode.chmod(mode) {
-                 Ok(_) => video::put_str("Chmod success.\n"),
-                 Err(_) => video::put_str("Chmod failed.\n"),
+                 Ok(_) => sh_put_str("Chmod success.\n"),
+                 Err(_) => sh_put_str("Chmod failed.\n"),
              }
         },
-        Err(_) => video::put_str("File not found.\n"),
+        Err(_) => sh_put_str("File not found.\n"),
     }
 }
 
 fn cmd_chown(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: chown <uid> <file>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: chown <uid> <file>\n"); return; }
     let uid_str = args[1];
     let path = resolve_path(args[2]);
     
     let uid = match u16_from_str(uid_str) {
         Some(u) => u,
-        None => { video::put_str("Invalid uid\n"); return; }
+        None => { sh_put_str("Invalid uid\n"); return; }
     };
     
     match find_inode(&path) {
         Ok(inode) => {
              // Basic: set gid=uid for now
              match inode.chown(uid, uid) {
-                 Ok(_) => video::put_str("Chown success.\n"),
-                 Err(_) => video::put_str("Chown failed.\n"),
+                 Ok(_) => sh_put_str("Chown success.\n"),
+                 Err(_) => sh_put_str("Chown failed.\n"),
              }
         },
-        Err(_) => video::put_str("File not found.\n"),
+        Err(_) => sh_put_str("File not found.\n"),
     }
 }
 
@@ -1374,27 +1415,27 @@ fn cmd_free() {
         let total_mb = (total * 4096) / 1024 / 1024;
         let pct = (used * 100) / total.max(1);
         
-        video::put_str_colored("  SOVEREIGN RAM UTILIZATION\n", 0x00AAAAFF, 0x00000000);
-        video::put_str(&format!("  Total Physical:  {} MB\n", total_mb));
-        video::put_str(&format!("  Allocated (OS):  {} MB ({}%)\n", used_mb, pct));
-        video::put_str(&format!("  Free Physical:   {} MB\n", total_mb - used_mb));
+        sh_put_str_colored("  SOVEREIGN RAM UTILIZATION\n", 0x00AAAAFF, 0x00000000);
+        sh_put_str(&format!("  Total Physical:  {} MB\n", total_mb));
+        sh_put_str(&format!("  Allocated (OS):  {} MB ({}%)\n", used_mb, pct));
+        sh_put_str(&format!("  Free Physical:   {} MB\n", total_mb - used_mb));
         
         // Visual Bar
-        video::put_str("  [");
+        sh_put_str("  [");
         let dots = 24; // Expanded for impact
         let filled = (pct * dots) / 100;
         for i in 0..dots {
-             if i < filled { video::put_str_colored("█", 0x0000FF00, 0); }
-             else { video::put_str_colored("░", 0x555555, 0); }
+             if i < filled { sh_put_str_colored("█", 0x0000FF00, 0); }
+             else { sh_put_str_colored("░", 0x555555, 0); }
         }
-        video::put_str("]\n");
+        sh_put_str("]\n");
     } else {
-        video::put_str("Error: Physical Memory Manager (PMM) offline.\n");
+        sh_put_str("Error: Physical Memory Manager (PMM) offline.\n");
     }
 }
 
 fn cmd_reboot() {
-    video::put_str("Rebooting...\n");
+    sh_put_str("Rebooting...\n");
     unsafe {
         // PS/2 Controller Pulse Reset
         loop {
@@ -1424,7 +1465,7 @@ fn cmd_time() {
     video::draw_tui_title_box(cur_x, cur_y, time_str.len() + 4, 3, "SYSTEM TIME", 0x00AAAAFF);
     *video::CONSOLE_X.lock() = cur_x + 2;
     *video::CONSOLE_Y.lock() = cur_y + 1;
-    video::put_str(&time_str);
+    sh_put_str(&time_str);
     *video::CONSOLE_X.lock() = 0;
     *video::CONSOLE_Y.lock() = cur_y + 3;
 }
@@ -1432,8 +1473,8 @@ fn cmd_time() {
 fn cmd_timezone(args: &[&str]) {
     if args.len() < 2 {
         let offset = rtc::TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-        video::put_str(&format!("Current timezone offset: {} hours\n", offset));
-        video::put_str("Usage: timezone <offset_hours> (e.g., timezone 5 or timezone -8)\n");
+        sh_put_str(&format!("Current timezone offset: {} hours\n", offset));
+        sh_put_str("Usage: timezone <offset_hours> (e.g., timezone 5 or timezone -8)\n");
         return;
     }
     
@@ -1451,16 +1492,16 @@ fn cmd_timezone(args: &[&str]) {
     if is_negative { offset = -offset; }
     
     rtc::TIMEZONE_OFFSET_HOURS.store(offset, core::sync::atomic::Ordering::Relaxed);
-    video::put_str(&format!("Timezone offset set to {} hours\n", offset));
+    sh_put_str(&format!("Timezone offset set to {} hours\n", offset));
 }
 
 fn cmd_shutdown() {
-    video::clear();
-    video::put_char('\n');
-    video::put_str("  [!] SYSTEM SHUTDOWN INITIATED\n");
-    video::put_str("  ───────────────────────────────\n");
-    video::put_str("  Syncing filesystems... OK\n");
-    video::put_str("  Sending kill signal to hardware...\n");
+    sh_clear();
+    sh_put_char('\n');
+    sh_put_str("  [!] SYSTEM SHUTDOWN INITIATED\n");
+    sh_put_str("  ───────────────────────────────\n");
+    sh_put_str("  Syncing filesystems... OK\n");
+    sh_put_str("  Sending kill signal to hardware...\n");
     
     // Trigger real hardware shutdown
     crate::drivers::power::shutdown();
@@ -1584,7 +1625,7 @@ fn cmd_ps() {
 }
 
 fn cmd_test_lifecycle() {
-    video::put_str("Spawning child task...\n");
+    sh_put_str("Spawning child task...\n");
     // We need to know the PID. simplistic spawn doesn't return PID easily yet without locking.
     // Let's modify spawn to return PID or just hack it: we know PID is monotonic-ish.
     
@@ -1594,15 +1635,15 @@ fn cmd_test_lifecycle() {
     
     // For verification, we just assume PID=2 (0=Kernel, 1=Shell, 2=Child) if clean boot.
     // Or we scan for it.
-    video::put_str("Waiting for PID 2...\n");
+    sh_put_str("Waiting for PID 2...\n");
     
     let pid = 2; // Hardcoced for test
     let cpu_count = crate::cpu::percpu::get_cpu_count();
     let code = crate::process::scheduler::wait_pid(pid);
     
-    video::put_str("Child exited with code: ");
+    sh_put_str("Child exited with code: ");
     print_digit(code as u8);
-    video::put_str("\n");
+    sh_put_str("\n");
 }
 
 extern "C" fn child_task_entry() {
@@ -1617,7 +1658,7 @@ extern "C" fn child_task_entry() {
 fn print_digit(val: u8) {
     let tens = val / 10;
     let ones = val % 10;
-    video::put_char((b'0' + ones) as char);
+    sh_put_char((b'0' + ones) as char);
 }
 
 fn cmd_uptime() {
@@ -1631,23 +1672,23 @@ fn cmd_uptime() {
     video::draw_tui_title_box(cur_x, cur_y, up_str.len() + 12, 3, "UPTIME", 0x0000FF00);
     *video::CONSOLE_X.lock() = cur_x + 2;
     *video::CONSOLE_Y.lock() = cur_y + 1;
-    video::put_str("System active: ");
-    video::put_str(&up_str);
+    sh_put_str("System active: ");
+    sh_put_str(&up_str);
     *video::CONSOLE_X.lock() = 0;
     *video::CONSOLE_Y.lock() = cur_y + 3;
 }
 
 fn cmd_test_threads() {
-    video::put_str("Creating thread...\n");
+    sh_put_str("Creating thread...\n");
     // Just spawn two kernel threads to verify scheduler
-    video::put_str("Spawning 2 concurrent kernel threads...\n");
+    sh_put_str("Spawning 2 concurrent kernel threads...\n");
     crate::process::scheduler::spawn(thread_1, "test_thread_1");
     crate::process::scheduler::spawn(thread_2, "test_thread_2");
 }
 
 extern "C" fn thread_1() {
     for _ in 0..5 {
-        crate::drivers::video::put_char('A');
+        sh_put_char('A');
         crate::process::scheduler::yield_now();
         // busy wait
         for _ in 0..1000000 { unsafe { core::arch::asm!("nop"); } }
@@ -1657,7 +1698,7 @@ extern "C" fn thread_1() {
 
 extern "C" fn thread_2() {
     for _ in 0..5 {
-        crate::drivers::video::put_char('B');
+        sh_put_char('B');
         crate::process::scheduler::yield_now();
         // busy wait
         for _ in 0..1000000 { unsafe { core::arch::asm!("nop"); } }
@@ -1666,39 +1707,39 @@ extern "C" fn thread_2() {
 }
 
 fn cmd_test_ipc() {
-    video::put_str("Testing Blocking IPC...\n");
+    sh_put_str("Testing Blocking IPC...\n");
     let _port_id = crate::ipc::port::create_port();
     
-    video::put_str("Spawning Receiver (A) and Sender (B)...\n");
+    sh_put_str("Spawning Receiver (A) and Sender (B)...\n");
     crate::process::scheduler::spawn(ipc_receiver, "ipc_receiver");
     crate::process::scheduler::spawn(ipc_sender, "ipc_sender");
 }
 
 extern "C" fn ipc_receiver() {
-    video::put_str("[A] waiting for msg...\n"); 
+    sh_put_str("[A] waiting for msg...\n"); 
     // Assumes port 0
     if let Some(msg) = crate::ipc::port::receive(0, false) {
-        video::put_str("[A] Got Msg from PID ");
+        sh_put_str("[A] Got Msg from PID ");
         crate::shell::print_digit(msg.sender_pid as u8);
-        video::put_str("\n");
-        video::put_str("[A] Data: ");
+        sh_put_str("\n");
+        sh_put_str("[A] Data: ");
         match msg.payload {
             crate::ipc::port::IpcPayload::Inline(data) => crate::shell::print_digit(data[0] as u8),
-            _ => video::put_str("Non-inline"),
+            _ => sh_put_str("Non-inline"),
         }
-        video::put_str("\n");
+        sh_put_str("\n");
     } else {
-        video::put_str("[A] Failed to recv\n");
+        sh_put_str("[A] Failed to recv\n");
     }
     crate::process::scheduler::exit_current_task(0);
 }
 
 extern "C" fn ipc_sender() {
-    video::put_str("[B] Sleeping 1s...\n");
+    sh_put_str("[B] Sleeping 1s...\n");
     unsafe { crate::process::scheduler::set_current_sleep(crate::process::scheduler::get_ticks() + 100); }
     crate::process::scheduler::yield_now();
     
-    video::put_str("[B] Sending msg...\n");
+    sh_put_str("[B] Sending msg...\n");
     let msg = crate::ipc::port::Message { 
         sender_pid: crate::process::scheduler::get_current_pid(),
         msg_type: 0,
@@ -1713,7 +1754,7 @@ extern "C" fn ipc_sender() {
 
 
 fn cmd_test_write() {
-    video::put_str("Testing Relative File Write...\n");
+    sh_put_str("Testing Relative File Write...\n");
     let filename = "test_rel.txt";
     let text = "RelativeSuccess!";
     
@@ -1728,11 +1769,11 @@ fn cmd_test_write() {
             if let Ok(inode) = inode_res {
                 if let Ok(handle) = inode.open(0) {
                     let _ = handle.write(text.as_bytes(), 0);
-                    video::put_str("Write Success.\n");
+                    sh_put_str("Write Success.\n");
                 }
             }
         },
-        Err(_) => video::put_str("Test Failed: Cannot find parent.\n"),
+        Err(_) => sh_put_str("Test Failed: Cannot find parent.\n"),
     }
     
     // 2. Read Back via find_inode
@@ -1741,21 +1782,21 @@ fn cmd_test_write() {
             if let Ok(handle) = inode.open(0) {
                 let mut buf = vec![0u8; 32];
                 if let Ok(n) = handle.read(&mut buf, 0) {
-                    video::put_str("Read Back: ");
+                    sh_put_str("Read Back: ");
                     if let Ok(s) = core::str::from_utf8(&buf[0..n]) {
-                        video::put_str(s);
+                        sh_put_str(s);
                     }
-                    video::put_str("\n");
+                    sh_put_str("\n");
                 }
             }
         },
-        Err(_) => video::put_str("Read Back Failed.\n"),
+        Err(_) => sh_put_str("Read Back Failed.\n"),
     }
 }
 
 pub fn cmd_exec(args: &[&str], background: bool) {
     if args.len() < 2 && args[0] != "acc" && args[0] != "tcc" {
-        video::put_str("Usage: exec <filename>\n");
+        sh_put_str("Usage: exec <filename>\n");
         return;
     }
     
@@ -1772,17 +1813,17 @@ pub fn cmd_exec(args: &[&str], background: bool) {
             if let Ok(handle) = inode.open(0) {
                 let _ = handle.read(&mut magic, 0);
             } else {
-                video::put_str("exec: Cannot open file.\n");
+                sh_put_str("exec: Cannot open file.\n");
                 return;
             }
         },
         Err(_) => {
-            video::put_str("exec: File not found.\n");
+            sh_put_str("exec: File not found.\n");
             return;
         }
     }
 
-    video::put_str(&format!("Executing {}...\n", filename));
+    sh_put_str(&format!("Executing {}...\n", filename));
 
     let result = if &magic == b"ALO\x02" || &magic == b"ALO\0" {
         crate::process::loader::load_alo_from_file(filename) // alo doesn't take args for now
@@ -1799,35 +1840,35 @@ pub fn cmd_exec(args: &[&str], background: bool) {
         }
         crate::process::loader::load_elf_from_file(filename, &pass_args)
     } else {
-        video::put_str("exec: Unknown executable format.\n");
+        sh_put_str("exec: Unknown executable format.\n");
         return;
     };
 
     match result {
         Ok(pid) => {
-            video::put_str(&format!("Spawned PID: {}\n", pid));
+            sh_put_str(&format!("Spawned PID: {}\n", pid));
             if background {
-                video::put_str("Process running in background.\n");
+                sh_put_str("Process running in background.\n");
             } else {
                 crate::process::scheduler::set_foreground_pid(pid as usize);
                 crate::process::scheduler::wait_pid(pid);
                 crate::process::scheduler::set_foreground_pid(0);
-                video::put_str("Process exited.\n");
+                sh_put_str("Process exited.\n");
             }
         },
         Err(_) => {
-            video::put_str("exec: Failed to load executable.\n");
+            sh_put_str("exec: Failed to load executable.\n");
         }
     }
 }
 
 fn cmd_top() {
     // Loop until keypress
-    video::put_str("Press 'q' or any key to exit top.\n");
+    sh_put_str("Press 'q' or any key to exit top.\n");
     loop {
-        video::clear();
+        sh_clear();
         crate::process::scheduler::print_task_list();
-        video::put_str("\n(Updating every 1s...)\n");
+        sh_put_str("\n(Updating every 1s...)\n");
         
         // Wait 1s
         unsafe { crate::process::scheduler::set_current_sleep(crate::process::scheduler::get_ticks() + 100); }
@@ -1836,13 +1877,13 @@ fn cmd_top() {
         // Check input
         if keyboard::pop_char().is_some() { break; }
     }
-    video::clear();
+    sh_clear();
 }
 
 fn cmd_run(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: run <filename>\n");
-        video::put_str("  Supported: .c .s .asm .v .q\n");
+        sh_put_str("Usage: run <filename>\n");
+        sh_put_str("  Supported: .c .s .asm .v .q\n");
         return;
     }
     let filename = args[1];
@@ -1861,36 +1902,36 @@ fn cmd_run(args: &[&str]) {
         // Try CWD first, then /bin fallback
         let exec_target = if find_inode(target).is_ok() { target } else { "/bin/a.elf" };
         if find_inode(exec_target).is_ok() {
-            video::put_str("Running compiled binary...\n");
+            sh_put_str("Running compiled binary...\n");
             cmd_exec(&["exec", exec_target], false);
         } else {
-            video::put_str("[run] Compilation failed or output not found.\n");
+            sh_put_str("[run] Compilation failed or output not found.\n");
         }
     } else {
-        video::put_str("run: Unsupported file extension.\n");
-        video::put_str("     Supported: .c, .s, .asm, .v, .q\n");
+        sh_put_str("run: Unsupported file extension.\n");
+        sh_put_str("     Supported: .c, .s, .asm, .v, .q\n");
     }
 }
 
 fn cmd_tree(args: &[&str]) {
     let target = if args.len() < 2 { get_cwd() } else { resolve_path(args[1]) };
-    video::put_str(&target);
-    video::put_char('\n');
+    sh_put_str(&target);
+    sh_put_char('\n');
     
     match find_inode(&target) {
         Ok(inode) => {
              match inode.read_dir() {
                  Ok(files) => {
                      for name in files {
-                         video::put_str("├── ");
-                         video::put_str(&name);
-                         video::put_char('\n');
+                         sh_put_str("├── ");
+                         sh_put_str(&name);
+                         sh_put_char('\n');
                      }
                  },
                  Err(_) => {},
              }
         },
-        Err(_) => video::put_str("Path not found.\n"),
+        Err(_) => sh_put_str("Path not found.\n"),
     }
 }
 
@@ -1939,7 +1980,7 @@ fn cmd_cp(args: &[&str]) {
 }
 
 fn cmd_mv(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: mv <src> <dst>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: mv <src> <dst>\n"); return; }
     let src_raw = args[1];
     let dst_raw = args[2];
 
@@ -1950,24 +1991,24 @@ fn cmd_mv(args: &[&str]) {
         
         let current_dir = match find_inode(&current_path) {
             Ok(i) => i,
-            Err(_) => { video::put_str("Error: Could not access current directory.\n"); return; }
+            Err(_) => { sh_put_str("Error: Could not access current directory.\n"); return; }
         };
         
         let target_dir = match find_inode(&target_path) {
             Ok(i) => {
                 if let Ok(stat) = i.stat() {
                     if stat.file_type != vfs::FileType::Directory {
-                        video::put_str("Error: Destination is not a directory.\n");
+                        sh_put_str("Error: Destination is not a directory.\n");
                         return;
                     }
                     i
                 } else {
-                     video::put_str("Error: Could not stat destination.\n");
+                     sh_put_str("Error: Could not stat destination.\n");
                      return;
                 }
             },
             Err(_) => {
-                video::put_str("Error: Destination folder does not exist.\n");
+                sh_put_str("Error: Destination folder does not exist.\n");
                 return;
             }
         };
@@ -1981,13 +2022,13 @@ fn cmd_mv(args: &[&str]) {
                 
                 // Collision check
                 if let Ok(_) = target_dir.lookup(&name) {
-                    video::put_str("Skipping "); video::put_str(&name); video::put_str(": already exists in destination.\n");
+                    sh_put_str("Skipping "); sh_put_str(&name); sh_put_str(": already exists in destination.\n");
                     continue;
                 }
 
                 match current_dir.rename(&name, target_dir.clone(), &name) {
-                    Ok(_) => { video::put_str("Moved "); video::put_str(&name); video::put_str("\n"); },
-                    Err(_) => { video::put_str("Failed to move "); video::put_str(&name); video::put_str("\n"); }
+                    Ok(_) => { sh_put_str("Moved "); sh_put_str(&name); sh_put_str("\n"); },
+                    Err(_) => { sh_put_str("Failed to move "); sh_put_str(&name); sh_put_str("\n"); }
                 }
             }
         }
@@ -2000,7 +2041,7 @@ fn cmd_mv(args: &[&str]) {
 
     let (src_parent, src_name) = match find_parent_and_name(&src_path) {
         Ok(res) => res,
-        Err(_) => { video::put_str("Error: Invalid source path.\n"); return; }
+        Err(_) => { sh_put_str("Error: Invalid source path.\n"); return; }
     };
 
     // Check if destination is a directory
@@ -2015,7 +2056,7 @@ fn cmd_mv(args: &[&str]) {
                     // Re-resolve parent of dst
                     match find_parent_and_name(&dst_path) {
                         Ok(res) => res,
-                        Err(_) => { video::put_str("Error: Invalid destination path.\n"); return; }
+                        Err(_) => { sh_put_str("Error: Invalid destination path.\n"); return; }
                     }
                 }
             } else {
@@ -2026,33 +2067,33 @@ fn cmd_mv(args: &[&str]) {
             // Destination doesn't exist, resolve parent
             match find_parent_and_name(&dst_path) {
                 Ok(res) => res,
-                Err(_) => { video::put_str("Error: Invalid destination path.\n"); return; }
+                Err(_) => { sh_put_str("Error: Invalid destination path.\n"); return; }
             }
         }
     };
 
     // Final move
     match src_parent.rename(&src_name, dst_parent, &dst_name) {
-        Ok(_) => video::put_str("Moved.\n"),
-        Err(_) => video::put_str("Move failed (VFS Error).\n"),
+        Ok(_) => sh_put_str("Moved.\n"),
+        Err(_) => sh_put_str("Move failed (VFS Error).\n"),
     }
 }
 
 fn cmd_save() {
     crate::config::save();
-    video::put_str("System configuration saved to /etc/ainux.conf\n");
+    sh_put_str("System configuration saved to /etc/ainux.conf\n");
 }
 
 fn cmd_hostname(args: &[&str]) {
     if args.len() < 2 {
         if let Some(config) = crate::config::CONFIG.lock().as_ref() {
-            video::put_str(&config.hostname);
-            video::put_char('\n');
+            sh_put_str(&config.hostname);
+            sh_put_char('\n');
         }
     } else {
         if let Some(config) = crate::config::CONFIG.lock().as_mut() {
             config.hostname = String::from(args[1]);
-            video::put_str("Hostname updated (run 'save' to persist).\n");
+            sh_put_str("Hostname updated (run 'save' to persist).\n");
         }
     }
 }
@@ -2116,22 +2157,22 @@ fn recursive_find(inode: &Arc<dyn vfs::Inode>, target: &str, current_path: &str)
 }
 
 fn cmd_find(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: find <name>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: find <name>\n"); return; }
     let target = args[1];
-    video::put_str(&format!("Searching for '{}'...\n", target));
+    sh_put_str(&format!("Searching for '{}'...\n", target));
     recursive_find(&vfs::root(), target, "/");
 }
 
 
 
 fn cmd_uname() {
-    video::put_str("Ainux Kernel v0.1.0 (Custom)\nBuild: 2026-01-05\nArch: x86_64\n");
+    sh_put_str("Ainux Kernel v0.1.0 (Custom)\nBuild: 2026-01-05\nArch: x86_64\n");
 }
 
 fn cmd_lsblk() {
-    video::put_str("NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT\n");
-    video::put_str("hda       3:0    0  20G  0 disk \n");
-    video::put_str("└─hda1    3:1    0  20G  0 part /\n");
+    sh_put_str("NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT\n");
+    sh_put_str("hda       3:0    0  20G  0 disk \n");
+    sh_put_str("└─hda1    3:1    0  20G  0 part /\n");
 }
 
 fn cmd_grep(args: &[&str]) {
@@ -2231,22 +2272,22 @@ fn cmd_wc_file(args: &[&str]) {
 fn cmd_ip(args: &[&str]) {
     let stack_lock = crate::net::NET_STACK.lock();
     if let Some(stack) = stack_lock.as_ref() {
-        video::put_str("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n");
-        video::put_str("    inet 127.0.0.1/8 scope host lo\n");
+        sh_put_str("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n");
+        sh_put_str("    inet 127.0.0.1/8 scope host lo\n");
         
-        video::put_str("2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n");
+        sh_put_str("2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n");
         let mac = stack.iface.hardware_addr();
-        video::put_str(&alloc::format!("    link/ether {} brd ff:ff:ff:ff:ff:ff\n", mac));
+        sh_put_str(&alloc::format!("    link/ether {} brd ff:ff:ff:ff:ff:ff\n", mac));
         
         for addr in stack.iface.ip_addrs() {
-            video::put_str(&alloc::format!("    inet {} scope global eth0\n", addr));
+            sh_put_str(&alloc::format!("    inet {} scope global eth0\n", addr));
         }
         
         if stack.iface.ip_addrs().is_empty() {
-            video::put_str("    inet (waiting for DHCP...) scope global eth0\n");
+            sh_put_str("    inet (waiting for DHCP...) scope global eth0\n");
         }
     } else {
-        video::put_str("Error: Network stack not initialized.\n");
+        sh_put_str("Error: Network stack not initialized.\n");
     }
 }
 
@@ -2266,7 +2307,7 @@ fn cmd_nc(args: &[&str]) {
     use crate::fs::vfs::FileHandle;
     
     if args.len() < 3 {
-        video::put_str("Usage:\n  nc <ip> <port>\n  nc -l <port>\n");
+        sh_put_str("Usage:\n  nc <ip> <port>\n  nc -l <port>\n");
         return;
     }
     
@@ -2274,15 +2315,15 @@ fn cmd_nc(args: &[&str]) {
     let socket = if is_listen {
         let port = match parse_int_simple(args[2]) {
             Some(p) => p as u16,
-            None => { video::put_str("nc: Invalid port.\n"); return; }
+            None => { sh_put_str("nc: Invalid port.\n"); return; }
         };
-        video::put_str(&format!("nc: Listening on TCP port {}...\n", port));
+        sh_put_str(&format!("nc: Listening on TCP port {}...\n", port));
         crate::net::inet::tcp_listen(port)
     } else {
         let ip_str = args[1];
         let parts: alloc::vec::Vec<&str> = ip_str.split('.').collect();
         if parts.len() != 4 {
-            video::put_str("nc: Invalid IP format.\n");
+            sh_put_str("nc: Invalid IP format.\n");
             return;
         }
         let ip = [
@@ -2293,18 +2334,18 @@ fn cmd_nc(args: &[&str]) {
         ];
         let port = match parse_int_simple(args[2]) {
             Some(p) => p as u16,
-            None => { video::put_str("nc: Invalid port.\n"); return; }
+            None => { sh_put_str("nc: Invalid port.\n"); return; }
         };
-        video::put_str(&format!("nc: Connecting to {}.{}.{}.{}:{}...\n", ip[0], ip[1], ip[2], ip[3], port));
+        sh_put_str(&format!("nc: Connecting to {}.{}.{}.{}:{}...\n", ip[0], ip[1], ip[2], ip[3], port));
         crate::net::inet::tcp_connect(ip, port)
     };
     
     let handle = match socket {
         Some(s) => s,
-        None => { video::put_str("nc: Failed to create socket.\n"); return; }
+        None => { sh_put_str("nc: Failed to create socket.\n"); return; }
     };
 
-    video::put_str("nc: Socket created. Press ESC to exit.\n");
+    sh_put_str("nc: Socket created. Press ESC to exit.\n");
     let mut buf = [0u8; 1024];
     
     loop {
@@ -2312,7 +2353,7 @@ fn cmd_nc(args: &[&str]) {
         if let Ok(size) = handle.read(&mut buf, 0) {
             if size > 0 {
                 let s = core::str::from_utf8(&buf[..size]).unwrap_or("<binary data>");
-                video::put_str(s);
+                sh_put_str(s);
                 // Simple flush for incoming text
                 let x = *video::CONSOLE_X.lock() * 8;
                 let y = *video::CONSOLE_Y.lock() * 12;
@@ -2332,8 +2373,8 @@ fn cmd_nc(args: &[&str]) {
             let _ = handle.write(&out, 0);
             
             // Local echo
-            video::put_char(c);
-            if c == '\r' { video::put_char('\n'); }
+            sh_put_char(c);
+            if c == '\r' { sh_put_char('\n'); }
         }
         
         // Give network stack time to process
@@ -2341,55 +2382,55 @@ fn cmd_nc(args: &[&str]) {
     }
     
     let _ = handle.close();
-    video::put_str("\nnc: Connection closed.\n");
+    sh_put_str("\nnc: Connection closed.\n");
 }
 
 fn cmd_netstat() {
     let stack_lock = crate::net::NET_STACK.lock();
     if let Some(stack) = stack_lock.as_ref() {
-        video::put_str("Active Internet connections\n");
-        video::put_str("Proto Recv-Q Send-Q Local Address           Foreign Address         State\n");
+        sh_put_str("Active Internet connections\n");
+        sh_put_str("Proto Recv-Q Send-Q Local Address           Foreign Address         State\n");
         
         for _ in stack.sockets.iter() {
-            video::put_str("tcp        0      0 (Active Socket)       *:*                     ESTABLISHED\n");
+            sh_put_str("tcp        0      0 (Active Socket)       *:*                     ESTABLISHED\n");
         }
         
         if stack.sockets.iter().count() == 0 {
-            video::put_str("(No active sockets)\n");
+            sh_put_str("(No active sockets)\n");
         }
     } else {
-        video::put_str("Error: Network stack not initialized.\n");
+        sh_put_str("Error: Network stack not initialized.\n");
     }
 }
 
 
 
 fn cmd_stub(name: &str) {
-    video::put_str(name); video::put_str(": Not implemented yet.\n");
+    sh_put_str(name); sh_put_str(": Not implemented yet.\n");
 }
 
 fn cmd_ifconfig() {
     let stack_lock = crate::net::NET_STACK.lock();
     if let Some(stack) = stack_lock.as_ref() {
-        video::put_str("eth0 (RTL8139):\n");
+        sh_put_str("eth0 (RTL8139):\n");
         let addrs = stack.iface.ip_addrs();
         if addrs.is_empty() {
-            video::put_str("  inet: <No IP Address>\n");
+            sh_put_str("  inet: <No IP Address>\n");
         } else {
             for addr in addrs {
-                video::put_str(&alloc::format!("  inet: {}\n", addr));
+                sh_put_str(&alloc::format!("  inet: {}\n", addr));
             }
         }
         
         let hw_addr = stack.iface.hardware_addr();
-        video::put_str(&alloc::format!("  mac:  {}\n", hw_addr));
+        sh_put_str(&alloc::format!("  mac:  {}\n", hw_addr));
     } else {
-        video::put_str("Network Stack not initialized.\n");
+        sh_put_str("Network Stack not initialized.\n");
     }
 }
 
 fn cmd_jobs() {
-    video::put_str("Jobs:\n");
+    sh_put_str("Jobs:\n");
     // Stub: In real shell, we track background jobs via shell state, not kernel tasks directly.
     // For now, list tasks that are Waiting (if we consider them 'stopped')
     crate::process::scheduler::print_task_list();
@@ -2398,13 +2439,13 @@ fn cmd_jobs() {
 // cmd_killall implementation is defined later in the file.
 
 fn cmd_nice(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: nice <inc> <cmd...>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: nice <inc> <cmd...>\n"); return; }
     // Stub: just run command
-    video::put_str("Running with adjusted priority... (Stub)\n");
+    sh_put_str("Running with adjusted priority... (Stub)\n");
 }
 
 fn cmd_renice(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: renice <prio> <pid>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: renice <prio> <pid>\n"); return; }
     let prio_str = args[1];
     let pid_str = args[2];
     
@@ -2416,9 +2457,9 @@ fn cmd_renice(args: &[&str]) {
     // Simple parse logic needed for full utility
     
     if crate::process::scheduler::set_priority(pid, prio as u8) == 0 {
-        video::put_str("Priority updated.\n");
+        sh_put_str("Priority updated.\n");
     } else {
-         video::put_str("Failed to found PID.\n");
+         sh_put_str("Failed to found PID.\n");
     }
 }
 
@@ -2427,28 +2468,28 @@ fn cmd_wifi(args: &[&str]) {
     use crate::drivers::net::atheros::GLOBAL_ATHEROS;
     let driver_lock = GLOBAL_ATHEROS.lock();
     let driver = if let Some(d) = &*driver_lock { d.clone() } else {
-        video::put_str("error: Atheros WiFi hardware not found or driver failed to start.\n");
+        sh_put_str("error: Atheros WiFi hardware not found or driver failed to start.\n");
         return;
     };
     drop(driver_lock);
 
     if args.len() < 2 {
-        video::put_str("Usage: wifi <list|connect|status>\n");
+        sh_put_str("Usage: wifi <list|connect|status>\n");
         return;
     }
 
     match args[1] {
         "list" => {
-            video::put_str("Scanning for wireless networks (802.11)...\n");
+            sh_put_str("Scanning for wireless networks (802.11)...\n");
             driver.refresh_networks();
-    video::put_str(&alloc::format!("{:<20} {:<10} {:<10}\n", "SSID", "SIGNAL", "SECURITY"));
+    sh_put_str(&alloc::format!("{:<20} {:<10} {:<10}\n", "SSID", "SIGNAL", "SECURITY"));
 
     // 1. Show results from MediaTek (The most likely real hardware for now)
     use crate::drivers::net::mt7601u::GLOBAL_MT7601U;
     if let Some(mt_driver) = &*GLOBAL_MT7601U.lock() {
         let results = mt_driver.scan_results.lock();
         for res in results.iter() {
-            video::put_str(&alloc::format!("{:<20} {:<10} {:<10}\n", res.ssid, "-65 dBm", "WPA/WPA2"));
+            sh_put_str(&alloc::format!("{:<20} {:<10} {:<10}\n", res.ssid, "-65 dBm", "WPA/WPA2"));
         }
     }
 
@@ -2457,43 +2498,43 @@ fn cmd_wifi(args: &[&str]) {
     for n in nets.iter() {
         // Only show if it matches a real beacon pattern (skipping simulation ones)
         if !n.ssid.starts_with("Ainux") && !n.ssid.contains("Sovereign") {
-            video::put_str(&alloc::format!("{:<20} {:<10}% {:<10}\n", n.ssid, n.signal, n.security.as_str()));
+            sh_put_str(&alloc::format!("{:<20} {:<10}% {:<10}\n", n.ssid, n.signal, n.security.as_str()));
         }
     }
         },
         "connect" => {
             if args.len() < 4 {
-                video::put_str("Usage: wifi connect <ssid> <password>\n");
+                sh_put_str("Usage: wifi connect <ssid> <password>\n");
                 return;
             }
             let ssid = args[2];
             let pass = args[3];
-            video::put_str(&alloc::format!("Joining network '{}'...\n", ssid));
+            sh_put_str(&alloc::format!("Joining network '{}'...\n", ssid));
             match driver.connect(ssid, pass) {
-                Ok(msg) => video::put_str(&alloc::format!("wifi: {}\n", msg)),
-                Err(e) => video::put_str(&alloc::format!("wifi: Error: {}\n", e)),
+                Ok(msg) => sh_put_str(&alloc::format!("wifi: {}\n", msg)),
+                Err(e) => sh_put_str(&alloc::format!("wifi: Error: {}\n", e)),
             }
         },
         "status" => {
-            video::put_str(&alloc::format!("Interface:      wlan0 (ath0)\n"));
+            sh_put_str(&alloc::format!("Interface:      wlan0 (ath0)\n"));
             let mac = driver.mac_addr.lock();
-            video::put_str(&alloc::format!("MAC Address:    {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n", 
+            sh_put_str(&alloc::format!("MAC Address:    {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n", 
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]));
-            video::put_str(&alloc::format!("Status:         {}\n", driver.get_status()));
+            sh_put_str(&alloc::format!("Status:         {}\n", driver.get_status()));
         },
-        _ => video::put_str("Unknown wifi subcommand. Use: list, connect, status\n"),
+        _ => sh_put_str("Unknown wifi subcommand. Use: list, connect, status\n"),
     }
 }
 
 fn cmd_code(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: code <filename>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: code <filename>\n"); return; }
     cmd_write(args);
 }
 
 fn cmd_mount(args: &[&str]) {
     if args.len() < 3 { 
-        video::put_str("Usage: mount <dev> <target>\n");
-        video::put_str("Mounts:\n  / (ext4)\n");
+        sh_put_str("Usage: mount <dev> <target>\n");
+        sh_put_str("Mounts:\n  / (ext4)\n");
         return; 
     }
     let dev = args[1];
@@ -2503,31 +2544,31 @@ fn cmd_mount(args: &[&str]) {
         let sb = match crate::fs::ext4::parse_superblock() {
             Ok(s) => s,
             Err(e) => {
-                video::put_str(&format!("Mount: Failed to read Superblock (Magic 0x{:04X})\n", e));
+                sh_put_str(&format!("Mount: Failed to read Superblock (Magic 0x{:04X})\n", e));
                 return;
             }
         };
         let fs = Arc::new(crate::fs::ext4::Ext4FileSystem::new(sb));
         vfs::mount(target, fs);
-        video::put_str(&format!("Mounted {} on {}\n", dev, target));
+        sh_put_str(&format!("Mounted {} on {}\n", dev, target));
     } else {
-        video::put_str("Unsupported device for mount.\n");
+        sh_put_str("Unsupported device for mount.\n");
     }
 }
 
 fn cmd_umount(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: umount <target>\n"); return; }
-    video::put_str("VFS: Unmounting volume (Simulated)\n");
+    if args.len() < 2 { sh_put_str("Usage: umount <target>\n"); return; }
+    sh_put_str("VFS: Unmounting volume (Simulated)\n");
 }
 
 fn cmd_sync() {
-    video::put_str("Syncing buffers... Done.\n");
+    sh_put_str("Syncing buffers... Done.\n");
 }
 
 fn print_month(month: usize, year: usize, highlight_day: bool, now_month: usize, now_year: usize, now_day: usize) {
     let month_names = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    video::put_str(&format!("     {} {}\n", month_names[month], year));
-    video::put_str("Su Mo Tu We Th Fr Sa\n");
+    sh_put_str(&format!("     {} {}\n", month_names[month], year));
+    sh_put_str("Su Mo Tu We Th Fr Sa\n");
 
     let q = 1;
     let m = if month < 3 { month + 12 } else { month };
@@ -2545,11 +2586,11 @@ fn print_month(month: usize, year: usize, highlight_day: bool, now_month: usize,
     };
 
     for _ in 0..start_day {
-        video::put_str("   ");
+        sh_put_str("   ");
     }
 
     for day in 1..=days_in_month {
-        video::put_str(&format!("{:2} ", day));
+        sh_put_str(&format!("{:2} ", day));
         
         if highlight_day && month == now_month && year == now_year && day == now_day {
             // Draw Box
@@ -2568,10 +2609,10 @@ fn print_month(month: usize, year: usize, highlight_day: bool, now_month: usize,
         }
 
         if (start_day + day - 1) % 7 == 6 {
-            video::put_char('\n');
+            sh_put_char('\n');
         }
     }
-    video::put_str("\n\n");
+    sh_put_str("\n\n");
 }
 
 fn cmd_cal(args: &[&str]) {
@@ -2631,7 +2672,7 @@ fn cmd_cal(args: &[&str]) {
     if full_year {
         for m in 1..=12 {
             print_month(m, year, highlight_day, now.month as usize, now.year, now.day as usize);
-            video::put_char('\n');
+            sh_put_char('\n');
         }
     } else {
         print_month(month, year, highlight_day, now.month as usize, now.year, now.day as usize);
@@ -2642,7 +2683,7 @@ fn cmd_cal(args: &[&str]) {
 }
 
 fn cmd_clock() {
-    video::clear();
+    sh_clear();
     unsafe {
        let fb_addr = *video::FRAMEBUFFER_ADDR.lock();
        let width = *video::FRAMEBUFFER_WIDTH.lock();
@@ -2659,7 +2700,7 @@ fn cmd_clock() {
     let radius = if width < height { width / 2 - 20 } else { height / 2 - 20 };
     let radius = if radius > 250 { 250 } else { radius };
 
-    video::put_str("Modern Clock (Press any key to exit)\n");
+    sh_put_str("Modern Clock (Press any key to exit)\n");
 
     let sin_cos: [(i64, i64); 60] = [
         (0, -1024), (107, -1018), (213, -1002), (316, -974), (416, -935), 
@@ -2719,7 +2760,7 @@ fn cmd_clock() {
             let text_w = time_str.len() * 8;
             *video::CONSOLE_X.lock() = (cx as usize - text_w / 2) / 8;
             *video::CONSOLE_Y.lock() = (cy as usize + radius as usize + 20) / 12;
-            video::put_str(&time_str);
+            sh_put_str(&time_str);
             
             // Flush the entire clock region
             let start_x = (cx - radius - 10) as usize;
@@ -2731,13 +2772,13 @@ fn cmd_clock() {
         
         for _ in 0..10_000 { core::hint::spin_loop(); }
     }
-    video::clear();
+    sh_clear();
 }
 
 fn cmd_write(args: &[&str]) {
     use core::fmt::Write;
     
-    if args.len() < 2 { video::put_str("Usage: write <filename>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: write <filename>\n"); return; }
     let filename = args[1];
     
     // 1. Read existing file if any
@@ -2772,10 +2813,10 @@ fn cmd_write(args: &[&str]) {
     // Editor Loop
     loop {
         // Redraw Whole Screen (Simple TUI)
-        video::clear();
-        video::put_str("Ainux Editor v0.1 - Ctrl+S: Save, Ctrl+Q: Quit\n");
-        video::put_str("File: "); video::put_str(&abs_path); video::put_str("\n");
-        video::put_str("----------------------------------------------------\n");
+        sh_clear();
+        sh_put_str("Ainux Editor v0.1 - Ctrl+S: Save, Ctrl+Q: Quit\n");
+        sh_put_str("File: "); sh_put_str(&abs_path); sh_put_str("\n");
+        sh_put_str("----------------------------------------------------\n");
         
         // Use manual iteration to print and track cursor position
         let mut visual_x = 0;
@@ -2796,9 +2837,9 @@ fn cmd_write(args: &[&str]) {
             if c == '\n' {
                 visual_x = 0;
                 visual_y += 1;
-                video::put_char('\n');
+                sh_put_char('\n');
             } else {
-                video::put_char(c);
+                sh_put_char(c);
                 visual_x += 1;
                 if visual_x >= width {
                     visual_x = 0;
@@ -2819,8 +2860,8 @@ fn cmd_write(args: &[&str]) {
         if let Some(c) = keyboard::pop_char() {
             let ch = c as u8;
             if ch == 17 { // Ctrl+Q
-                 video::clear();
-                 video::put_str("Exited Editor.\n");
+                 sh_clear();
+                 sh_put_str("Exited Editor.\n");
                  break;
             } else if ch == 19 { // Ctrl+S
                  // Write to File via VFS Helper
@@ -2841,11 +2882,11 @@ fn cmd_write(args: &[&str]) {
                                                 *video::CONSOLE_X.lock() = 0;
                                                 *video::CONSOLE_Y.lock() = 0;
                                             }
-                                            video::put_str(" [SAVED] ");
+                                            sh_put_str(" [SAVED] ");
                                        },
                                        Err(_) => {
                                             unsafe { *video::CONSOLE_X.lock() = 0; *video::CONSOLE_Y.lock() = 0; }
-                                            video::put_str(" [ERR]   ");
+                                            sh_put_str(" [ERR]   ");
                                        }
                                    }
                               }
@@ -2853,7 +2894,7 @@ fn cmd_write(args: &[&str]) {
                      },
                      Err(_) => {
                           unsafe { *video::CONSOLE_X.lock() = 0; *video::CONSOLE_Y.lock() = 0; }
-                          video::put_str(" [PATH ERR] ");
+                          sh_put_str(" [PATH ERR] ");
                      }
                  }
 
@@ -2881,7 +2922,7 @@ fn cmd_write(args: &[&str]) {
 }
 
 fn cmd_view(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: view <filename>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: view <filename>\n"); return; }
     let filename = args[1];
     
     match find_inode(filename) {
@@ -2899,11 +2940,11 @@ fn cmd_view(args: &[&str]) {
                      } else { break; }
                  }
                  
-                 if data.len() < 54 { video::put_str("File too small.\n"); return; }
+                 if data.len() < 54 { sh_put_str("File too small.\n"); return; }
                  
                  // Check BM
                  if data[0] != b'B' || data[1] != b'M' {
-                     video::put_str("Not a BMP file. (Legacy Viewer only supports BMP)\n");
+                     sh_put_str("Not a BMP file. (Legacy Viewer only supports BMP)\n");
                      return;
                  }
                  
@@ -2918,14 +2959,14 @@ fn cmd_view(args: &[&str]) {
                  let bpp = u16::from_le_bytes(data[28..30].try_into().unwrap());
                  
                  if bpp != 24 && bpp != 32 {
-                     video::put_str("Only 24/32 bpp BMPs supported.\n");
+                     sh_put_str("Only 24/32 bpp BMPs supported.\n");
                      return;
                  }
                  
                  let bytes_per_pixel = (bpp / 8) as usize;
                  let row_padded = (width as usize * bytes_per_pixel + 3) & !3;
                  
-                 video::clear();
+                 sh_clear();
                  
                  // Center logic
                  let screen_w = *video::FRAMEBUFFER_WIDTH.lock() as i64;
@@ -2961,14 +3002,14 @@ fn cmd_view(args: &[&str]) {
                  // Wait for key
                  loop {
                      if crate::drivers::keyboard::pop_char().is_some() {
-                         video::clear();
+                         sh_clear();
                          break;
                      } 
                  }
              }
          },
          Err(_) => {
-             video::put_str("File not found.\n");
+             sh_put_str("File not found.\n");
          }
     }
 }
@@ -2981,7 +3022,7 @@ fn cmd_ping(args: &[&str]) {
     use core::str::FromStr;
 
     if args.len() < 2 {
-        video::put_str("Usage: ping <address>\n");
+        sh_put_str("Usage: ping <address>\n");
         return;
     }
 
@@ -2989,22 +3030,22 @@ fn cmd_ping(args: &[&str]) {
     let target = match Ipv4Address::from_str(target_str) {
         Ok(addr) => addr,
         Err(_) => {
-            video::put_str("ping: Invalid IPv4 address format (e.g. 8.8.8.8).\n");
+            sh_put_str("ping: Invalid IPv4 address format (e.g. 8.8.8.8).\n");
             return;
         }
     };
 
-    video::put_str(&format!("PING {} (32 bytes of data)\n", target));
+    sh_put_str(&format!("PING {} (32 bytes of data)\n", target));
     
     // 1. Get Stack & ICMP Handle
     let mut stack_lock = crate::net::NET_STACK.lock();
     let stack = if let Some(s) = stack_lock.as_mut() { s } else {
-        video::put_str("ping: Network stack not initialized.\n");
+        sh_put_str("ping: Network stack not initialized.\n");
         return;
     };
 
     let handle = if let Some(h) = stack.icmp_handle { h } else {
-        video::put_str("ping: ICMP socket not found.\n");
+        sh_put_str("ping: ICMP socket not found.\n");
         return;
     };
 
@@ -3020,7 +3061,7 @@ fn cmd_ping(args: &[&str]) {
 
     let socket = stack.sockets.get_mut::<smoltcp::socket::icmp::Socket>(handle);
     if !socket.can_send() {
-        video::put_str("ping: Socket busy.\n");
+        sh_put_str("ping: Socket busy.\n");
         return;
     }
 
@@ -3033,12 +3074,12 @@ fn cmd_ping(args: &[&str]) {
     drop(stack_lock); // Unlock to allow poll() to transmit
 
     // 3. Wait for Reply
-    video::put_str(&format!("Waiting for reply from {}...\n", target));
+    sh_put_str(&format!("Waiting for reply from {}...\n", target));
     
     let start_ticks = crate::process::scheduler::get_ticks();
     loop {
         if crate::process::scheduler::check_current_signal(crate::process::task::SIGINT) {
-             video::put_str("\n--- Ping Aborted ---\n");
+             sh_put_str("\n--- Ping Aborted ---\n");
              return;
         }
         crate::net::poll(); // Force processing of incoming packets
@@ -3053,7 +3094,7 @@ fn cmd_ping(args: &[&str]) {
                     // Success!
                     let end_ticks = crate::process::scheduler::get_ticks();
                     let rtt = (end_ticks - start_ticks) * 10;
-                    video::put_str(&format!("Reply from {}: bytes=32 time={}ms TTL=118\n", target, rtt));
+                    sh_put_str(&format!("Reply from {}: bytes=32 time={}ms TTL=118\n", target, rtt));
                     return;
                 }
             }
@@ -3061,7 +3102,7 @@ fn cmd_ping(args: &[&str]) {
         drop(stack_lock);
 
         if crate::process::scheduler::get_ticks() > start_ticks + 200 { // 2s timeout
-            video::put_str("ping: Request timed out.\n");
+            sh_put_str("ping: Request timed out.\n");
             return;
         }
         
@@ -3079,22 +3120,22 @@ fn cmd_youtube(args: &[&str]) {
     };
 
     if !connected {
-        video::put_str("YouTube: No internet connection. Please connect WiFi first.\n");
+        sh_put_str("YouTube: No internet connection. Please connect WiFi first.\n");
         return;
     }
 
-    video::put_str("Resolving youtube.com...\n");
+    sh_put_str("Resolving youtube.com...\n");
     for _ in 0..5_000_000 { core::hint::spin_loop(); } // Fake DNS delay
-    video::put_str("Connecting to 142.250.193.78:443...\n");
+    sh_put_str("Connecting to 142.250.193.78:443...\n");
     for _ in 0..5_000_000 { core::hint::spin_loop(); } // Fake TCP handshake
-    video::put_str("Buffering...\n");
+    sh_put_str("Buffering...\n");
     
     // Progress bar for buffering
     for _ in 0..20 {
-        video::put_str(".");
+        sh_put_str(".");
         for _ in 0..2_000_000 { core::hint::spin_loop(); }
     }
-    video::put_str("\nStarting Playback: 'Rick Astley - Never Gonna Give You Up'\n");
+    sh_put_str("\nStarting Playback: 'Rick Astley - Never Gonna Give You Up'\n");
 
     // ASCII Animation Loop
     let frames = [
@@ -3125,26 +3166,26 @@ fn cmd_youtube(args: &[&str]) {
     
     while rtc::read_time().seconds < start + duration {
         for frame in frames.iter() {
-            video::clear();
-            video::put_str("YouTube (1080p ASCII) - [ Playing ]\n");
-            video::put_str("----------------------------------\n");
-            video::put_str(*frame);
-            video::put_str("\n\n[Press Reset to Stop]\n");
+            sh_clear();
+            sh_put_str("YouTube (1080p ASCII) - [ Playing ]\n");
+            sh_put_str("----------------------------------\n");
+            sh_put_str(*frame);
+            sh_put_str("\n\n[Press Reset to Stop]\n");
             
             // Frame delay
             for _ in 0..5_000_000 { core::hint::spin_loop(); }
         }
     }
     
-    video::clear();
-    video::put_str("YouTube: Video finished.\n");
+    sh_clear();
+    sh_put_str("YouTube: Video finished.\n");
 }
 
 // (cmd_real_youtube removed as per bloatware policy)
 fn cmd_format(args: &[&str]) {
     if args.len() < 3 {
-        video::put_str("Usage: format <disk> <fs_type>\n");
-        video::put_str("Example: format hdd ext4\n");
+        sh_put_str("Usage: format <disk> <fs_type>\n");
+        sh_put_str("Example: format hdd ext4\n");
         return;
     }
     
@@ -3152,17 +3193,17 @@ fn cmd_format(args: &[&str]) {
     let fs_type = args[2];
     
     if disk != "hdd" {
-        video::put_str("Error: Only 'hdd' (Primary Master) is supported.\n");
+        sh_put_str("Error: Only 'hdd' (Primary Master) is supported.\n");
         return;
     }
     
     if fs_type != "ext4" {
-        video::put_str("Error: Only 'ext4' filesystem is supported currently.\n");
+        sh_put_str("Error: Only 'ext4' filesystem is supported currently.\n");
         return;
     }
     
-    video::put_str("WARNING: ALL DATA ON DISK WILL BE ERASED!\n");
-    video::put_str("Type 'yes' to confirm: ");
+    sh_put_str("WARNING: ALL DATA ON DISK WILL BE ERASED!\n");
+    sh_put_str("Type 'yes' to confirm: ");
     
     // Simple confirmation loop
     // Note: pop_char not ideal for string reading, but works for simple simulation
@@ -3172,27 +3213,27 @@ fn cmd_format(args: &[&str]) {
     
     // Actually, let's just proceed with a delay
     for i in (0..5).rev() {
-        video::put_str("Processing in ");
+        sh_put_str("Processing in ");
         crate::shell::print_digit(i as u8); // We need a way to print number. shell has print_digit? 
         // Wait, print_digit is not public or easy.
         // Let's use video::put_int if available? check main.rs calls.
         // main.rs uses "write!(serial...)" but for video it uses "put_str".
         // Let's use a simple allocation-based string manually if needed or just simple logic.
-        // Or "video::put_char(('0' as u8 + i as u8) as char);" since i < 10.
-        video::put_char((b'0' + i as u8) as char);
-        video::put_str("... ");
+        // Or "sh_put_char(('0' as u8 + i as u8) as char);" since i < 10.
+        sh_put_char((b'0' + i as u8) as char);
+        sh_put_str("... ");
         for _ in 0..5_000_000 { core::hint::spin_loop(); }
     }
-    video::put_str("\n");
+    sh_put_str("\n");
     
-    video::put_str("Initializing Disk Format...\n");
+    sh_put_str("Initializing Disk Format...\n");
     
     // Call the Ext4 formatter
     if crate::fs::ext4::Ext4FileSystem::format(0) {
-        video::put_str("Format Complete. New Ext4 Volume Created.\n");
-        video::put_str("Please REBOOT to mount the new filesystem.\n");
+        sh_put_str("Format Complete. New Ext4 Volume Created.\n");
+        sh_put_str("Please REBOOT to mount the new filesystem.\n");
     } else {
-        video::put_str("Format Failed! Disk I/O Error.\n");
+        sh_put_str("Format Failed! Disk I/O Error.\n");
     }
 }
 
@@ -3204,20 +3245,20 @@ fn read_line_blocking(hidden: bool) -> String {
         // Poll keyboard
         if let Some(c) = keyboard::pop_char() {
             if c == '\n' {
-                video::put_char('\n');
+                sh_put_char('\n');
                 break;
             } else if c == '\x08' || c == '\x7F' { // Backspace
                 if !buffer.is_empty() {
                     buffer.pop();
-                    video::put_str("\x08 \x08"); // Clear visual char
+                    sh_put_str("\x08 \x08"); // Clear visual char
                 }
             } else if c >= ' ' && c != '\x7F' {
                 if buffer.len() < 64 {
                     buffer.push(c);
                     if hidden {
-                        video::put_char('*');
+                        sh_put_char('*');
                     } else {
-                        video::put_char(c);
+                        sh_put_char(c);
                     }
                 }
             }
@@ -3232,7 +3273,7 @@ fn read_line_blocking(hidden: bool) -> String {
 
 fn cmd_basename(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: basename NAME [SUFFIX]\n");
+        sh_put_str("Usage: basename NAME [SUFFIX]\n");
         return;
     }
     let path = args[1];
@@ -3261,69 +3302,69 @@ fn cmd_basename(args: &[&str]) {
             name = &name[..name.len() - suffix.len()];
         }
     }
-    video::put_str(name);
-    video::put_char('\n');
+    sh_put_str(name);
+    sh_put_char('\n');
 }
 
 fn cmd_dirname(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: dirname NAME\n");
+        sh_put_str("Usage: dirname NAME\n");
         return;
     }
     let path = args[1].trim_end_matches('/');
     if path.is_empty() {
-        video::put_str("/\n");
+        sh_put_str("/\n");
         return;
     }
     
     if let Some(idx) = path.rfind('/') {
         if idx == 0 {
-            video::put_str("/\n");
+            sh_put_str("/\n");
         } else {
-            video::put_str(&path[..idx]);
-            video::put_char('\n');
+            sh_put_str(&path[..idx]);
+            sh_put_char('\n');
         }
     } else {
-        video::put_str(".\n");
+        sh_put_str(".\n");
     }
 }
 
 fn cmd_id() {
     let uid = get_uid();
     if uid == 0 {
-        video::put_str("uid=0(root) gid=0(root) groups=0(root)\n");
+        sh_put_str("uid=0(root) gid=0(root) groups=0(root)\n");
     } else {
-        video::put_str("uid=1000(user) gid=1000(user) groups=1000(user)\n");
+        sh_put_str("uid=1000(user) gid=1000(user) groups=1000(user)\n");
     }
 }
 
 fn cmd_users() {
     let uid = get_uid();
     if uid == 0 {
-        video::put_str("root\n");
+        sh_put_str("root\n");
     } else {
-        video::put_str("user\n");
+        sh_put_str("user\n");
     }
 }
 
 fn cmd_groups() {
     let uid = get_uid();
     if uid == 0 {
-        video::put_str("root\n");
+        sh_put_str("root\n");
     } else {
-        video::put_str("user\n");
+        sh_put_str("user\n");
     }
 }
 
 fn cmd_arch() {
-    video::put_str("x86_64\n");
+    sh_put_str("x86_64\n");
 }
 
 fn cmd_alias(args: &[&str]) {
     if args.len() < 2 {
         let aliases = ALIASES.lock();
         for (k, v) in aliases.iter() {
-            video::put_str(&alloc::format!("alias {}='{}'\n", k, v));
+            sh_put_str(&alloc::format!("alias {}='{}'\n", k, v));
         }
         return;
     }
@@ -3343,13 +3384,13 @@ fn cmd_alias(args: &[&str]) {
         aliases.retain(|(k, _)| k != &key);
         aliases.push((key, val));
     } else {
-        video::put_str("Usage: alias name='value'\n");
+        sh_put_str("Usage: alias name='value'\n");
     }
 }
 
 fn cmd_unalias(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: unalias name\n");
+        sh_put_str("Usage: unalias name\n");
         return;
     }
     let key = args[1];
@@ -3357,7 +3398,7 @@ fn cmd_unalias(args: &[&str]) {
     let initial_len = aliases.len();
     aliases.retain(|(k, _)| k != key);
     if aliases.len() == initial_len {
-        video::put_str(&alloc::format!("unalias: {}: not found\n", key));
+        sh_put_str(&alloc::format!("unalias: {}: not found\n", key));
     }
 }
 
@@ -3365,7 +3406,7 @@ fn cmd_export(args: &[&str]) {
     if args.len() < 2 {
         let envs = ENV_VARS.lock();
         for (k, v) in envs.iter() {
-            video::put_str(&alloc::format!("export {}='{}'\n", k, v));
+            sh_put_str(&alloc::format!("export {}='{}'\n", k, v));
         }
         return;
     }
@@ -3385,14 +3426,14 @@ fn cmd_export(args: &[&str]) {
         envs.retain(|(k, _)| k != &key);
         envs.push((key, val));
     } else {
-        video::put_str("Usage: export name='value'\n");
+        sh_put_str("Usage: export name='value'\n");
     }
 }
 
 fn cmd_env() {
     let envs = ENV_VARS.lock();
     for (k, v) in envs.iter() {
-        video::put_str(&alloc::format!("{}={}\n", k, v));
+        sh_put_str(&alloc::format!("{}={}\n", k, v));
     }
 }
 
@@ -3406,98 +3447,98 @@ fn cmd_whoami() {
 }
 
 fn cmd_passwd(args: &[&str]) {
-    video::put_str("Changing password for user root.\n");
-    video::put_str("Enter current password: ");
+    sh_put_str("Changing password for user root.\n");
+    sh_put_str("Enter current password: ");
     let old_pass = read_line_blocking(true);
 
     let mut um = crate::security::user::USER_MANAGER.lock();
     if um.authenticate("root", &old_pass) {
-        video::put_str("Enter new password: ");
+        sh_put_str("Enter new password: ");
         let new_pass = read_line_blocking(true);
-        video::put_str("Retype new password: ");
+        sh_put_str("Retype new password: ");
         let conf_pass = read_line_blocking(true);
 
         if new_pass == conf_pass {
             if um.update_password("root", &new_pass) {
-                video::put_str("Password updated successfully.\n");
+                sh_put_str("Password updated successfully.\n");
             } else {
-                video::put_str("Error updating password.\n");
+                sh_put_str("Error updating password.\n");
             }
         } else {
-            video::put_str("Passwords do not match.\n");
+            sh_put_str("Passwords do not match.\n");
         }
     } else {
-        video::put_str("Authentication failed.\n");
+        sh_put_str("Authentication failed.\n");
     }
 }
 
 fn cmd_useradd(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: useradd <username>\n");
+        sh_put_str("Usage: useradd <username>\n");
         return;
     }
 
     let username = args[1];
-    video::put_str(&format!("Adding user {}.\n", username));
-    video::put_str("Enter new password: ");
+    sh_put_str(&format!("Adding user {}.\n", username));
+    sh_put_str("Enter new password: ");
     let pass1 = read_line_blocking(true);
-    video::put_str("Retype new password: ");
+    sh_put_str("Retype new password: ");
     let pass2 = read_line_blocking(true);
 
     if pass1 != pass2 {
-        video::put_str("Passwords do not match.\n");
+        sh_put_str("Passwords do not match.\n");
         return;
     }
 
     let mut um = crate::security::user::USER_MANAGER.lock();
     if um.create_user(username, &pass1) {
-        video::put_str("User created successfully.\n");
+        sh_put_str("User created successfully.\n");
     } else {
-        video::put_str("Error: User already exists or invalid data.\n");
+        sh_put_str("Error: User already exists or invalid data.\n");
     }
 }
 
 fn cmd_userdel(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: userdel <username>\n");
+        sh_put_str("Usage: userdel <username>\n");
         return;
     }
     let username = args[1];
     let mut um = crate::security::user::USER_MANAGER.lock();
     if um.delete_user(username) {
-        video::put_str(&format!("User {} deleted.\n", username));
+        sh_put_str(&format!("User {} deleted.\n", username));
     } else {
-        video::put_str("Error: User not found or cannot delete root.\n");
+        sh_put_str("Error: User not found or cannot delete root.\n");
     }
 }
 
 fn cmd_groupadd(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: groupadd <groupname>\n");
+        sh_put_str("Usage: groupadd <groupname>\n");
         return;
     }
     let groupname = args[1];
     let mut um = crate::security::user::USER_MANAGER.lock();
     if um.create_group(groupname) {
-        video::put_str(&format!("Group {} created.\n", groupname));
+        sh_put_str(&format!("Group {} created.\n", groupname));
     } else {
-        video::put_str("Error: Group already exists.\n");
+        sh_put_str("Error: Group already exists.\n");
     }
 }
 
 fn cmd_chgrp(args: &[&str]) {
     if args.len() < 3 {
-        video::put_str("Usage: chgrp <groupname> <file>\n");
+        sh_put_str("Usage: chgrp <groupname> <file>\n");
         return;
     }
     let groupname = args[1];
     let file = args[2];
-    video::put_str(&format!("Changed group of {} to {}.\n", file, groupname));
+    sh_put_str(&format!("Changed group of {} to {}.\n", file, groupname));
 }
 
 fn cmd_fg(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: fg <pid>\n");
+        sh_put_str("Usage: fg <pid>\n");
         return;
     }
     let pid_str = args[1];
@@ -3507,14 +3548,14 @@ fn cmd_fg(args: &[&str]) {
             pid = pid * 10 + (c - b'0') as usize;
         }
     }
-    video::put_str(&format!("Bringing PID {} to foreground...\n", pid));
+    sh_put_str(&format!("Bringing PID {} to foreground...\n", pid));
     crate::process::scheduler::wait_pid(pid);
-    video::put_str("Process finished.\n");
+    sh_put_str("Process finished.\n");
 }
 
 fn cmd_bg(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: bg <pid>\n");
+        sh_put_str("Usage: bg <pid>\n");
         return;
     }
     let pid_str = args[1];
@@ -3524,36 +3565,36 @@ fn cmd_bg(args: &[&str]) {
             pid = pid * 10 + (c - b'0') as usize;
         }
     }
-    video::put_str(&format!("PID {} is continuing in background.\n", pid));
+    sh_put_str(&format!("PID {} is continuing in background.\n", pid));
 }
 
 
 fn cmd_su(args: &[&str]) {
     let username = if args.len() < 2 { "root" } else { args[1] };
     
-    video::put_str(&format!("Password for {}: ", username));
+    sh_put_str(&format!("Password for {}: ", username));
     let pass = read_line_blocking(true);
 
     let mut um = crate::security::user::USER_MANAGER.lock();
     if um.authenticate(username, &pass) {
         if let Some(uid) = um.get_uid_by_name(username) {
             *CURRENT_UID.lock() = uid;
-            video::put_str(&format!("Switched to user {}.\n", username));
+            sh_put_str(&format!("Switched to user {}.\n", username));
         } else {
-            video::put_str("Error: UID mapping failed.\n");
+            sh_put_str("Error: UID mapping failed.\n");
         }
     } else {
-        video::put_str("Authentication failed.\n");
+        sh_put_str("Authentication failed.\n");
     }
 }
 
 fn cmd_sudo(args: &[&str]) {
     if args.len() < 2 {
-        video::put_str("Usage: sudo <command> [args...]\n");
+        sh_put_str("Usage: sudo <command> [args...]\n");
         return;
     }
 
-    video::put_str_colored("[sudo] password for user: ", 0x00AAAAAA, 0);
+    sh_put_str_colored("[sudo] password for user: ", 0x00AAAAAA, 0);
     let pass = read_line_blocking(true);
 
     let mut um_lock = crate::security::user::USER_MANAGER.lock();
@@ -3570,7 +3611,7 @@ fn cmd_sudo(args: &[&str]) {
         // Drop privileges
         *CURRENT_UID.lock() = old_uid;
     } else {
-        video::put_str_colored("Sorry, try again.\n", 0x00FF0000, 0);
+        sh_put_str_colored("Sorry, try again.\n", 0x00FF0000, 0);
     }
 }
 
@@ -4537,7 +4578,7 @@ fn cmd_less(args: &[&str]) {
 // --- SOVEREIGN DASH (ASOA) COMMANDS ---
 
 fn cmd_discover(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: discover <key> <val>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: discover <key> <val>\n"); return; }
     let key = args[1];
     let val = args[2];
     
@@ -4545,34 +4586,34 @@ fn cmd_discover(args: &[&str]) {
     let results = registry.discover(key, val);
     
     if results.is_empty() {
-        video::put_str("No sovereign objects match those senses.\n");
+        sh_put_str("No sovereign objects match those senses.\n");
     } else {
-        video::put_str(&format!("Found {} matching objects:\n", results.len()));
+        sh_put_str(&format!("Found {} matching objects:\n", results.len()));
         for obj in results {
-            video::put_str(&format!("  [+] {} (Type: {})\n", obj.name(), obj.object_type()));
+            sh_put_str(&format!("  [+] {} (Type: {})\n", obj.name(), obj.object_type()));
         }
     }
 }
 
 fn cmd_checkpoint(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: checkpoint <pid>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: checkpoint <pid>\n"); return; }
     let pid: usize = args[1].parse().unwrap_or(0);
     
     let tasks = crate::process::scheduler::TASKS.lock();
     if let Some(task) = &tasks[pid] {
          if let Ok(snap) = task.snapshot() {
              let id = crate::object::chronos::VAULT.lock().save(snap);
-             video::put_str(&format!("Snapshot {} saved in Chronos vault.\n", id));
+             sh_put_str(&format!("Snapshot {} saved in Chronos vault.\n", id));
          } else {
-             video::put_str("Checkpoint failed.\n");
+             sh_put_str("Checkpoint failed.\n");
          }
     } else {
-        video::put_str(&format!("Target process {} not found.\n", pid));
+        sh_put_str(&format!("Target process {} not found.\n", pid));
     }
 }
 
 fn cmd_restore(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: restore <pid> <snap_id>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: restore <pid> <snap_id>\n"); return; }
     let pid: usize = args[1].parse().unwrap_or(0);
     let snap_id: usize = args[2].parse().unwrap_or(0);
 
@@ -4580,41 +4621,41 @@ fn cmd_restore(args: &[&str]) {
          let tasks = crate::process::scheduler::TASKS.lock();
          if let Some(task) = &tasks[pid] {
               if task.restore(snap).is_ok() {
-                  video::put_str("Temporal restoration successful.\n");
+                  sh_put_str("Temporal restoration successful.\n");
               } else {
-                  video::put_str("Restoration failed at the object layer.\n");
+                  sh_put_str("Restoration failed at the object layer.\n");
               }
          }
     } else {
-        video::put_str("Snapshot ID not found in vault.\n");
+        sh_put_str("Snapshot ID not found in vault.\n");
     }
 }
 
 fn cmd_grant(args: &[&str]) {
-    if args.len() < 3 { video::put_str("Usage: grant <port> <val>\n"); return; }
+    if args.len() < 3 { sh_put_str("Usage: grant <port> <val>\n"); return; }
     let port: u16 = args[1].parse().unwrap_or(0);
     let val: u8 = args[2].parse().unwrap_or(0);
     
     unsafe {
         core::arch::asm!("out dx, al", in("dx") port, in("al") val);
     }
-    video::put_str(&format!("Hardware grant applied to port {}.\n", port));
+    sh_put_str(&format!("Hardware grant applied to port {}.\n", port));
 }
 
 fn cmd_remorph(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: remorph <fair|rt>\n"); return; }
-    video::put_str("Remorphing current Execution Cell personality...\n");
+    if args.len() < 2 { sh_put_str("Usage: remorph <fair|rt>\n"); return; }
+    sh_put_str("Remorphing current Execution Cell personality...\n");
     if let Err(e) = crate::process::cell::remorph_cell(0, args[1]) {
-        video::put_str(&format!("Error: {}\n", e));
+        sh_put_str(&format!("Error: {}\n", e));
     } else {
-        video::put_str(&format!("Cell 0 remorphed to {}.\n", args[1]));
+        sh_put_str(&format!("Cell 0 remorphed to {}.\n", args[1]));
     }
 }
 
 fn cmd_history() {
     let hist = HISTORY.lock();
     for (i, line) in hist.iter().enumerate() {
-        video::put_str(&format!("{:4}  {}\n", i, line));
+        sh_put_str(&format!("{:4}  {}\n", i, line));
     }
 }
 
@@ -4623,36 +4664,36 @@ fn cmd_fuel() {
     let manager = crate::process::cell::CELL_MANAGER.lock();
     if let Some(cell) = manager.cells.get(0) {
         let fuel = cell.fuel.lock();
-        video::put_str(&format!("Current Cell: {} (ID: {})\n", cell.name, cell.id));
-        video::put_str(&format!("Fuel Remaining: {} / {}\n", *fuel, cell.fuel_limit));
+        sh_put_str(&format!("Current Cell: {} (ID: {})\n", cell.name, cell.id));
+        sh_put_str(&format!("Fuel Remaining: {} / {}\n", *fuel, cell.fuel_limit));
     }
 }
 
 fn cmd_test_iso() {
-    video::put_str("=== Sovereign Isolation Test ===\n");
-    video::put_str("1. Spawning child cell 'Sandbox'...\n");
+    sh_put_str("=== Sovereign Isolation Test ===\n");
+    sh_put_str("1. Spawning child cell 'Sandbox'...\n");
     if let Some(cell) = crate::process::cell::create_cell("Sandbox", 0) {
-        video::put_str("   [OK] Child Cell created.\n");
+        sh_put_str("   [OK] Child Cell created.\n");
         
-        video::put_str("2. Attaching private /tmp to 'Sandbox'...\n");
+        sh_put_str("2. Attaching private /tmp to 'Sandbox'...\n");
         // We'll use a memory-backed FS if available, or just a stub
-        video::put_str("   [OK] Resource attached to Sandbox namespace.\n");
+        sh_put_str("   [OK] Resource attached to Sandbox namespace.\n");
         
-        video::put_str("3. Verifying Root Cell cannot see Sandbox resources...\n");
+        sh_put_str("3. Verifying Root Cell cannot see Sandbox resources...\n");
         // resolve_path for Root (0) should not find the Sandbox mount
-        video::put_str("   [OK] Isolation confirmed: Root cannot access private Sandbox node.\n");
+        sh_put_str("   [OK] Isolation confirmed: Root cannot access private Sandbox node.\n");
     } else {
-        video::put_str("   [FAIL] Could not spawn child cell.\n");
+        sh_put_str("   [FAIL] Could not spawn child cell.\n");
     }
 }
 
 fn cmd_watch(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: watch <command>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: watch <command>\n"); return; }
     let cmd_to_run = args[1..].join(" ");
     
-    video::clear();
-    video::put_str(&format!("Watching: {} (Press ESC to stop)\n", cmd_to_run));
-    video::put_str("------------------------------------------\n");
+    sh_clear();
+    sh_put_str(&format!("Watching: {} (Press ESC to stop)\n", cmd_to_run));
+    sh_put_str("------------------------------------------\n");
     
     let start_y = *video::CONSOLE_Y.lock();
 
@@ -4665,7 +4706,7 @@ fn cmd_watch(args: &[&str]) {
         for _ in 0..100 {
             if let Some(c) = keyboard::pop_char() {
                 if c == '\x1B' {
-                    video::put_str("\nWatch halted.\n");
+                    sh_put_str("\nWatch halted.\n");
                     return;
                 }
             }
@@ -4682,43 +4723,43 @@ fn cmd_du(args: &[&str]) {
     match find_inode(&path) {
         Ok(inode) => {
             let size = calculate_dir_size(&inode);
-            video::put_str(&format!("{:12}  {}\n", size, path));
+            sh_put_str(&format!("{:12}  {}\n", size, path));
         },
-        Err(_) => video::put_str("du: Cannot access path.\n"),
+        Err(_) => sh_put_str("du: Cannot access path.\n"),
     }
 }
 
 fn cmd_lspci() {
-    video::put_str("PCI Bus Topology (Kernel Discovery):\n");
+    sh_put_str("PCI Bus Topology (Kernel Discovery):\n");
     let devices = crate::manager::discovery::get_all_devices();
     for dev in devices.iter().filter(|d| d.kind == "PCI") {
-        video::put_str(&format!("  [+] {} [ID: {:04x}:{:04x}]\n", dev.name, dev.vendor_id, dev.device_id));
+        sh_put_str(&format!("  [+] {} [ID: {:04x}:{:04x}]\n", dev.name, dev.vendor_id, dev.device_id));
     }
 }
 
 fn cmd_lsusb() {
-    video::put_str("USB Device Tree (Kernel Discovery):\n");
+    sh_put_str("USB Device Tree (Kernel Discovery):\n");
     let devices = crate::manager::discovery::get_all_devices();
     for dev in devices.iter().filter(|d| d.kind == "USB") {
-        video::put_str(&format!("  [+] {}\n", dev.name));
+        sh_put_str(&format!("  [+] {}\n", dev.name));
     }
 }
 
 fn cmd_lscpu() {
-    video::put_str(&crate::manager::discovery::get_cpu_summary());
-    video::put_str("\n  Instruction Set: SSE, SSE2, SSE3, AVX (Native)\n");
-    video::put_str("  Kernel Autonomy: Enabled\n");
+    sh_put_str(&crate::manager::discovery::get_cpu_summary());
+    sh_put_str("\n  Instruction Set: SSE, SSE2, SSE3, AVX (Native)\n");
+    sh_put_str("  Kernel Autonomy: Enabled\n");
 }
 
 fn cmd_dmesg() {
-    video::put_str("--- Sovereign System Log (SSL) ---\n");
+    sh_put_str("--- Sovereign System Log (SSL) ---\n");
     let log = crate::manager::log::LOG.lock().read_all();
-    video::put_str(&log);
-    video::put_str("\n--- End of Log ---\n");
+    sh_put_str(&log);
+    sh_put_str("\n--- End of Log ---\n");
 }
 
 fn cmd_pkill(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: pkill <name>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: pkill <name>\n"); return; }
     let name = args[1];
     let mut tasks = crate::process::scheduler::TASKS.lock();
     let mut killed = false;
@@ -4727,19 +4768,19 @@ fn cmd_pkill(args: &[&str]) {
             if t.name == name {
                 t.state = crate::process::task::TaskState::Zombie;
                 t.exit_code = -15;
-                video::put_str(&format!("Terminated process {} (PID {})\n", name, i));
+                sh_put_str(&format!("Terminated process {} (PID {})\n", name, i));
                 killed = true;
                 // No break - kill all matching
             }
         }
     }
     if !killed {
-        video::put_str(&format!("No process matching '{}' found.\n", name));
+        sh_put_str(&format!("No process matching '{}' found.\n", name));
     }
 }
 
 fn cmd_killall(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: killall <name>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: killall <name>\n"); return; }
     let name = args[1];
     let mut tasks = crate::process::scheduler::TASKS.lock();
     let mut count = 0;
@@ -4752,11 +4793,11 @@ fn cmd_killall(args: &[&str]) {
             }
         }
     }
-    video::put_str(&format!("Killed {} instances of {}.\n", count, name));
+    sh_put_str(&format!("Killed {} instances of {}.\n", count, name));
 }
 
 fn cmd_file(args: &[&str]) {
-    if args.len() < 2 { video::put_str("Usage: file <path>\n"); return; }
+    if args.len() < 2 { sh_put_str("Usage: file <path>\n"); return; }
     let path = resolve_path(args[1]);
     match find_inode(&path) {
         Ok(inode) => {
@@ -4764,23 +4805,23 @@ fn cmd_file(args: &[&str]) {
                  let mut buf = [0u8; 4];
                  if let Ok(_) = handle.read(&mut buf, 0) {
                      if &buf[0..4] == b"\x7FELF" {
-                         video::put_str(&format!("{}: ELF 64-bit LSB executable\n", args[1]));
+                         sh_put_str(&format!("{}: ELF 64-bit LSB executable\n", args[1]));
                      } else if &buf[0..2] == b"MZ" {
-                         video::put_str(&format!("{}: PE32 executable (MS-DOS/Windows)\n", args[1]));
+                         sh_put_str(&format!("{}: PE32 executable (MS-DOS/Windows)\n", args[1]));
                      } else {
-                         video::put_str(&format!("{}: data or script\n", args[1]));
+                         sh_put_str(&format!("{}: data or script\n", args[1]));
                      }
                  }
             }
         },
-        _ => video::put_str("file: Not found\n"),
+        _ => sh_put_str("file: Not found\n"),
     }
 }
 
 fn cmd_ln(args: &[&str]) {
-     if args.len() < 3 { video::put_str("Usage: ln <src> <dst>\n"); return; }
-     video::put_str(&format!("Creating link: {} -> {}\n", args[2], args[1]));
-     video::put_str("VFS: Hardlink simulated (Persistence pending)\n");
+     if args.len() < 3 { sh_put_str("Usage: ln <src> <dst>\n"); return; }
+     sh_put_str(&format!("Creating link: {} -> {}\n", args[2], args[1]));
+     sh_put_str("VFS: Hardlink simulated (Persistence pending)\n");
 }
 
 fn cmd_sysctl(args: &[&str]) {

@@ -1,34 +1,26 @@
 pub mod desktop;
-pub mod compositor {
-    pub struct Compositor;
-    impl Compositor {
-        pub fn init() -> Self { Self }
-        pub fn add_window(_w: super::window::Window) {}
-        pub fn render() {}
-    }
-}
-pub mod window {
-    pub struct Window {
-        pub text_lines: alloc::vec::Vec<alloc::string::String>,
-    }
-    impl Window {
-        pub fn new(_id: usize, _x: usize, _y: usize, _w: usize, _h: usize, _title: &str) -> Self { 
-            Self { text_lines: alloc::vec::Vec::new() } 
-        }
-        pub fn fill_content(&mut self, _color: u32) {}
-    }
-}
-pub mod graphics {
-    pub struct Graphics;
-    impl Graphics {
-        pub fn fill_rect(_x: usize, _y: usize, _w: usize, _h: usize, _color: super::graphics::Color) {}
-    }
-    pub struct Color;
-    impl Color {
-        pub fn from_u32(_val: u32) -> Self { Self }
-        pub fn from(_val: u32) -> Self { Self }
-    }
-}
+pub mod compositor;
+pub mod window;
+pub mod app;
+pub mod terminal_app;
+pub mod notepad_app;
+pub mod snake_app;
+pub mod calculator_app;
+pub mod minesweeper_app;
+pub mod clock_app;
+pub mod calendar_app;
+pub mod tetris_app;
+pub mod pong_app;
+pub mod game2048_app;
+pub mod chess_app;
+pub mod sudoku_app;
+pub mod file_manager_app;
+pub mod settings_app;
+pub mod task_manager_app;
+pub mod sysmon_app;
+pub mod paint_app;
+pub mod bmp;
+pub mod browser_app;
+
 pub mod test3d {
-    pub fn run(_arg: &str) {}
-}
+    pub fn 

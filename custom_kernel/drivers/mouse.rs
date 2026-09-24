@@ -47,8 +47,8 @@ impl MouseRingBuffer {
 }
 
 static MOUSE_BUFFER: Mutex<MouseRingBuffer> = Mutex::new(MouseRingBuffer::new());
-static mut MOUSE_X: isize = 0;
-static mut MOUSE_Y: isize = 0;
+static mut MOUSE_X: isize = 512;
+static mut MOUSE_Y: isize = 384;
 static mut MOUSE_BUTTONS: u8 = 0;
 
 pub fn pop_event() -> Option<MouseEvent> {
@@ -69,10 +69,10 @@ pub fn get_grid_position() -> (usize, usize) {
     ((x / 8) as usize, (y / 12) as usize)
 }
 
-fn update_position(dx: i8, dy: i8, buttons: u8) {
+fn update_position(dx: isize, dy: isize, buttons: u8) {
     unsafe {
-        MOUSE_X += dx as isize;
-        MOUSE_Y -= dy as isize; 
+        MOUSE_X += dx;
+        MOUSE_Y -= dy;
         MOUSE_BUTTONS = buttons;
 
         let w = if let Some(fw) = video::FRAMEBUFFER_WIDTH.try_lock() { *fw as isize } else { 1024 };
@@ -188,8 +188,8 @@ extern "C" fn rust_mouse_handler() {
                 MOUSE_CYCLE = 0;
                 
                 let flags = MOUSE_BYTE[0];
-                let dx = MOUSE_BYTE[1] as i8;
-                let dy = MOUSE_BYTE[2] as i8;
+                let dx = MOUSE_BYTE[1] as i8 as isize * 3;
+                let dy = MOUSE_BYTE[2] as i8 as isize * 3;
                 
                 update_position(dx, dy, flags & 0x07);
             }

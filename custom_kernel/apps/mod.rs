@@ -16,3 +16,5 @@ pub mod awm;
 pub mod fetch;
 pub mod httpd;
 pub mod gui_apps;
+pub mod gputest;  
+ 

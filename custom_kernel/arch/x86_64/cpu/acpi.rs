@@ -293,7 +293,10 @@ pub fn init() {
         let rsdp_ptr = match find_rsdp() {
             Some(p) => p,
             None => {
-                let _ = write!(serial, "ACPI: RSDP not found! SMP disabled.\n");
+                let _ = write!(serial, "ACPI: RSDP not found!\n");
+                let mut state = ACPI.lock();
+                state.cpu_count = 1;
+                state.cpus[0] = CpuInfo { apic_id: 0, acpi_id: 0, enabled: true, is_bsp: true };
                 return;
             }
         };

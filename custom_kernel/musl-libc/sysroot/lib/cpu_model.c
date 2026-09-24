@@ -1,0 +1,1 @@
+struct { unsigned int __cpu_vendor; unsigned int __cpu_type; unsigned int __cpu_subtype; unsigned int __cpu_features[1]; } __cpu_model = {0, 0, 0, {0}}; unsigned int __cpu_features2 = 0; void __cpu_indicator_init(void) {}

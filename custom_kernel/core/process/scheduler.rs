@@ -4,25 +4,25 @@ use spin::Mutex;
 use crate::process::task::{Task, TaskState, Context};
 use crate::process::switch::__switch;
 
-pub const MAX_TASKS: usize = 16;
+pub const MAX_TASKS: usize = 64;
 
 pub static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([const { None }; MAX_TASKS]);
 
 pub static FOREGROUND_PID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 static mut TICKS: u64 = 0;
-pub static READY_BITMAP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static READY_BITMAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 pub static SCHEDULER_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn set_ready(pid: usize) {
     if pid < MAX_TASKS {
-        READY_BITMAP.fetch_or(1 << pid, core::sync::atomic::Ordering::Relaxed);
+        READY_BITMAP.fetch_or(1u64 << pid, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
 fn clear_ready(pid: usize) {
     if pid < MAX_TASKS {
-        READY_BITMAP.fetch_and(!(1 << pid), core::sync::atomic::Ordering::Relaxed);
+        READY_BITMAP.fetch_and(!(1u64 << pid), core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -486,7 +486,7 @@ fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize
                 clear_ready(next_pid); // Stale bit
             }
         }
-        mask &= !(1 << next_pid); // clear the bit we just checked
+        mask &= !(1u64 << next_pid); // clear the bit we just checked
     }
     
     None

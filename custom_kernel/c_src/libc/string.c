@@ -1,5 +1,4 @@
 #include "string.h"
-#include "stdlib.h"
 
 void *memset(void *dest, int val, size_t len) {
     unsigned char *ptr = (unsigned char *)dest;
@@ -115,12 +114,6 @@ char *strrchr(const char *s, int c) {
     return (char *)last;
 }
 
-char *strdup(const char *s) {
-    size_t len = strlen(s) + 1;
-    char *new = malloc(len);
-    if (!new) return NULL;
-    return memcpy(new, s, len);
-}
 
 char *strstr(const char *haystack, const char *needle) {
     if (!*needle) return (char *)haystack;

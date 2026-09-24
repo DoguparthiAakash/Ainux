@@ -213,11 +213,6 @@ impl BitmapPmm {
         let _ = write!(serial, "PMM: Max physical address: {:#x}\n", max_addr);
         let _ = write!(serial, "PMM: Total available memory: {} MB\n", total_available / (1024 * 1024));
 
-        // Cap at 10MB to strictly fulfill memory footprint requirements (<2MB kernel, <10MB system)
-        if max_addr > 0xA00000 {
-            max_addr = 0xA00000;
-        }
-
         let total_frames = (max_addr / PAGE_SIZE as u64) as usize;
         let bitmap_size_u64 = (total_frames + 63) / 64;
         let bitmap_size_bytes = bitmap_size_u64 * 8;
@@ -235,11 +230,14 @@ impl BitmapPmm {
             let e_size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*entry_ptr).size)) };
             if e_type == MMAP_TYPE_AVAILABLE && e_len >= bitmap_size_bytes as u64 {
                 let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
-                let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
+                let kernel_end_phys = kernel_end_virt.wrapping_sub(0xFFFFFFFF80000000);
                 let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
                 
-                let candidate = if e_addr < kernel_end_aligned {
-                    kernel_end_aligned
+                let _ = write!(crate::drivers::serial::SerialPort::new(0x3F8), "DEBUG (Phase 2): e_addr={:#x} e_len={:#x} virt={:#x} phys={:#x} aligned={:#x}\n", e_addr, e_len, kernel_end_virt, kernel_end_phys, kernel_end_aligned);
+                
+                let safe_start = 0x1000000; // 16 MB
+                let candidate = if e_addr < safe_start {
+                    safe_start
                 } else {
                     e_addr
                 };
@@ -302,12 +300,9 @@ impl BitmapPmm {
         }
 
         // Phase 4: Mark critical regions as used (in bitmap)
-        // Reserve memory from 0 up to the end of the kernel (dynamically calculated)
-        let kernel_end_virt = unsafe { core::ptr::addr_of!(__kernel_end) as u64 };
-        let kernel_end_phys = kernel_end_virt - 0xFFFFFFFF80000000;
-        let kernel_end_aligned = (kernel_end_phys + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
-        
-        pmm.mark_region_used(0, kernel_end_aligned as usize);
+        // Reserve memory from 0 up to 16MB to protect the kernel and page tables
+        let safe_start = 0x1000000;
+        pmm.mark_region_used(0, safe_start as usize);
         
         // Bitmap region
         pmm.mark_region_used(bitmap_phys, bitmap_size_bytes);
@@ -354,7 +349,7 @@ impl BitmapPmm {
         use core::fmt::Write;
         let _ = write!(serial, "PMM: Basic init with {} bytes\n", total_bytes);
 
-        let max_addr = core::cmp::min(total_bytes, 0xA00000); // Cap at 10MB for strict memory usage limits
+        let max_addr = total_bytes;
         let total_frames = (max_addr / PAGE_SIZE as u64) as usize;
         let bitmap_size_u64 = (total_frames + 63) / 64;
         let bitmap_size_bytes = bitmap_size_u64 * 8;

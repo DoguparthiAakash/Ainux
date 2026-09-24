@@ -102,10 +102,13 @@ pub fn run() {
             // Draw 2D Board
             for row in 0..8 {
                 for col in 0..8 {
-                    let px = start_x + (col * sq_size);
-                    let py = start_y + (row * sq_size);
+                    let render_row = if game.white_turn { row } else { 7 - row };
+                    let render_col = if game.white_turn { col } else { 7 - col };
                     
-                    let mut bg_color = if (row + col) % 2 == 0 { 0xFFCCCCCC } else { 0xFF333333 };
+                    let px = start_x + (render_col * sq_size);
+                    let py = start_y + (render_row * sq_size);
+                    
+                    let mut bg_color = if (render_row + render_col) % 2 == 0 { 0xFFCCCCCC } else { 0xFF333333 };
                     
                     let is_selected = game.selected == Some((col, row));
                     let is_cursor = game.cursor_x == col && game.cursor_y == row;
@@ -192,14 +195,19 @@ pub fn run() {
 
         let c = keyboard::get_char();
         let shift = keyboard::is_shift_active();
+        let up_dy = if game.white_turn { -1 } else { 1 };
+        let dn_dy = if game.white_turn { 1 } else { -1 };
+        let lf_dx = if game.white_turn { -1 } else { 1 };
+        let rt_dx = if game.white_turn { 1 } else { -1 };
+        
         match c {
             'q' | 'Q' | '\x1B' | '\x03' => {
                 break;
             },
-            keyboard::KEY_UP | 'w' | 'W' => handle_move(0, -1, shift, &mut game),
-            keyboard::KEY_DOWN | 's' | 'S' => handle_move(0, 1, shift, &mut game),
-            keyboard::KEY_LEFT | 'a' | 'A' => handle_move(-1, 0, shift, &mut game),
-            keyboard::KEY_RIGHT | 'd' | 'D' => handle_move(1, 0, shift, &mut game),
+            keyboard::KEY_UP | 'w' | 'W' => handle_move(0, up_dy, shift, &mut game),
+            keyboard::KEY_DOWN | 's' | 'S' => handle_move(0, dn_dy, shift, &mut game),
+            keyboard::KEY_LEFT | 'a' | 'A' => handle_move(lf_dx, 0, shift, &mut game),
+            keyboard::KEY_RIGHT | 'd' | 'D' => handle_move(rt_dx, 0, shift, &mut game),
             '\n' | '\r' | ' ' => {
                 if let Some((sx, sy)) = game.selected {
                     if game.valid_moves.contains(&(game.cursor_x, game.cursor_y)) {

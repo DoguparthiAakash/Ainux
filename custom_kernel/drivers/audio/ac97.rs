@@ -104,7 +104,7 @@ struct BdlEntry {
 }
 
 // Raw audio data extracted from the user's MP3 file (16-bit, 48000Hz, mono)
-static STARTUP_SOUND: &[u8] = include_bytes!("../../../Audio/startup.raw");
+static STARTUP_SOUND: &[u8] = include_bytes!("../../Audio/startup.raw");
 
 pub fn play_startup_sound() {
     let mut ac97 = AC97.lock();

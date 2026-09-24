@@ -30,6 +30,12 @@ void gfx_put_pixel_safe(int x, int y, uint32_t color) {
         fb_addr[offset] = color & 0xFF;
         fb_addr[offset + 1] = (color >> 8) & 0xFF;
         fb_addr[offset + 2] = (color >> 16) & 0xFF;
+    } else if (fb_bpp == 16) {
+        uint8_t r = (color >> 16) & 0xFF;
+        uint8_t g = (color >> 8) & 0xFF;
+        uint8_t b = color & 0xFF;
+        uint16_t color16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        *((uint16_t*)(fb_addr + offset)) = color16;
     }
 }
 
@@ -43,6 +49,12 @@ void gfx_put_pixel(int x, int y, uint32_t color) {
         fb_addr[offset] = color & 0xFF;
         fb_addr[offset + 1] = (color >> 8) & 0xFF;
         fb_addr[offset + 2] = (color >> 16) & 0xFF;
+    } else if (fb_bpp == 16) {
+        uint8_t r = (color >> 16) & 0xFF;
+        uint8_t g = (color >> 8) & 0xFF;
+        uint8_t b = color & 0xFF;
+        uint16_t color16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        *((uint16_t*)(fb_addr + offset)) = color16;
     }
 }
 
@@ -97,15 +109,25 @@ void gfx_clear(uint32_t color) {
             fb_addr[i + 1] = (color >> 8) & 0xFF;
             fb_addr[i + 2] = (color >> 16) & 0xFF;
         }
+    } else if (fb_bpp == 16) {
+        uint16_t *dest = (uint16_t *)fb_addr;
+        uint64_t pixels = (fb_height * fb_pitch) / 2;
+        uint8_t r = (color >> 16) & 0xFF;
+        uint8_t g = (color >> 8) & 0xFF;
+        uint8_t b = color & 0xFF;
+        uint16_t color16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        for (uint64_t i = 0; i < pixels; i++) {
+            dest[i] = color16;
+        }
     }
 }
 
 void gfx_draw_char_fast(int x, int y, uint32_t fg, uint32_t bg, const uint8_t *bitmap, int transparent) {
     if (!fb_addr) return;
-    if (x < 0 || y < 0 || x + 8 > (int)fb_width || y + 12 > (int)fb_height) return;
+    if (x < 0 || y < 0 || x + 8 > (int)fb_width || y + 16 > (int)fb_height) return;
     
     if (fb_bpp == 32) {
-        for (int j = 0; j < 12; j++) {
+        for (int j = 0; j < 16; j++) {
             uint32_t *row_ptr = (uint32_t *)(fb_addr + (y + j) * fb_pitch + x * 4);
             uint8_t row = bitmap[j];
             for (int i = 0; i < 8; i++) {
@@ -117,7 +139,7 @@ void gfx_draw_char_fast(int x, int y, uint32_t fg, uint32_t bg, const uint8_t *b
             }
         }
     } else if (fb_bpp == 24) {
-        for (int j = 0; j < 12; j++) {
+        for (int j = 0; j < 16; j++) {
             uint8_t *row_ptr = fb_addr + (y + j) * fb_pitch + x * 3;
             uint8_t row = bitmap[j];
             for (int i = 0; i < 8; i++) {
@@ -129,6 +151,28 @@ void gfx_draw_char_fast(int x, int y, uint32_t fg, uint32_t bg, const uint8_t *b
                     row_ptr[i * 3] = bg & 0xFF;
                     row_ptr[i * 3 + 1] = (bg >> 8) & 0xFF;
                     row_ptr[i * 3 + 2] = (bg >> 16) & 0xFF;
+                }
+            }
+        }
+    } else if (fb_bpp == 16) {
+        uint8_t fg_r = (fg >> 16) & 0xFF;
+        uint8_t fg_g = (fg >> 8) & 0xFF;
+        uint8_t fg_b = fg & 0xFF;
+        uint16_t fg16 = ((fg_r & 0xF8) << 8) | ((fg_g & 0xFC) << 3) | (fg_b >> 3);
+        
+        uint8_t bg_r = (bg >> 16) & 0xFF;
+        uint8_t bg_g = (bg >> 8) & 0xFF;
+        uint8_t bg_b = bg & 0xFF;
+        uint16_t bg16 = ((bg_r & 0xF8) << 8) | ((bg_g & 0xFC) << 3) | (bg_b >> 3);
+
+        for (int j = 0; j < 16; j++) {
+            uint16_t *row_ptr = (uint16_t *)(fb_addr + (y + j) * fb_pitch + x * 2);
+            uint8_t row = bitmap[j];
+            for (int i = 0; i < 8; i++) {
+                if ((row >> i) & 1) {
+                    row_ptr[i] = fg16;
+                } else if (!transparent) {
+                    row_ptr[i] = bg16;
                 }
             }
         }
@@ -169,6 +213,12 @@ void gfx_blit_buffer(const uint32_t *src, int x, int y, int w, int h, int src_st
                     fb_addr[dest_offset] = color & 0xFF;
                     fb_addr[dest_offset + 1] = (color >> 8) & 0xFF;
                     fb_addr[dest_offset + 2] = (color >> 16) & 0xFF;
+                } else if (fb_bpp == 16) {
+                    uint8_t r = (color >> 16) & 0xFF;
+                    uint8_t g = (color >> 8) & 0xFF;
+                    uint8_t b = color & 0xFF;
+                    uint16_t color16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+                    *((uint16_t*)(fb_addr + dest_offset)) = color16;
                 }
             }
             
@@ -207,6 +257,16 @@ void gfx_blit_buffer_opaque(const uint32_t *src, int x, int y, int w, int h, int
                 fb_addr[dest_offset + 1] = (color >> 8) & 0xFF;
                 fb_addr[dest_offset + 2] = (color >> 16) & 0xFF;
                 dest_offset += 3;
+            }
+        } else if (fb_bpp == 16) {
+            for (int i = 0; i < draw_w; i++) {
+                uint32_t color = src[src_offset + i];
+                uint8_t r = (color >> 16) & 0xFF;
+                uint8_t g = (color >> 8) & 0xFF;
+                uint8_t b = color & 0xFF;
+                uint16_t color16 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+                *((uint16_t*)(fb_addr + dest_offset)) = color16;
+                dest_offset += 2;
             }
         }
     }

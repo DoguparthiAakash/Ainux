@@ -8,13 +8,13 @@
 void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color) {
     if (c == '\n' || c == '\r') return;
     
-    const uint8_t *glyph8x8 = NULL;
-    uint8_t synth[12] = {0};
+    const uint8_t *glyph = NULL;
+    uint8_t synth[16] = {0};
     int is_synth = 0;
 
     // 1. Character Categorization & Glyph Selection
-    if (c >= 32 && c <= 126) {
-        glyph8x8 = font_8x8[c - 32];
+    if (c >= 0 && c < 256) {
+        glyph = font_8x16[c];
     } else {
         is_synth = 1;
         switch(c) {
@@ -65,24 +65,17 @@ void c_draw_char(int x, int y, uint32_t c, uint32_t fg_color, uint32_t bg_color)
             case 0x2261: // Congruent ≡
                 synth[2] = 0xFF; synth[5] = 0xFF; synth[8] = 0xFF; break;
             default:
-                is_synth = 0; glyph8x8 = font_8x8['?' - 32]; break;
+                is_synth = 0; glyph = font_8x16['?']; break;
         }
     }
 
     int px = x * 8;
-    int py = y * 12;
+    int py = y * 16;
 
     if (is_synth) {
         gfx_draw_char_fast(px, py, fg_color, bg_color, synth, 0);
     } else {
-        uint8_t full_bitmap[12];
-        for (int i = 0; i < 8; i++) {
-            full_bitmap[i] = glyph8x8[i];
-        }
-        for (int i = 8; i < 12; i++) {
-            full_bitmap[i] = 0;
-        }
-        gfx_draw_char_fast(px, py, fg_color, bg_color, full_bitmap, 0);
+        gfx_draw_char_fast(px, py, fg_color, bg_color, glyph, 0);
     }
 }
 

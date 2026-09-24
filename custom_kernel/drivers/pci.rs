@@ -34,6 +34,46 @@ pub fn pci_config_write(bus: u8, slot: u8, func: u8, offset: u8, val: u32) {
     outl(CONFIG_DATA, val);
 }
 
+// ── Typed accessors used by the KPI layer ────────────────────────────────────
+
+pub fn config_read32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    pci_config_read(bus, slot, func, offset)
+}
+
+pub fn config_read16(bus: u8, slot: u8, func: u8, offset: u8) -> u16 {
+    let val = pci_config_read(bus, slot, func, offset & !2);
+    let shift = (offset & 2) * 8;
+    (val >> shift) as u16
+}
+
+pub fn config_read8(bus: u8, slot: u8, func: u8, offset: u8) -> u8 {
+    let val = pci_config_read(bus, slot, func, offset & !3);
+    let shift = (offset & 3) * 8;
+    (val >> shift) as u8
+}
+
+pub fn config_write32(bus: u8, slot: u8, func: u8, offset: u8, val: u32) {
+    pci_config_write(bus, slot, func, offset, val);
+}
+
+pub fn config_write16(bus: u8, slot: u8, func: u8, offset: u8, val: u16) {
+    let aligned = offset & !2;
+    let shift = (offset & 2) * 8;
+    let old = pci_config_read(bus, slot, func, aligned);
+    let mask = !(0xFFFFu32 << shift);
+    let new_val = (old & mask) | ((val as u32) << shift);
+    pci_config_write(bus, slot, func, aligned, new_val);
+}
+
+pub fn config_write8(bus: u8, slot: u8, func: u8, offset: u8, val: u8) {
+    let aligned = offset & !3;
+    let shift = (offset & 3) * 8;
+    let old = pci_config_read(bus, slot, func, aligned);
+    let mask = !(0xFFu32 << shift);
+    let new_val = (old & mask) | ((val as u32) << shift);
+    pci_config_write(bus, slot, func, aligned, new_val);
+}
+
 
 // PCI Device Representation
 #[derive(Debug)]

@@ -30,7 +30,7 @@ qemu-system-x86_64 \
     -s \
     -M pc \
     -smp 4 \
-    -m 10M \
+    -m 2G \
     -cdrom ainux.iso \
     -boot d \
     -serial stdio \

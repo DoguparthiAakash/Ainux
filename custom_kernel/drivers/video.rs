@@ -130,6 +130,19 @@ pub static mut FB_CACHE_HEIGHT: usize = 0;
 pub static mut FB_CACHE_PITCH: usize = 0;
 pub static mut FB_CACHE_BPP: usize = 0;
 
+pub fn get_framebuffer<'a>() -> &'a mut [u32] {
+    unsafe {
+        let size = (FB_CACHE_WIDTH * FB_CACHE_HEIGHT) as usize;
+        core::slice::from_raw_parts_mut(FB_CACHE_ADDR as *mut u32, size)
+    }
+}
+
+pub fn blit_buffer_opaque(src: &[u32], x: i32, y: i32, w: i32, h: i32, src_stride: i32) {
+    unsafe {
+        gfx_blit_buffer_opaque(src.as_ptr(), x, y, w, h, src_stride);
+    }
+}
+
 pub static BOOT_WIDTH: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static BOOT_HEIGHT: spin::Mutex<usize> = spin::Mutex::new(0);
 pub static BOOT_BPP: spin::Mutex<u8> = spin::Mutex::new(0);
@@ -692,6 +705,39 @@ pub fn draw_char_raw(x: usize, y: usize, c: char, fg: u32) {
     let bg = THEME.lock().bg;
     unsafe {
         c_draw_char(x as i32, y as i32, c as u32, fg, bg);
+    }
+}
+
+extern "C" {
+    static font_8x16: [[u8; 16]; 256];
+}
+
+pub fn draw_char_to_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, x: usize, y: usize, c: char, fg: u32) {
+    let c = c as u32;
+    if c < 256 {
+        let glyph = unsafe { font_8x16[c as usize] };
+        for row in 0..16 {
+            let sy = y + row;
+            if sy >= buf_h { continue; }
+            let bits = glyph[row];
+            for col in 0..8 {
+                let sx = x + col;
+                if sx >= buf_w { continue; }
+                if (bits & (1 << col)) != 0 {
+                    buf[sy * buf_w + sx] = fg;
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_text_to_buffer(buf: &mut [u32], buf_w: i64, buf_h: i64, x: i64, y: i64, text: &str, fg: u32) {
+    let mut curr_x = x;
+    for c in text.chars() {
+        if curr_x >= 0 && (curr_x + 8) <= buf_w && y >= 0 && (y + 16) <= buf_h {
+            draw_char_to_buffer(buf, buf_w as usize, buf_h as usize, curr_x as usize, y as usize, c, fg);
+        }
+        curr_x += 8;
     }
 }
 

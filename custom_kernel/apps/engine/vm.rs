@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
-use crate::gui::graphics::{Graphics, Color};
 use spin::Mutex;
+use crate::drivers::video;
 
 // The "Quantum" Instructions
 #[repr(u8)]
@@ -85,7 +85,7 @@ impl AnuxVM {
                      // For now, draw to backbuffer directly via Graphics.
                      // Wait, Graphics needs locking.
                      // Let's use standard fill_rect which is safe-ish.
-                     Graphics::fill_rect(x, y, w, h, Color::from_u32(color));
+                     video::fill_rect(x as i64, y as i64, w as i64, h as i64, color);
                  }
             },
             0x40 => { // PEEK (Read Memory)
@@ -301,7 +301,7 @@ impl AnuxVM {
                                      let color_val = pixels[r * w + c];
                                      // Graphics::draw_pixel(px + c, py + r, color_val);
                                      // Using fill_rect for single pixel is slow but safe if draw_pixel not exposed
-                                     Graphics::fill_rect(px + c, py + r, 1, 1, Color::from_u32(color_val));
+                                     video::fill_rect((px + c) as i64, (py + r) as i64, 1, 1, color_val);
                                  }
                              }
                          }

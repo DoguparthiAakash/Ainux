@@ -111,7 +111,13 @@ pub extern "C" fn ap_entry() -> ! {
 /// Boot all Application Processors detected by ACPI
 pub fn init() {
     let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-    let _ = write!(serial, "\n========== SMP INITIALIZATION ==========\n");
+    let _ = write!(serial, "SMP: Starting Application Processors...\n");
+
+    let has_apic = crate::cpu::cpuid::CPU_FEATURES.lock().has_apic;
+    if !has_apic {
+        let _ = write!(serial, "SMP: APIC not supported by CPU. Skipping SMP initialization.\n");
+        return;
+    }
 
     let acpi_state = crate::cpu::acpi::ACPI.lock();
     let cpu_count = acpi_state.cpu_count;

@@ -19,7 +19,7 @@ fi
 
 # Build Kernel
 echo "Building Kernel..."
-CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000 -C link-arg=-Tlinker.ld -C link-arg=arch/x86_64/asm/boot.o -C link-arg=arch/x86_64/asm/utils.o -C link-arg=arch/x86_64/asm/syscall.o -C link-arg=c_src/hardware.o -C link-arg=c_src/tui.o" cargo build --release --verbose --target x86_64-unknown-none || { echo "Cargo build failed"; exit 1; }
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C code-model=kernel -C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000 -C link-arg=-Tlinker.ld -C link-arg=arch/x86_64/asm/syscall.o -C link-arg=c_src/hardware.o -C link-arg=c_src/tui.o" cargo build --release --verbose --target x86_64-unknown-none || { echo "Cargo build failed"; exit 1; }
 
 # Build ISO
 echo "Building ISO..."
@@ -28,7 +28,7 @@ chmod +x scripts/build_iso.sh
 
 # Create Staging Directory for Disk3
 echo "Preparing disk3.img contents..."
-rm -rf disk3_root
+# Do not wipe disk3_root entirely so we preserve the built native compiler
 mkdir -p disk3_root
 mkdir -p disk3_root/bin
 mkdir -p disk3_root/usr/include
@@ -99,7 +99,7 @@ echo "Building test_fork.c..."
 ./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_progs/test_fork.c -o disk3_root/bin/test_fork.elf
 
 echo "Building user_space Rust binaries..."
-(cd user_space && cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
+(cd user_space && RUSTFLAGS="-C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000" cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
 cp user_space/target/x86_64-unknown-none/release/ls disk3_root/bin/ls.elf
 cp user_space/target/x86_64-unknown-none/release/cat disk3_root/bin/cat.elf
 cp user_space/target/x86_64-unknown-none/release/ping disk3_root/bin/ping.elf
@@ -137,8 +137,8 @@ else
     echo "Run 'sudo apt-get install clang llvm' inside WSL to enable the hybrid compiler."
 fi
 
-echo "Creating disk3.img (256MB)..."
-dd if=/dev/zero of=disk3.img bs=1M count=256
+echo "Creating disk3.img (512MB)..."
+dd if=/dev/zero of=disk3.img bs=1M count=512
 mkfs.ext4 -d disk3_root -O ^extents,^64bit,^dir_index -F disk3.img || { echo "mkfs.ext4 failed"; exit 1; }
 
 

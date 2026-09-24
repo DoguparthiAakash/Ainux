@@ -3,7 +3,7 @@ import time
 
 def main():
     print("Starting QEMU...")
-    cmd = ["qemu-system-x86_64", "-m", "10M", "-cdrom", "ainux.iso", "-drive", "file=disk3.img,format=raw,index=0,media=disk", "-display", "none", "-serial", "stdio", "-boot", "d", "-device", "AC97"]
+    cmd = ["qemu-system-x86_64", "-m", "2G", "-cdrom", "ainux.iso", "-drive", "file=disk3.img,format=raw,index=0,media=disk", "-display", "none", "-serial", "stdio", "-boot", "d", "-device", "AC97"]
     
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     

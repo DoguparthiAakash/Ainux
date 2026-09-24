@@ -29,6 +29,7 @@ fn c_source_files() -> Vec<String> {
     let mut files = vec![
         "c_src/gfx.c".to_string(),
         "c_src/font.c".to_string(),
+        "c_src/drivers/gfx/font.c".to_string(),
         "c_src/text.c".to_string(),
         "c_src/ps2.c".to_string(),
         "c_src/log.c".to_string(),
@@ -71,7 +72,7 @@ fn c_source_files() -> Vec<String> {
     files.push("c_src/bsd_external/freebsd/sys/kern/vfs_init.c".to_string());
     
     // NetBSD Networking Source
-    files.push("external/netbsd-src/sys/net/if.c".to_string());
+    // files.push("external/netbsd-src/sys/net/if.c".to_string());
     
     files
 }
@@ -142,7 +143,9 @@ fn build_via_wsl(out_dir: &str) {
             format!("-I{}/libc", c_dir_wsl),
             format!("-I{}/include", wsl_manifest),
             format!("-I{}", bsd_compat_dir),
+            format!("-I{}/c_src/kpi/include", wsl_manifest),
             format!("-I{}/external/netbsd-src/sys", wsl_manifest),
+            format!("-I{}/external/netbsd-src/sys/arch/amd64/include", wsl_manifest),
         ]);
         
         if src.contains("freebsd") {
@@ -216,7 +219,6 @@ fn build_via_wsl(out_dir: &str) {
 }
 
 fn build_via_cc(out_dir: &str) {
-    let _ = out_dir;
     let mut build = cc::Build::new();
     let sources = c_source_files();
     for src in &sources {
@@ -235,12 +237,60 @@ fn build_via_cc(out_dir: &str) {
         .include("c_src/drivers")
         .include("c_src/drivers/usb")
         .include("c_src/bsd_compat/include")
-        // Note: For cc::Build we ideally split builds, but for now we include both.
-        // If there are conflicts, we should split cc::Build into two libraries.
+        .include("c_src/kpi/include")
         .include("c_src/bsd_external/freebsd/sys")
         .include("external/netbsd-src/sys")
+        .include("external/netbsd-src/sys/arch/amd64/include")
         .compile("legacy_kernel");
+
+    // ── Compile NASM assembly (boot.asm = _start_multiboot entry point) ──────
+    let asm_sources = ["arch/x86_64/asm/boot.asm", "arch/x86_64/asm/utils.asm"];
+    let mut asm_objects: Vec<String> = Vec::new();
+
+    for src in &asm_sources {
+        let obj_name = src.replace("/", "_").replace(".asm", ".o");
+        let obj_path = format!("{}/{}", out_dir, obj_name);
+        asm_objects.push(obj_path.clone());
+
+        let status = Command::new("nasm")
+            .args(["-f", "elf64", src, "-o", &obj_path])
+            .status()
+            .unwrap_or_else(|_| panic!("nasm not found — install with: sudo apt install nasm"));
+
+        if !status.success() {
+            println!("cargo:warning=NASM failed for {} (non-fatal)", src);
+        } else {
+            println!("cargo:warning=NASM compiled: {}", src);
+        }
+    }
+
+    // Archive the NASM objects into a second static library so the linker sees
+    // _start_multiboot. We call it libboot_asm.a to avoid name collisions.
+    let existing_asm: Vec<&str> = asm_objects
+        .iter()
+        .filter(|o| std::path::Path::new(o.as_str()).exists())
+        .map(|s| s.as_str())
+        .collect();
+
+    if !existing_asm.is_empty() {
+        let lib_path = format!("{}/libboot_asm.a", out_dir);
+        let mut ar_args = vec!["rcs", &lib_path];
+        ar_args.extend(existing_asm.iter().copied());
+
+        let status = Command::new("ar")
+            .args(&ar_args)
+            .status()
+            .expect("Failed to run ar");
+
+        if status.success() {
+            println!("cargo:rustc-link-search=native={}", out_dir);
+            println!("cargo:rustc-link-lib=static=boot_asm");
+        } else {
+            println!("cargo:warning=Failed to archive boot_asm objects");
+        }
+    }
 }
+
 
 fn windows_to_wsl_path(windows_path: &str) -> String {
     // E:\Ainux\foo -> /mnt/e/Ainux/foo

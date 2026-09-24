@@ -28,6 +28,7 @@ pub struct CpuFeatures {
     pub has_sse42: bool,
     pub has_avx: bool,
     pub has_aes: bool,
+    pub has_pat: bool,
     pub has_x2apic: bool,
     // Extended features (leaf 0x80000001)
     pub has_nx: bool,
@@ -60,6 +61,7 @@ impl CpuFeatures {
             has_sse42: false,
             has_avx: false,
             has_aes: false,
+            has_pat: false,
             has_x2apic: false,
             has_nx: false,
             has_long_mode: false,
@@ -181,6 +183,7 @@ pub fn init() {
         features.has_msr = (edx & (1 << 5)) != 0;
         features.has_pae = (edx & (1 << 6)) != 0;
         features.has_apic = (edx & (1 << 9)) != 0;
+        features.has_pat = (edx & (1 << 16)) != 0;
         features.has_sse = (edx & (1 << 25)) != 0;
         features.has_sse2 = (edx & (1 << 26)) != 0;
 
@@ -233,6 +236,7 @@ pub fn init() {
     if features.has_sse42 { let _ = write!(serial, "SSE4.2 "); }
     if features.has_avx { let _ = write!(serial, "AVX "); }
     if features.has_aes { let _ = write!(serial, "AES-NI "); }
+    if features.has_pat { let _ = write!(serial, "PAT "); }
     if features.has_nx { let _ = write!(serial, "NX "); }
     if features.has_1gb_pages { let _ = write!(serial, "1GB-Pages "); }
     if features.has_x2apic { let _ = write!(serial, "x2APIC "); }
@@ -242,8 +246,12 @@ pub fn init() {
     // Enable FPU + SSE (from legacy cpu.c)
     enable_sse();
 
-    // Enable Write-Combining in PAT
-    unsafe { init_pat(); }
+    // Enable Write-Combining in PAT if supported
+    if features.has_pat {
+        unsafe { init_pat(); }
+    } else {
+        let _ = write!(serial, "CPUID: PAT not supported by this CPU.\n");
+    }
 
     *CPU_FEATURES.lock() = features.clone();
     let _ = write!(serial, "CPUID: Detection complete\n");

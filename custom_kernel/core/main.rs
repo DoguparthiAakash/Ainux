@@ -32,6 +32,8 @@ pub mod microkernel;
 pub mod bsd_compat;
 #[path = "../net/bsd_rust/mod.rs"]
 pub mod bsd_rust;
+#[path = "kpi/mod.rs"]
+pub mod kpi;
 
 pub mod api;
 pub mod shell;
@@ -185,8 +187,8 @@ pub extern "C" fn _start() -> ! {
     mm::vmm::init();
     let _ = write!(serial, "VMM Initialized.\n");
 
-    let _ = write!(serial, "Initializing Heap (1.9 MB)...\n");
-    mm::heap::init_custom(1900 * 1024);
+    let _ = write!(serial, "Initializing Heap (16 MB)...\n");
+    mm::heap::init_custom(16 * 1024 * 1024);
     let _ = write!(serial, "Heap Initialized.\n");
 
     let _ = write!(serial, "Initializing Slab Allocator...\n");
@@ -420,8 +422,9 @@ pub extern "C" fn _start() -> ! {
     // Play startup sound
     crate::drivers::audio::ac97::play_startup_sound();
 
-    // Prompt the user indefinitely with no timeout.
-    boot_menu();
+    // Start the Desktop Environment immediately.
+    let _ = write!(serial, "Starting Desktop Environment...\n");
+    crate::gui::desktop::run();
 
     loop {
         unsafe { core::arch::asm!("hlt"); }
@@ -430,135 +433,6 @@ pub extern "C" fn _start() -> ! {
 
 fn boot_menu() {
     drivers::video::clear();
-    drivers::video::put_str("\n=== Ainux Boot Menu (Rust) ===\n\n");
-    drivers::video::put_str("1. Start Kernel (Shell)\n");
-    drivers::video::put_str("2. Network Diagnostics\n");
-    drivers::video::put_str("3. Reboot\n");
-    drivers::video::put_str("4. Shutdown\n");
-    drivers::video::put_str("5. Load Default Config & Start Shell\n");
-    drivers::video::put_str("6. Start Desktop Environment (GNOME GUI)\n\n");
-    drivers::video::put_str("Select option [1-6]: ");
-
-    loop {
-        if let Some(c) = drivers::keyboard::pop_char() {
-            match c {
-                '1' => {
-                    drivers::video::put_str("1\n");
-                    let res = crate::process::loader::load_elf_from_file("/bin/terminald", &[]);
-                    if let Ok(pid) = res {
-                        crate::process::scheduler::set_foreground_pid(pid);
-                    } else {
-                        crate::drivers::video::put_str("Failed to load /bin/terminald\n");
-                    }
-                    // Keep scheduler running — tasks need CPU time
-                    loop { unsafe { asm!("hlt"); } }
-                },
-                '2' => {
-                    drivers::video::put_str("2\n");
-                    drivers::video::put_str("Network Diagnostics not implemented yet.\n");
-                    drivers::video::put_str("Select option [1-4]: ");
-                },
-                '3' => {
-                    drivers::video::put_str("3\nRebooting...\n");
-                    unsafe {
-                        // Pulse 0xFE to 0x64 (CPU Reset)
-                        loop {
-                             let status: u8;
-                             core::arch::asm!("in al, 0x64", out("al") status);
-                             if status & 2 == 0 { break; }
-                        }
-                        core::arch::asm!("out 0x64, al", in("al") 0xFE as u8);
-                        core::arch::asm!("hlt");
-                    }
-                },
-                '4' => {
-                    drivers::video::put_str("4\nShutting down...\n");
-                    unsafe {
-                        // QEMU Shutdown (0x2000 to 0x604)
-                        core::arch::asm!("out dx, ax", in("dx") 0x604 as u16, in("ax") 0x2000 as u16);
-                        loop { core::arch::asm!("hlt"); }
-                    }
-                },
-                '5' => {
-                    drivers::video::put_str("5\nLoading Defaults...\n");
-                    LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
-                    return;
-                },
-                '6' => {
-                    drivers::video::put_str("6\nStarting Desktop Environment...\n");
-                    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                    use core::fmt::Write;
-                    let _ = write!(serial, "Launching test_drm.elf to verify DRM subsystem...\n");
-                    let res = crate::process::loader::load_elf_from_file("test_drm.elf", &[]);
-                    if res.is_err() {
-                        let _ = write!(serial, "Failed to load test_drm.elf\n");
-                    }
-                    crate::gui::desktop::run();
-                },
-                _ => {}
-            }
-        }
-        
-        // Serial Poll
-        if drivers::serial::SERIAL.lock().data_ready() {
-            let b = drivers::serial::SERIAL.lock().read_byte();
-            let c = b as char;
-             match c {
-                '1' => {
-                    drivers::video::put_str("1\n");
-                    let res = crate::process::loader::load_elf_from_file("/bin/terminald", &[]);
-                    if let Ok(pid) = res {
-                        crate::process::scheduler::set_foreground_pid(pid);
-                    } else {
-                        crate::drivers::video::put_str("Failed to load /bin/terminald\n");
-                    }
-                    // Keep scheduler running — tasks need CPU time
-                    loop { unsafe { asm!("hlt"); } }
-                },
-                '2' => {
-                    drivers::video::put_str("2\n");
-                    drivers::video::put_str("Network Diagnostics not implemented yet.\n");
-                    drivers::video::put_str("Select option [1-4]: ");
-                },
-                '3' => {
-                    drivers::video::put_str("3\nRebooting...\n");
-                    unsafe {
-                         // Pulse 0xFE to 0x64 (CPU Reset)
-                         loop {
-                              let status: u8;
-                              core::arch::asm!("in al, 0x64", out("al") status);
-                              if status & 2 == 0 { break; }
-                         }
-                         core::arch::asm!("out 0x64, al", in("al") 0xFE as u8);
-                         core::arch::asm!("hlt");
-                    }
-                },
-                '4' => {
-                    drivers::video::put_str("4\nShutting down...\n");
-                    unsafe {
-                        core::arch::asm!("out dx, ax", in("dx") 0x604 as u16, in("ax") 0x2000 as u16);
-                        loop { core::arch::asm!("hlt"); }
-                    }
-                },
-                '5' => {
-                    drivers::video::put_str("5\nLoading Defaults...\n");
-                    LOAD_SAFE_DEFAULTS.store(true, core::sync::atomic::Ordering::SeqCst);
-                    return;
-                },
-                '6' => {
-                    drivers::video::put_str("6\nStarting Desktop Environment...\n");
-                    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-                    use core::fmt::Write;
-                    let _ = write!(serial, "Launching test_drm.elf to verify DRM subsystem...\n");
-                    let res = crate::process::loader::load_elf_from_file("test_drm.elf", &[]);
-                    if res.is_err() {
-                        let _ = write!(serial, "Failed to load test_drm.elf\n");
-                    }
-                    crate::gui::desktop::run();
-                },
-               _ => {}
-            }
-        }
-        unsafe { asm!("hlt"); }
-    }
+    drivers::video::put_str("\nStarting Desktop Environment...\n");
+    crate::gui::desktop::run();
 }

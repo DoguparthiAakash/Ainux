@@ -2,6 +2,7 @@
 name = "ainux_kernel"
 version = "0.1.0"
 edition = "2021"
+exclude = ["external/**/*"]
 
 [[bin]]
 name = "ainux_kernel"

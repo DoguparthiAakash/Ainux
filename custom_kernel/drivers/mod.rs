@@ -23,3 +23,4 @@ pub mod usb;
 pub mod klog;
 pub mod sovereign_io;
 pub mod drm;
+pub mod irq;
