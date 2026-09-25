@@ -1,4 +1,4 @@
-use crate::gui::app::App;
+
 use crate::drivers::video;
 
 /// Read month/year from CMOS RTC
@@ -131,43 +131,75 @@ impl CalendarApp {
     }
 }
 
-impl App for CalendarApp {
-    fn update(&mut self) {}
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        // Cream/white background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFFFFFFF0);
-
-        // Top strip
-        Self::fill(buf, w, h, 0, 0, w as i32, 24, 0xFF000080);
-        video::draw_text_to_buffer(buf, w as i64, h as i64, 10, 4, "Calendar", 0xFFFFFFFF);
-
-        // Nav hint
-        video::draw_text_to_buffer(buf, w as i64, h as i64, 10, h as i64 - 18,
-            "[ Left/Right arrows or A/D to change month ]", 0xFF888888);
-
-        self.draw_month(buf, w, h);
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            'a' | 'A' | '\x1B' => {  // left / prev month
-                if self.month == 1 { self.month = 12; self.year -= 1; }
-                else { self.month -= 1; }
-                self.day = 1;
+pub fn calendar_main() {
+    let id = 11;
+    let width = 300;
+    let height = 240;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Calendar"),
+        x: 450,
+        y: 150,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFFFFFFF0; width * height];
+    let mut app = CalendarApp::new();
+    let mut needs_redraw = true;
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    match c {
+                        'a' | 'A' | '\x1B' => {  // left / prev month
+                            if app.month == 1 { app.month = 12; app.year -= 1; }
+                            else { app.month -= 1; }
+                            app.day = 1;
+                            needs_redraw = true;
+                        }
+                        'd' | 'D' | '\r' => {   // right / next month
+                            if app.month == 12 { app.month = 1; app.year += 1; }
+                            else { app.month += 1; }
+                            app.day = 1;
+                            needs_redraw = true;
+                        }
+                        't' | 'T' => {           // jump to today
+                            let (y, mo, d) = read_rtc();
+                            app.year = y; app.month = mo; app.day = d;
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
-            'd' | 'D' | '\r' => {   // right / next month
-                if self.month == 12 { self.month = 1; self.year += 1; }
-                else { self.month += 1; }
-                self.day = 1;
-            }
-            't' | 'T' => {           // jump to today
-                let (y, mo, d) = read_rtc();
-                self.year = y; self.month = mo; self.day = d;
-            }
-            _ => {}
         }
+        
+        if needs_redraw {
+            // Cream/white background
+            CalendarApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFFFFFFF0);
+
+            // Top strip
+            CalendarApp::fill(&mut buffer, width, height, 0, 0, width as i32, 24, 0xFF000080);
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, 4, "Calendar", 0xFFFFFFFF);
+
+            // Nav hint
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, height as i64 - 18,
+                "[ Left/Right arrows or A/D to change month ]", 0xFF888888);
+
+            app.draw_month(&mut buffer, width, height);
+            
+            needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
+        }
+        
+        crate::process::scheduler::yield_now();
     }
 }

@@ -35,7 +35,6 @@ qemu-system-x86_64 \
     -boot d \
     -serial stdio \
     -drive file=disk3.img,format=raw,index=0,media=disk \
-    -vnc 127.0.0.1:0,websocket=6080 \
     $ACCEL \
     -net nic,model=rtl8139 \
     -net user \

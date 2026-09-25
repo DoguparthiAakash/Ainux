@@ -22,5 +22,5 @@ pub fn init() {
 
 /// Return the BSD subsystem version string (analogous to kern.osrelease).
 pub fn os_release() -> &'static str {
-    "Ainux BSD 1.0 (XNU-Hybrid)"
+    "Mithl OS BSD 1.0 (XNU-Hybrid)"
 }

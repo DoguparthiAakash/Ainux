@@ -402,8 +402,10 @@ pub extern "C" fn _start() -> ! {
 
     // TEST: Verify VFS access
     {
+        let _ = write!(serial, "DEBUG: Starting VFS root lock...\n");
         let root = fs::vfs::ROOT.lock();
         if let Some(root_inode) = root.as_ref() {
+             let _ = write!(serial, "DEBUG: Doing VFS lookup for hello.txt...\n");
              if let Ok(inode) = root_inode.lookup("hello.txt") {
                  let _ = write!(serial, "VFS: hello.txt found.\n");
                  if let Ok(handle) = inode.open(0) {
@@ -415,17 +417,21 @@ pub extern "C" fn _start() -> ! {
                      }
                  }
              }
+             let _ = write!(serial, "DEBUG: Finished VFS lookup.\n");
         }
     }
 
     // ----------- Environment Selection Prompt -----------
+    let _ = write!(serial, "DEBUG: About to play startup sound...\n");
     // Play startup sound
     crate::drivers::audio::ac97::play_startup_sound();
+    let _ = write!(serial, "DEBUG: Startup sound finished.\n");
 
     // Start the Desktop Environment immediately.
     let _ = write!(serial, "Starting Desktop Environment...\n");
     crate::gui::desktop::run();
 
+    let _ = write!(serial, "DEBUG: Returned from desktop::run()!\n");
     loop {
         unsafe { core::arch::asm!("hlt"); }
     }

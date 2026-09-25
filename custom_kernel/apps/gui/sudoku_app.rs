@@ -1,4 +1,4 @@
-use crate::gui::app::App;
+
 use crate::drivers::keyboard;
 use crate::games::sudoku::logic::get_default_grid;
 
@@ -58,83 +58,107 @@ impl SudokuApp {
     }
 }
 
-impl App for SudokuApp {
-    fn update(&mut self) {}
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-        
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF0D0D1A);
-        
-        crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 4, "SUDOKU", 0xFFFFFFFF);
-        
-        let available_dim = (h as i32 - 30).min(w as i32 - 10).max(81);
-        let cell_size = available_dim / 9;
-        let board_size_2d = cell_size * 9;
-        let start_x = (w as i32 / 2) - (board_size_2d / 2);
-        let start_y = (h as i32 / 2) - (board_size_2d / 2) + 10;
-        
-        for y in 0..9 {
-            for x in 0..9 {
-                let px = start_x + (x as i32 * cell_size);
-                let py = start_y + (y as i32 * cell_size);
-                
-                let bg_color = if x == self.cursor_x && y == self.cursor_y {
-                    0xFF333333
-                } else if ((x / 3) + (y / 3)) % 2 == 0 {
-                    0xFF111111
-                } else {
-                    0xFF1A1A1A
-                };
-
-                Self::fill(buf, w, h, px, py, cell_size, cell_size, bg_color);
-                
-                // Borders
-                Self::fill(buf, w, h, px, py, cell_size, 1, 0xFF444444);
-                Self::fill(buf, w, h, px, py, 1, cell_size, 0xFF444444);
-
-                let val = self.grid[y][x];
-                if val != 0 {
-                    let text_color = if self.original_grid[y][x] != 0 { 0xFFFFFFFF } else { 0xFF00FFCC };
-                    let scale = (cell_size / 15).max(1);
-                    draw_digit_fb(buf, w, h, px + (cell_size / 2) - (5 * scale / 2), py + (cell_size / 2) - (5 * scale / 2), val, scale, text_color);
-                }
-            }
-        }
-        
-        for i in 0..=3 {
-            let px = start_x + (i * 3) as i32 * cell_size;
-            let py = start_y + (i * 3) as i32 * cell_size;
-            Self::fill(buf, w, h, px, start_y, 2, board_size_2d, 0xFF888888);
-            Self::fill(buf, w, h, start_x, py, board_size_2d, 2, 0xFF888888);
-        }
-        
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            'w' | 'W' | keyboard::KEY_UP => { if self.cursor_y > 0 { self.cursor_y -= 1; self.needs_redraw = true; } },
-            's' | 'S' | keyboard::KEY_DOWN => { if self.cursor_y < 8 { self.cursor_y += 1; self.needs_redraw = true; } },
-            'a' | 'A' | keyboard::KEY_LEFT => { if self.cursor_x > 0 { self.cursor_x -= 1; self.needs_redraw = true; } },
-            'd' | 'D' | keyboard::KEY_RIGHT => { if self.cursor_x < 8 { self.cursor_x += 1; self.needs_redraw = true; } },
-            '1'..='9' => {
-                if self.original_grid[self.cursor_y][self.cursor_x] == 0 {
-                    if let Some(digit) = c.to_digit(10) {
-                        self.grid[self.cursor_y][self.cursor_x] = digit as u8;
-                        self.needs_redraw = true;
+pub fn sudoku_main() {
+    let id = 16;
+    let width = 360;
+    let height = 400;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Sudoku"),
+        x: 220,
+        y: 220,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF0D0D1A; width * height];
+    let mut app = SudokuApp::new();
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    match c {
+                        'w' | 'W' | keyboard::KEY_UP => { if app.cursor_y > 0 { app.cursor_y -= 1; app.needs_redraw = true; } },
+                        's' | 'S' | keyboard::KEY_DOWN => { if app.cursor_y < 8 { app.cursor_y += 1; app.needs_redraw = true; } },
+                        'a' | 'A' | keyboard::KEY_LEFT => { if app.cursor_x > 0 { app.cursor_x -= 1; app.needs_redraw = true; } },
+                        'd' | 'D' | keyboard::KEY_RIGHT => { if app.cursor_x < 8 { app.cursor_x += 1; app.needs_redraw = true; } },
+                        '1'..='9' => {
+                            if app.original_grid[app.cursor_y][app.cursor_x] == 0 {
+                                if let Some(digit) = c.to_digit(10) {
+                                    app.grid[app.cursor_y][app.cursor_x] = digit as u8;
+                                    app.needs_redraw = true;
+                                }
+                            }
+                        },
+                        '0' | ' ' | '\x08' => {
+                            if app.original_grid[app.cursor_y][app.cursor_x] == 0 {
+                                app.grid[app.cursor_y][app.cursor_x] = 0;
+                                app.needs_redraw = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-            },
-            '0' | ' ' | '\x08' => {
-                if self.original_grid[self.cursor_y][self.cursor_x] == 0 {
-                    self.grid[self.cursor_y][self.cursor_x] = 0;
-                    self.needs_redraw = true;
+                _ => {}
+            }
+        }
+        
+        if app.needs_redraw {
+            SudokuApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFF0D0D1A);
+            
+            crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 4, "SUDOKU", 0xFFFFFFFF);
+            
+            let available_dim = (height as i32 - 30).min(width as i32 - 10).max(81);
+            let cell_size = available_dim / 9;
+            let board_size_2d = cell_size * 9;
+            let start_x = (width as i32 / 2) - (board_size_2d / 2);
+            let start_y = (height as i32 / 2) - (board_size_2d / 2) + 10;
+            
+            for y in 0..9 {
+                for x in 0..9 {
+                    let px = start_x + (x as i32 * cell_size);
+                    let py = start_y + (y as i32 * cell_size);
+                    
+                    let bg_color = if x == app.cursor_x && y == app.cursor_y {
+                        0xFF333333
+                    } else if ((x / 3) + (y / 3)) % 2 == 0 {
+                        0xFF111111
+                    } else {
+                        0xFF1A1A1A
+                    };
+
+                    SudokuApp::fill(&mut buffer, width, height, px, py, cell_size, cell_size, bg_color);
+                    
+                    // Borders
+                    SudokuApp::fill(&mut buffer, width, height, px, py, cell_size, 1, 0xFF444444);
+                    SudokuApp::fill(&mut buffer, width, height, px, py, 1, cell_size, 0xFF444444);
+
+                    let val = app.grid[y][x];
+                    if val != 0 {
+                        let text_color = if app.original_grid[y][x] != 0 { 0xFFFFFFFF } else { 0xFF00FFCC };
+                        let scale = (cell_size / 15).max(1);
+                        draw_digit_fb(&mut buffer, width, height, px + (cell_size / 2) - (5 * scale / 2), py + (cell_size / 2) - (5 * scale / 2), val, scale, text_color);
+                    }
                 }
             }
-            _ => {}
+            
+            for i in 0..=3 {
+                let px = start_x + (i * 3) as i32 * cell_size;
+                let py = start_y + (i * 3) as i32 * cell_size;
+                SudokuApp::fill(&mut buffer, width, height, px, start_y, 2, board_size_2d, 0xFF888888);
+                SudokuApp::fill(&mut buffer, width, height, start_x, py, board_size_2d, 2, 0xFF888888);
+            }
+            
+            app.needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
+        
+        crate::process::scheduler::yield_now();
     }
 }

@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use crate::gui::app::App;
 use crate::drivers::video;
 use crate::drivers::mouse;
 
@@ -80,102 +79,127 @@ impl PaintApp {
     }
 }
 
-impl App for PaintApp {
-    fn update(&mut self) {}
+pub fn paint_main() {
+    let id = 6;
+    let width = 420;
+    let height = 360;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Paint"),
+        x: 200,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF333333; width * height];
+    let mut app = PaintApp::new();
+    let mut needs_redraw = true;
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
+                    let left_down = (button & 1) != 0;
 
-    fn draw(&mut self, buffer: &mut [u32], width: usize, height: usize) {
-        // Draw Toolbar background
-        for y in 0..40 {
-            for x in 0..width {
-                buffer[y * width + x] = 0xFFCCCCCC; // light gray toolbar
+                    if left_down {
+                        // Check toolbar interaction
+                        if y >= 10 && y <= 30 {
+                            for i in 0..COLORS.len() {
+                                let cx = 10 + i as i32 * 30;
+                                if x >= cx && x < cx + 20 {
+                                    app.selected_color = i;
+                                    needs_redraw = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Canvas interaction
+                        let cx_offset = 10; 
+                        let cy_offset = 50;
+                        let cx = x - cx_offset;
+                        let cy = y - cy_offset;
+
+                        if cx >= 0 && cx < app.canvas_w as i32 && cy >= 0 && cy < app.canvas_h as i32 {
+                            if !app.is_drawing {
+                                app.is_drawing = true;
+                                app.last_x = cx;
+                                app.last_y = cy;
+                            }
+                            app.draw_line(app.last_x, app.last_y, cx, cy);
+                            app.last_x = cx;
+                            app.last_y = cy;
+                            needs_redraw = true;
+                        } else {
+                            app.is_drawing = false;
+                        }
+                    } else {
+                        app.is_drawing = false;
+                    }
+                }
+                crate::gui::wm::GuiEvent::KeyPress { .. } => {}
             }
         }
-
-        // Draw color palette
-        for i in 0..COLORS.len() {
-            let cx = 10 + i * 30;
-            let cy = 10;
-            for y in cy..(cy + 20) {
-                for x in cx..(cx + 20) {
-                    buffer[y * width + x] = COLORS[i];
-                }
-            }
-            // Highlight selected
-            if i == self.selected_color {
-                for x in (cx - 2)..(cx + 22) {
-                    buffer[(cy - 2) * width + x] = 0xFFFF0000;
-                    buffer[(cy + 21) * width + x] = 0xFFFF0000;
-                }
-                for y in (cy - 2)..(cy + 22) {
-                    buffer[y * width + cx - 2] = 0xFFFF0000;
-                    buffer[y * width + cx + 21] = 0xFFFF0000;
-                }
-            }
-        }
-
-        video::draw_text_to_buffer(buffer, width as i64, height as i64, 260, 15, "Paint", 0xFF000000);
-
-        // Draw Canvas
-        let cx_offset = 10;
-        let cy_offset = 50;
         
-        for y in 0..height {
-            if y < cy_offset { continue; }
-            for x in 0..width {
-                if x >= cx_offset && x < cx_offset + self.canvas_w && y < cy_offset + self.canvas_h {
-                    let cy = y - cy_offset;
-                    let cx = x - cx_offset;
-                    buffer[y * width + x] = self.canvas[cy * self.canvas_w + cx];
-                } else {
-                    buffer[y * width + x] = 0xFF333333; // dark background for non-canvas area
+        if needs_redraw {
+            // Draw Toolbar background
+            for y in 0..40 {
+                for x in 0..width {
+                    buffer[y * width + x] = 0xFFCCCCCC; // light gray toolbar
                 }
             }
-        }
-    }
 
-    fn on_mouse_event(&mut self, x: i32, y: i32, buttons: u8) {
-        let left_down = (buttons & 1) != 0;
-
-        if left_down {
-            // Check toolbar interaction
-            if y >= 10 && y <= 30 {
-                for i in 0..COLORS.len() {
-                    let cx = 10 + i as i32 * 30;
-                    if x >= cx && x < cx + 20 {
-                        self.selected_color = i;
-                        return;
+            // Draw color palette
+            for i in 0..COLORS.len() {
+                let cx = 10 + i * 30;
+                let cy = 10;
+                for y in cy..(cy + 20) {
+                    for x in cx..(cx + 20) {
+                        buffer[y * width + x] = COLORS[i];
+                    }
+                }
+                // Highlight selected
+                if i == app.selected_color {
+                    for x in (cx - 2)..(cx + 22) {
+                        buffer[(cy - 2) * width + x] = 0xFFFF0000;
+                        buffer[(cy + 21) * width + x] = 0xFFFF0000;
+                    }
+                    for y in (cy - 2)..(cy + 22) {
+                        buffer[y * width + cx - 2] = 0xFFFF0000;
+                        buffer[y * width + cx + 21] = 0xFFFF0000;
                     }
                 }
             }
 
-            // Canvas interaction
-            let width = 640; // Default logical window width usually, but let's approximate based on offset
-            let cx_offset = (width - self.canvas_w as i32) / 2;
-            // Since we don't know window width reliably in on_mouse_event, let's assume standard offset for now.
-            // Wait, we can compute it if we keep track of width. For now, assuming centered in 640x480.
-            let cx_offset = 10; // We'll just hardcode the canvas to left-align in mouse coords for simplicity if width is unknown. 
-            // Better yet, let's draw canvas at x=10, y=50 always in draw() as well to match perfectly.
-            
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 260, 15, "Paint", 0xFF000000);
+
+            // Draw Canvas
+            let cx_offset = 10;
             let cy_offset = 50;
-            let cx = x - cx_offset;
-            let cy = y - cy_offset;
-
-            if cx >= 0 && cx < self.canvas_w as i32 && cy >= 0 && cy < self.canvas_h as i32 {
-                if !self.is_drawing {
-                    self.is_drawing = true;
-                    self.last_x = cx;
-                    self.last_y = cy;
+            
+            for y in 0..height {
+                if y < cy_offset { continue; }
+                for x in 0..width {
+                    if x >= cx_offset && x < cx_offset + app.canvas_w && y < cy_offset + app.canvas_h {
+                        let cy = y - cy_offset;
+                        let cx = x - cx_offset;
+                        buffer[y * width + x] = app.canvas[cy * app.canvas_w + cx];
+                    } else {
+                        buffer[y * width + x] = 0xFF333333; // dark background for non-canvas area
+                    }
                 }
-                self.draw_line(self.last_x, self.last_y, cx, cy);
-                self.last_x = cx;
-                self.last_y = cy;
-            } else {
-                self.is_drawing = false;
             }
-        } else {
-            self.is_drawing = false;
-        }
-    }
 
-    fn on_key_event(&mut self, _c: char) {}
+            needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
+        }
+        
+        crate::process::scheduler::yield_now();
+    }
 }

@@ -2,38 +2,52 @@ use alloc::vec::Vec;
 use crate::drivers::video;
 use crate::drivers::mouse;
 use crate::drivers::keyboard;
+use alloc::string::{String, ToString};
 use super::window::{Window, WindowState};
-use super::terminal_app::TerminalApp;
-use super::notepad_app::NotepadApp;
+
 
 // Utility to draw strings to a generic buffer
-fn draw_string_to_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, x: i32, y: i32, s: &str, fg: u32) {
+fn draw_string_to_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, x: i32, y: i32, s: &str, fg: u32, clip: Option<&crate::gui::clip::Rect>) {
     let mut curr_x = x;
     for c in s.chars() {
         if curr_x >= 0 && (curr_x + 8) <= buf_w as i32 && y >= 0 && (y + 16) <= buf_h as i32 {
-            // we need to access the font data. video::draw_char_raw uses VGA_FONT
-            // Instead, we will expose a video::draw_char_to_buffer function, or just use it.
-            // For now we'll add a helper in video.rs or replicate font logic. 
-            // We'll call video::draw_char_to_buffer
+            if let Some(cl) = clip {
+                if curr_x >= cl.x + cl.w || curr_x + 8 <= cl.x || y >= cl.y + cl.h || y + 16 <= cl.y {
+                    curr_x += 8;
+                    continue;
+                }
+            }
             video::draw_char_to_buffer(buf, buf_w, buf_h, curr_x as usize, y as usize, c, fg);
         }
         curr_x += 8;
     }
 }
 
-fn fill_rect_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, rx: i32, ry: i32, rw: i32, rh: i32, color: u32) {
-    for dy in 0..rh {
-        let sy = ry + dy;
-        if sy < 0 || sy >= buf_h as i32 { continue; }
-        for dx in 0..rw {
-            let sx = rx + dx;
-            if sx < 0 || sx >= buf_w as i32 { continue; }
+fn fill_rect_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, rx: i32, ry: i32, rw: i32, rh: i32, color: u32, clip: Option<&crate::gui::clip::Rect>) {
+    let mut x1 = rx.max(0);
+    let mut y1 = ry.max(0);
+    let mut x2 = (rx + rw).min(buf_w as i32);
+    let mut y2 = (ry + rh).min(buf_h as i32);
+
+    if let Some(c) = clip {
+        x1 = x1.max(c.x);
+        y1 = y1.max(c.y);
+        x2 = x2.min(c.x + c.w);
+        y2 = y2.min(c.y + c.h);
+    }
+    
+    if x1 >= x2 || y1 >= y2 { return; }
+    
+    for sy in y1..y2 {
+        for sx in x1..x2 {
             buf[(sy * buf_w as i32 + sx) as usize] = color;
         }
     }
 }
 
 pub struct Compositor {
+    pub dirty_rects: Vec<crate::gui::clip::Rect>,
+    pub full_redraw: bool,
     pub backbuffer: Vec<u32>,
     pub width: usize,
     pub height: usize,
@@ -60,6 +74,8 @@ pub struct Compositor {
     pub btn_min: crate::gui::bmp::BmpImage,
     pub btn_max: crate::gui::bmp::BmpImage,
     pub active_edge: Option<u8>,
+    pub last_redraw_ticks: u64,
+    pub last_frame_rects: alloc::vec::Vec<crate::gui::clip::Rect>,
 }
 
 #[derive(Clone)]
@@ -103,6 +119,8 @@ impl Compositor {
         add_icon("Browser", include_bytes!("../../icons/bookmark.bmp"));
         
         Self {
+            dirty_rects: alloc::vec::Vec::new(),
+            full_redraw: true,
             backbuffer: alloc::vec![0; w * h],
             width: w,
             height: h,
@@ -129,6 +147,8 @@ impl Compositor {
             btn_min: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/minimize.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 20, height: 20, data: alloc::vec![0; 400] }),
             btn_max: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/fullscreen.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 20, height: 20, data: alloc::vec![0; 400] }),
             active_edge: None,
+            last_redraw_ticks: 0,
+            last_frame_rects: alloc::vec::Vec::new(),
         }
     }
 
@@ -136,23 +156,138 @@ impl Compositor {
         self.windows.push(w);
     }
 
-    pub fn draw(&mut self) {
-        // 1. Clear background (Desktop Wallpaper)
-        let bg_color = *crate::gui::settings_app::WALLPAPER_COLOR.lock();
-        // Start below the top menu bar (y=24)
-        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 0, 24, self.width as i32, self.height as i32 - 24, bg_color | 0xFF000000);
+    pub fn invalidate(&mut self, rect: crate::gui::clip::Rect) {
+        self.dirty_rects.push(rect);
+    }
+    
+    pub fn invalidate_all(&mut self) {
+        self.full_redraw = true;
+    }
 
-        // 1.2 Draw Top Menu Bar (Mac-like)
-        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 0, 0, self.width as i32, 24, 0xDFDFDF);
-        // Thin shadow under menu bar
-        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 0, 24, self.width as i32, 1, 0x808080);
-        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, 10, 4, "Mithl OS", 0x000000);
-        if let Some(w) = self.windows.last() {
-            if w.state != WindowState::Minimized {
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, 100, 4, &w.title, 0x000000);
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, 180, 4, "File  Edit  View  Help", 0x000000);
+    pub fn draw(&mut self) {
+        if self.full_redraw {
+            self.full_redraw = false;
+            self.dirty_rects.clear();
+            self.dirty_rects.push(crate::gui::clip::Rect { x: 0, y: 0, w: self.width as i32, h: self.height as i32 });
+        } else if self.dirty_rects.is_empty() {
+            return;
+        }
+
+        let mut final_rects: alloc::vec::Vec<crate::gui::clip::Rect> = alloc::vec::Vec::new();
+        for r in &self.dirty_rects {
+            let mut new_pieces = alloc::vec![*r];
+            for existing in &final_rects {
+                let mut next_pieces = alloc::vec::Vec::new();
+                for p in new_pieces {
+                    next_pieces.extend(p.subtract(existing));
+                }
+                new_pieces = next_pieces;
+            }
+            final_rects.extend(new_pieces);
+        }
+        self.dirty_rects.clear();
+        
+        // 1. Draw scene to clean backbuffer for each dirty rect
+        for r in &final_rects {
+            let r_x = r.x.max(0);
+            let r_y = r.y.max(0);
+            let r_w = r.w.min(self.width as i32 - r_x);
+            let r_h = r.h.min(self.height as i32 - r_y);
+            if r_w > 0 && r_h > 0 {
+                self.draw_scene(Some(&crate::gui::clip::Rect { x: r_x, y: r_y, w: r_w, h: r_h }));
             }
         }
+
+        // 2. Temporarily draw cursor into backbuffer
+        let cursor_x = self.mouse_x;
+        let cursor_y = self.mouse_y;
+        let mut cursor_backup = alloc::vec![0u32; 32 * 32];
+        for row in 0..32 {
+            let py = cursor_y + row;
+            if py < 0 || py >= self.height as i32 { continue; }
+            for col in 0..32 {
+                let px = cursor_x + col;
+                if px < 0 || px >= self.width as i32 { continue; }
+                cursor_backup[(row * 32 + col) as usize] = self.backbuffer[(py * self.width as i32 + px) as usize];
+            }
+        }
+
+        // Get cursor bitmap and blend
+        let state = *crate::drivers::video::CURRENT_CURSOR.lock();
+        let bitmap = match state {
+            crate::drivers::video::CursorState::Normal => &crate::drivers::cursors::CURSOR_PTR,
+            crate::drivers::video::CursorState::ResizeH => &crate::drivers::cursors::CURSOR_RESIZE_H,
+            crate::drivers::video::CursorState::ResizeV => &crate::drivers::cursors::CURSOR_RESIZE_V,
+            crate::drivers::video::CursorState::Wait => &crate::drivers::cursors::CURSOR_WAIT,
+            crate::drivers::video::CursorState::Text => &crate::drivers::cursors::CURSOR_TEXT,
+        };
+
+        for row in 0..32 {
+            let py = cursor_y + row;
+            if py < 0 || py >= self.height as i32 { continue; }
+            for col in 0..32 {
+                let px = cursor_x + col;
+                if px < 0 || px >= self.width as i32 { continue; }
+                
+                let pixel = bitmap[(row * 32 + col) as usize];
+                let alpha = (pixel >> 24) & 0xFF;
+                
+                if alpha > 0 {
+                    let idx = (py * self.width as i32 + px) as usize;
+                    if alpha == 255 {
+                        self.backbuffer[idx] = pixel & 0x00FFFFFF;
+                    } else {
+                        let bg = self.backbuffer[idx];
+                        let bg_r = (bg >> 16) & 0xFF;
+                        let bg_g = (bg >> 8) & 0xFF;
+                        let bg_b = bg & 0xFF;
+                        
+                        let fg_r = (pixel >> 16) & 0xFF;
+                        let fg_g = (pixel >> 8) & 0xFF;
+                        let fg_b = pixel & 0xFF;
+                        
+                        let inv_alpha = 255 - alpha;
+                        let out_r = ((fg_r * alpha) + (bg_r * inv_alpha)) / 255;
+                        let out_g = ((fg_g * alpha) + (bg_g * inv_alpha)) / 255;
+                        let out_b = ((fg_b * alpha) + (bg_b * inv_alpha)) / 255;
+                        
+                        self.backbuffer[idx] = (out_r << 16) | (out_g << 8) | out_b;
+                    }
+                }
+            }
+        }
+
+        // 3. Blit all dirty rects from backbuffer to hardware framebuffer
+        for r in &final_rects {
+            let r_x = r.x.max(0);
+            let r_y = r.y.max(0);
+            let r_w = r.w.min(self.width as i32 - r_x);
+            let r_h = r.h.min(self.height as i32 - r_y);
+            if r_w > 0 && r_h > 0 {
+                let offset = r_y as usize * self.width + r_x as usize;
+                video::blit_buffer_opaque(&self.backbuffer[offset..], r_x, r_y, r_w, r_h, self.width as i32);
+            }
+        }
+
+        // 4. Restore backbuffer clean pixels
+        for row in 0..32 {
+            let py = cursor_y + row;
+            if py < 0 || py >= self.height as i32 { continue; }
+            for col in 0..32 {
+                let px = cursor_x + col;
+                if px < 0 || px >= self.width as i32 { continue; }
+                self.backbuffer[(py * self.width as i32 + px) as usize] = cursor_backup[(row * 32 + col) as usize];
+            }
+        }
+    }
+
+    fn draw_scene(&mut self, clip_opt: Option<&crate::gui::clip::Rect>) {
+
+
+        // 1. Clear background (Desktop Wallpaper)
+        let bg_color = *crate::gui::settings_app::WALLPAPER_COLOR.lock();
+        // Fill entire screen
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 0, 0, self.width as i32, self.height as i32, bg_color | 0xFF000000, clip_opt);
 
         // 1.5 Draw Desktop Icons
         for icon in &self.desktop_icons {
@@ -173,32 +308,46 @@ impl Compositor {
                     let src_x = (dx * scale_x_mul) / 1024;
                     
                     let color = icon.bmp.data[src_y * icon.bmp.width + src_x];
-                    if color & 0xFF000000 != 0 && color != 0xFFFFFFFF { // extremely basic transparency for white bg bmp
-                        self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                    if color & 0xFF000000 != 0 && color != 0xFFFFFFFF {
+                        if let Some(c) = clip_opt {
+                            if sx >= c.x && sx < c.x + c.w && sy >= c.y && sy < c.y + c.h {
+                                self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                            }
+                        } else {
+                            self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                        }
                     }
                 }
             }
             // Draw text
             let text_x = icon.x + (draw_w as i32 / 2) - (icon.name.len() as i32 * 4);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, text_x, icon.y + draw_h as i32 + 5, &icon.name, 0xFFFFFF);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, text_x, icon.y + draw_h as i32 + 5, &icon.name, 0xFFFFFF, clip_opt);
         }
 
         // 2. Draw Windows from bottom to top
         for w in &mut self.windows {
             if w.state == WindowState::Minimized { continue; }
             
-            let border = 2;
+            let border = 1;
             let title_h = 24;
             
-            // Draw window frame
+            // Draw window frame outline (SkyOS Blue/Silver Theme)
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 
-                w.x - border, w.y - title_h - border, w.width + border * 2, w.height + title_h + border * 2, 0xC0C0C0);
+                w.x - border, w.y - title_h - border, w.width + border * 2, w.height + title_h + border * 2, 0x1A477A, clip_opt);
                 
-            // Draw title bar
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 
-                w.x, w.y - title_h, w.width, title_h, 0x000080); // Active blue
+            // Draw title bar (SkyOS Gradient Blue)
+            for dy in 0..title_h {
+                let r = 0x5B - ((0x5B - 0x1A) * dy / title_h);
+                let g = 0x9B - ((0x9B - 0x47) * dy / title_h);
+                let b = 0xD5 - ((0xD5 - 0x7A) * dy / title_h);
+                let color = (r << 16) | (g << 8) | b;
+                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 
+                    w.x, w.y - title_h + dy, w.width, 1, color as u32, clip_opt);
+            }
                 
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, w.x + 4, w.y - title_h + 4, &w.title, 0xFFFFFF);
+            // Draw title string with drop shadow effect
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, w.x + 9, w.y - title_h + 7, &w.title, 0x000000, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, w.x + 8, w.y - title_h + 6, &w.title, 0xFFFFFF, clip_opt);
 
             // Close Button
             let close_bx = w.x + w.width - 22;
@@ -219,7 +368,13 @@ impl Compositor {
                         let color = bmp.data[src_y * bmp.width + src_x];
                         if color & 0xFF000000 != 0 && color != 0xFFFFFFFF { 
                             if sy >= 0 && sy < self.height as i32 && sx >= 0 && sx < self.width as i32 {
-                                self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                                if let Some(c) = clip_opt {
+                                    if sx >= c.x && sx < c.x + c.w && sy >= c.y && sy < c.y + c.h {
+                                        self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                                    }
+                                } else {
+                                    self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                                }
                             }
                         }
                     }
@@ -238,115 +393,186 @@ impl Compositor {
             let min_by = w.y - 22;
             draw_btn(&self.btn_min, min_bx, min_by);
             
-            w.app.update();
-            w.app.draw(&mut w.buffer, w.width as usize, w.height as usize);
+            // Removed hardcoded w.app.draw(...)
+
             
             // Draw Resize Handle (bottom right)
             let res_x = w.x + w.width - 12;
             let res_y = w.y + w.height - 12;
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, res_x, res_y, 12, 12, 0x808080);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, res_x, res_y, 12, 12, 0x808080, clip_opt);
             
             // Draw window content (blit its buffer)
-            for dy in 0..w.height {
-                let sy = w.y + dy;
-                if sy < 0 || sy >= self.height as i32 { continue; }
-                
-                for dx in 0..w.width {
-                    let sx = w.x + dx;
-                    if sx < 0 || sx >= self.width as i32 { continue; }
-                    
-                    let src_idx = (dy * w.width + dx) as usize;
-                    let dst_idx = (sy * self.width as i32 + sx) as usize;
-                    self.backbuffer[dst_idx] = w.buffer[src_idx];
+            let mut bx1 = w.x.max(0);
+            let mut by1 = w.y.max(0);
+            let mut bx2 = (w.x + w.width).min(self.width as i32);
+            let mut by2 = (w.y + w.height).min(self.height as i32);
+            if let Some(c) = clip_opt {
+                bx1 = bx1.max(c.x);
+                by1 = by1.max(c.y);
+                bx2 = bx2.min(c.x + c.w);
+                by2 = by2.min(c.y + c.h);
+            }
+            if bx1 < bx2 && by1 < by2 {
+                for sy in by1..by2 {
+                    let dy = sy - w.y;
+                    for sx in bx1..bx2 {
+                        let dx = sx - w.x;
+                        let src_idx = (dy * w.width + dx) as usize;
+                        let dst_idx = (sy * self.width as i32 + sx) as usize;
+                        self.backbuffer[dst_idx] = w.buffer[src_idx];
+                    }
                 }
             }
         }
         
-        // 3. Draw Taskbar
-        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 0, self.height as i32 - 30, self.width as i32, 30, 0xC0C0C0);
-        // Start Button
-        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, 2, self.height as i32 - 28, 60, 26, if self.start_menu_open { 0x808080 } else { 0xDFDFDF });
-        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, 10, self.height as i32 - 22, "Start", 0x000000);
+        // 3. Draw Dock
+        let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
         
-            // Draw Taskbar Items (one for each window)
-        let mut tb_x = 70;
+        let num_items = self.windows.len() as i32 + 1; // 1 for start button
+        let item_w = 120;
+        let item_h = 30;
+        let padding = 4;
+        let v_item_size = 40;
+        
+        let mut dock_w;
+        let mut dock_h;
+        let mut dock_x;
+        let mut dock_y;
+        let dx;
+        let dy;
+
+        if dock_pos == 0 || dock_pos == 1 { // Top / Bottom
+            dock_w = num_items * (item_w + padding) + padding;
+            dock_h = item_h + padding * 2;
+            dock_x = (self.width as i32 - dock_w) / 2;
+            if dock_x < 0 { dock_x = 0; }
+            dock_y = if dock_pos == 0 { 10 } else { self.height as i32 - dock_h - 10 };
+            dx = item_w + padding;
+            dy = 0;
+        } else { // Left / Right
+            dock_w = v_item_size + padding * 2;
+            dock_h = num_items * (v_item_size + padding) + padding;
+            dock_y = (self.height as i32 - dock_h) / 2;
+            if dock_y < 0 { dock_y = 0; }
+            dock_x = if dock_pos == 2 { 10 } else { self.width as i32 - dock_w - 10 };
+            dx = 0;
+            dy = v_item_size + padding;
+        }
+
+        // Draw Dock Background (SkyOS Silver/Glossy)
+        for dy in 0..dock_h {
+            let color = 0xE0E0E0 - ((0xE0 - 0xC0) * dy / dock_h);
+            let rgb = (color << 16) | (color << 8) | color;
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, dock_x, dock_y + dy, dock_w, 1, rgb as u32, clip_opt);
+        }
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, dock_x-1, dock_y-1, dock_w+2, 1, 0xA0A0A0, clip_opt);
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, dock_x-1, dock_y+dock_h, dock_w+2, 1, 0x707070, clip_opt);
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, dock_x-1, dock_y-1, 1, dock_h+2, 0xA0A0A0, clip_opt);
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, dock_x+dock_w, dock_y-1, 1, dock_h+2, 0x707070, clip_opt);
+        
+        let mut curr_x = dock_x + padding;
+        let mut curr_y = dock_y + padding;
+        
+        // Start Button
+        let start_w = if dock_pos <= 1 { item_w } else { v_item_size };
+        let start_h = if dock_pos <= 1 { item_h } else { v_item_size };
+        let start_color = if self.start_menu_open { 0x4090E0 } else { 0x2A73C8 }; // Sky blue start button
+        fill_rect_buffer(&mut self.backbuffer, self.width, self.height, curr_x, curr_y, start_w, start_h, start_color, clip_opt);
+        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, curr_x + (start_w/2) - 16, curr_y + (start_h/2) - 4, "Start", 0xFFFFFF, clip_opt);
+        curr_x += dx;
+        curr_y += dy;
+
         for (i, w) in self.windows.iter().enumerate() {
-            let item_w = 120;
-            // Draw recessed if it is the active window (last in list)
-            let color = if i == self.windows.len() - 1 && w.state != WindowState::Minimized { 0x808080 } else { 0xDFDFDF };
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, tb_x, self.height as i32 - 28, item_w, 26, color);
+            let iw = if dock_pos <= 1 { item_w } else { v_item_size };
+            let ih = if dock_pos <= 1 { item_h } else { v_item_size };
+            let color = if i == self.windows.len() - 1 && w.state != WindowState::Minimized { 0xC0C0C0 } else { 0xDFE3E8 };
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, curr_x, curr_y, iw, ih, color, clip_opt);
             
-            // Draw Window Icon
+            // Draw Icon
             if let Some(icon) = self.desktop_icons.iter().find(|ic| ic.name == w.title) {
                 let draw_w = 16;
                 let draw_h = 16;
                 let scale_x_mul = (icon.bmp.width * 1024) / draw_w;
                 let scale_y_mul = (icon.bmp.height * 1024) / draw_h;
+                let icon_x = if dock_pos <= 1 { curr_x + 6 } else { curr_x + (v_item_size/2) - (draw_w as i32/2) };
+                let icon_y = if dock_pos <= 1 { curr_y + 7 } else { curr_y + (v_item_size/2) - (draw_h as i32/2) };
 
-                for dy in 0..draw_h {
-                    let sy = self.height as i32 - 23 + dy as i32;
+                for dy_bmp in 0..draw_h {
+                    let sy = icon_y + dy_bmp as i32;
                     if sy < 0 || sy >= self.height as i32 { continue; }
-                    let src_y = (dy * scale_y_mul) / 1024;
-                    
-                    for dx in 0..draw_w {
-                        let sx = tb_x + 6 + dx as i32;
+                    let src_y = (dy_bmp * scale_y_mul) / 1024;
+                    for dx_bmp in 0..draw_w {
+                        let sx = icon_x + dx_bmp as i32;
                         if sx < 0 || sx >= self.width as i32 { continue; }
-                        let src_x = (dx * scale_x_mul) / 1024;
-                        
-                        let color = icon.bmp.data[src_y * icon.bmp.width + src_x];
-                        if color & 0xFF000000 != 0 && color != 0xFFFFFFFF { 
-                            self.backbuffer[(sy * self.width as i32 + sx) as usize] = color;
+                        let src_x = (dx_bmp * scale_x_mul) / 1024;
+                        let c = icon.bmp.data[src_y * icon.bmp.width + src_x];
+                        if c & 0xFF000000 != 0 && c != 0xFFFFFFFF { 
+                            if let Some(cl) = clip_opt {
+                                if sx >= cl.x && sx < cl.x + cl.w && sy >= cl.y && sy < cl.y + cl.h {
+                                    self.backbuffer[(sy * self.width as i32 + sx) as usize] = c;
+                                }
+                            } else {
+                                self.backbuffer[(sy * self.width as i32 + sx) as usize] = c;
+                            }
                         }
                     }
                 }
             }
 
-            // Truncate title
-            let mut title_disp = alloc::string::String::new();
-            for (j, c) in w.title.chars().enumerate() {
-                if j > 10 { break; }
-                title_disp.push(c);
+            if dock_pos <= 1 {
+                let mut title_disp = alloc::string::String::new();
+                for (j, c) in w.title.chars().enumerate() { if j > 10 { break; } title_disp.push(c); }
+                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, curr_x + 28, curr_y + 11, &title_disp, 0x000000, clip_opt);
             }
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, tb_x + 28, self.height as i32 - 22, &title_disp, 0x000000);
             
-            tb_x += item_w + 4;
+            curr_x += dx;
+            curr_y += dy;
         }
 
         // Draw Start Menu
         if self.start_menu_open {
             let sm_w = 200;
             let sm_h = 240;
-            let sm_x = 0;
-            let sm_y = self.height as i32 - 30 - sm_h;
             
-            // Windows XP / Mac hybrid look: left panel dark, right panel light
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x, sm_y, sm_w, sm_h, 0xEEEEEE);
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x, sm_y, 40, sm_h, 0x0055AA);
+            let sm_x = match dock_pos {
+                0 | 1 => dock_x,
+                2 => dock_x + dock_w + 4,
+                _ => dock_x - sm_w - 4,
+            };
+            let sm_y = match dock_pos {
+                0 => dock_y + dock_h + 4,
+                1 => dock_y - sm_h - 4,
+                _ => dock_y,
+            };
+            
+            // Windows XP / SkyOS hybrid look: blue left panel, white main panel
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x, sm_y, sm_w, sm_h, 0xF5F5F5, clip_opt);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x, sm_y, 40, sm_h, 0x2A73C8, clip_opt); // Sky Blue sidebar
             
             // Draw vertical 'Mithl OS' in left panel
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 20, "M", 0xFFFFFF);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 40, "i", 0xFFFFFF);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 60, "t", 0xFFFFFF);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 80, "h", 0xFFFFFF);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 100, "l", 0xFFFFFF);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 20, "M", 0xFFFFFF, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 40, "i", 0xFFFFFF, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 60, "t", 0xFFFFFF, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 80, "h", 0xFFFFFF, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 4, sm_y + sm_h - 100, "l", 0xFFFFFF, clip_opt);
 
-            let bg_sys = if self.active_submenu == Some(1) { 0x0078D7 } else { 0xEEEEEE };
+            let bg_sys = if self.active_submenu == Some(1) { 0x295D94 } else { 0xF5F5F5 };
             let fg_sys = if self.active_submenu == Some(1) { 0xFFFFFF } else { 0x000000 };
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 10, sm_w - 40, 30, bg_sys);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 17, "System >", fg_sys);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 10, sm_w - 40, 30, bg_sys, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 17, "System >", fg_sys, clip_opt);
             
-            let bg_acc = if self.active_submenu == Some(2) { 0x0078D7 } else { 0xEEEEEE };
+            let bg_acc = if self.active_submenu == Some(2) { 0x295D94 } else { 0xF5F5F5 };
             let fg_acc = if self.active_submenu == Some(2) { 0xFFFFFF } else { 0x000000 };
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 40, sm_w - 40, 30, bg_acc);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 47, "Accessories >", fg_acc);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 40, sm_w - 40, 30, bg_acc, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 47, "Accessories >", fg_acc, clip_opt);
             
-            let bg_gam = if self.active_submenu == Some(3) { 0x0078D7 } else { 0xEEEEEE };
+            let bg_gam = if self.active_submenu == Some(3) { 0x295D94 } else { 0xF5F5F5 };
             let fg_gam = if self.active_submenu == Some(3) { 0xFFFFFF } else { 0x000000 };
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 70, sm_w - 40, 30, bg_gam);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 77, "Games >", fg_gam);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + 70, sm_w - 40, 30, bg_gam, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + 77, "Games >", fg_gam, clip_opt);
 
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + sm_h - 40, sm_w - 40, 30, 0xDDDDDD);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + sm_h - 33, "Shutdown", 0x000000);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 40, sm_y + sm_h - 40, sm_w - 40, 30, 0xE0E0E0, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sm_x + 50, sm_y + sm_h - 33, "Shutdown", 0xCC0000, clip_opt);
 
             // Draw active submenu
             if let Some(sub) = self.active_submenu {
@@ -360,30 +586,30 @@ impl Compositor {
                 };
                 
                 if sub == 1 {
-                    // System submenu: Terminal, File Manager, Settings, Task Manager, Sys Monitor
-                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 124, 0xC0C0C0);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,  "Terminal",     0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 28, "File Manager", 0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 52, "Settings",     0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 76, "Task Manager", 0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 100,"Sys Monitor",  0x000000);
+                    // System submenu
+                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 124, 0xF5F5F5, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,  "Terminal", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 28, "File Manager", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 52, "Settings", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 76, "Task Manager", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 100,"Sys Monitor", 0x000000, clip_opt);
                 } else if sub == 2 {
-                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 104, 0xC0C0C0);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,  "Notepad",    0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 24, "Calculator", 0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 44, "Clock",      0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 64, "Calendar",   0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 84, "Paint",      0x000000);
+                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 104, 0xF5F5F5, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,  "Notepad", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 24, "Calculator", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 44, "Clock", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 64, "Calendar", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 84, "Paint", 0x000000, clip_opt);
                 } else if sub == 3 {
-                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 164, 0xC0C0C0);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,   "Snake",      0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 24,  "Minesweeper",0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 44,  "Tetris",     0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 64,  "Pong",       0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 84,  "2048",       0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 104, "Sudoku",     0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 124, "Chess",      0x000000);
-                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 144, "Calculator", 0x000000);
+                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height, sub_x, sub_y, sub_w, 164, 0xF5F5F5, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 4,   "Snake", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 24,  "Minesweeper", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 44,  "Tetris", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 64,  "Pong", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 84,  "2048", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 104, "Sudoku", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 124, "Chess", 0x000000, clip_opt);
+                    draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, sub_x + 10, sub_y + 144, "Calculator", 0x000000, clip_opt);
                 }
             }
         }
@@ -391,33 +617,28 @@ impl Compositor {
         if self.context_menu_open {
             let cm_w = 120;
             let cm_h = 44; // 2 items
-            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x, self.context_menu_y, cm_w, cm_h, 0xC0C0C0);
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x, self.context_menu_y, cm_w, cm_h, 0xC0C0C0, clip_opt);
             
             // Draw border
             for i in 0..cm_w {
-                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + i, self.context_menu_y, 1, 1, 0xFFFFFF);
-                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + i, self.context_menu_y + cm_h - 1, 1, 1, 0x000000);
+                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + i, self.context_menu_y, 1, 1, 0xFFFFFF, clip_opt);
+                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + i, self.context_menu_y + cm_h - 1, 1, 1, 0x000000, clip_opt);
             }
             for i in 0..cm_h {
-                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x, self.context_menu_y + i, 1, 1, 0xFFFFFF);
-                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + cm_w - 1, self.context_menu_y + i, 1, 1, 0x000000);
+                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x, self.context_menu_y + i, 1, 1, 0xFFFFFF, clip_opt);
+                fill_rect_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + cm_w - 1, self.context_menu_y + i, 1, 1, 0x000000, clip_opt);
             }
 
             if self.context_menu_target.is_some() {
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 8, "Open", 0x000000);
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 28, "Properties", 0x000000);
+                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 8, "Open", 0x000000, clip_opt);
+                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 28, "Properties", 0x000000, clip_opt);
             } else {
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 8, "New Folder", 0x000000);
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 28, "Refresh", 0x000000);
+                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 8, "New Folder", 0x000000, clip_opt);
+                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, self.context_menu_x + 10, self.context_menu_y + 28, "Refresh", 0x000000, clip_opt);
             }
         }
         
-        // 4. Blit backbuffer to framebuffer
-        // Use blit_buffer_opaque to correctly handle hardware pitch (stride)
-        video::blit_buffer_opaque(&self.backbuffer, 0, 0, self.width as i32, self.height as i32, self.width as i32);
-        
-        // 5. Draw mouse directly on top (using existing hardware cursor overlay if possible, or draw to FB)
-        video::draw_mouse_cursor(self.mouse_x, self.mouse_y);
+        // Blitting is now handled centrally inside draw() to support software cursor overlay.
     }
     
     pub fn process_input(&mut self) -> bool {
@@ -429,12 +650,18 @@ impl Compositor {
             self.backbuffer = alloc::vec![0; fw * fh];
         }
 
+        let old_mouse_x = self.mouse_x;
+        let old_mouse_y = self.mouse_y;
+        
         let mut needs_redraw = false;
+        let mut mouse_moved = false;
         
         while let Some(mev) = mouse::pop_event() {
-            self.mouse_x = mev.x as i32;
-            self.mouse_y = mev.y as i32;
-            needs_redraw = true;
+            if self.mouse_x != mev.x as i32 || self.mouse_y != mev.y as i32 {
+                self.mouse_x = mev.x as i32;
+                self.mouse_y = mev.y as i32;
+                mouse_moved = true;
+            }
             
             // Handle hovering over start menu categories
             if self.start_menu_open {
@@ -486,12 +713,34 @@ impl Compositor {
                 // Mouse just pressed
                 let mut handled = false;
                 
+                // Calculate dock bounds
+                let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
+                let num_items = self.windows.len() as i32 + 1;
+                let item_w = 120;
+                let item_h = 30;
+                let padding = 4;
+                let v_item_size = 40;
+                let dock_w = if dock_pos <= 1 { num_items * (item_w + padding) + padding } else { v_item_size + padding * 2 };
+                let dock_h = if dock_pos <= 1 { item_h + padding * 2 } else { num_items * (v_item_size + padding) + padding };
+                let mut dock_x = if dock_pos <= 1 { (self.width as i32 - dock_w) / 2 } else if dock_pos == 2 { 10 } else { self.width as i32 - dock_w - 10 };
+                let mut dock_y = if dock_pos == 0 { 10 } else if dock_pos == 1 { self.height as i32 - dock_h - 10 } else { (self.height as i32 - dock_h) / 2 };
+                if dock_x < 0 { dock_x = 0; }
+                if dock_y < 0 { dock_y = 0; }
+
                 // Check Start Menu items if open
                 if self.start_menu_open {
-                    let sm_w = 150;
-                    let sm_h = 100;
-                    let sm_x = 0;
-                    let sm_y = self.height as i32 - 30 - sm_h;
+                    let sm_w = 200;
+                    let sm_h = 240;
+                    let sm_x = match dock_pos {
+                        0 | 1 => dock_x,
+                        2 => dock_x + dock_w + 4,
+                        _ => dock_x - sm_w - 4,
+                    };
+                    let sm_y = match dock_pos {
+                        0 => dock_y + dock_h + 4,
+                        1 => dock_y - sm_h - 4,
+                        _ => dock_y,
+                    };
                     
                     // First check if clicked inside active submenu
                     if let Some(sub) = self.active_submenu {
@@ -516,83 +765,47 @@ impl Compositor {
                                 let sub_h = 124;
                                 let _ = sub_h;
                                 if self.mouse_y < sub_y + 24 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Terminal", 50, 50, 480, 320);
-                                    win.app = super::app::AppType::Terminal(TerminalApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_terminal(self);
                                 } else if self.mouse_y < sub_y + 52 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "File Manager", 80, 80, 380, 380);
-                                    win.app = super::app::AppType::FileManager(crate::gui::file_manager_app::FileManagerApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_file_manager(self);
                                 } else if self.mouse_y < sub_y + 76 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Settings", 100, 100, 380, 300);
-                                    win.app = super::app::AppType::Settings(crate::gui::settings_app::SettingsApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_settings(self);
                                 } else if self.mouse_y < sub_y + 100 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Task Manager", 120, 120, 360, 360);
-                                    win.app = super::app::AppType::TaskManager(crate::gui::task_manager_app::TaskManagerApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_task_manager(self);
                                 } else {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Sys Monitor", 140, 140, 320, 300);
-                                    win.app = super::app::AppType::SysMon(crate::gui::sysmon_app::SysMonApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_sysmon(self);
                                 }
                             } else if sub == 2 {
                                 // Accessories -> Notepad, Calculator, Clock, Calendar, Paint
                                 if self.mouse_y < sub_y + 20 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Notepad", 100, 100, 400, 300);
-                                    win.app = super::app::AppType::Notepad(crate::gui::notepad_app::NotepadApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_notepad(self);
                                 } else if self.mouse_y < sub_y + 44 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Calculator", 150, 150, 300, 200);
-                                    win.app = super::app::AppType::Calculator(crate::gui::calculator_app::CalculatorApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_calculator(self);
                                 } else if self.mouse_y < sub_y + 64 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Clock", 200, 120, 380, 160);
-                                    win.app = super::app::AppType::Clock(crate::gui::clock_app::ClockApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_clock(self);
                                 } else if self.mouse_y < sub_y + 84 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Calendar", 180, 100, 290, 230);
-                                    win.app = super::app::AppType::Calendar(crate::gui::calendar_app::CalendarApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_calendar(self);
                                 } else {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Paint", 180, 100, 420, 350);
-                                    win.app = super::app::AppType::Paint(crate::gui::paint_app::PaintApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_paint(self);
                                 }
                             } else if sub == 3 {
                                 // Games -> Snake, Minesweeper, Tetris, Pong, 2048, Sudoku, Chess
                                 if self.mouse_y < sub_y + 20 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Snake", 150, 150, 400, 300);
-                                    win.app = super::app::AppType::Snake(crate::gui::snake_app::SnakeApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_snake(self);
                                 } else if self.mouse_y < sub_y + 44 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Minesweeper", 120, 80, 240, 260);
-                                    win.app = super::app::AppType::Minesweeper(crate::gui::minesweeper_app::MinesweeperApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_minesweeper(self);
                                 } else if self.mouse_y < sub_y + 64 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Tetris", 100, 50, 300, 500);
-                                    win.app = super::app::AppType::Tetris(crate::gui::tetris_app::TetrisApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_tetris(self);
                                 } else if self.mouse_y < sub_y + 84 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Pong", 100, 50, 420, 320);
-                                    win.app = super::app::AppType::Pong(crate::gui::pong_app::PongApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_pong(self);
                                 } else if self.mouse_y < sub_y + 104 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "2048", 100, 50, 300, 320);
-                                    win.app = super::app::AppType::Game2048(crate::gui::game2048_app::Game2048App::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_2048(self);
                                 } else if self.mouse_y < sub_y + 124 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Sudoku", 100, 50, 300, 320);
-                                    win.app = super::app::AppType::Sudoku(crate::gui::sudoku_app::SudokuApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_sudoku(self);
                                 } else if self.mouse_y < sub_y + 144 {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Chess", 100, 50, 420, 440);
-                                    win.app = super::app::AppType::Chess(crate::gui::chess_app::ChessApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_chess(self);
                                 } else {
-                                    let mut win = Window::new((self.windows.len() + 1) as u32, "Calculator", 100, 50, 300, 200);
-                                    win.app = super::app::AppType::Calculator(crate::gui::calculator_app::CalculatorApp::new());
-                                    self.windows.push(win);
+                                    crate::apps::gui_apps::launch_calculator(self); // fallback
                                 }
                             }
                             self.start_menu_open = false;
@@ -607,36 +820,58 @@ impl Compositor {
                             // Shutdown
                             return false;
                         }
-                        // Clicked a category, do nothing (wait for submenu click)
+                        // Check if we clicked a category
+                        if self.mouse_y >= sm_y + 10 && self.mouse_y < sm_y + 40 {
+                            self.active_submenu = Some(1);
+                        } else if self.mouse_y >= sm_y + 40 && self.mouse_y < sm_y + 70 {
+                            self.active_submenu = Some(2);
+                        } else if self.mouse_y >= sm_y + 70 && self.mouse_y < sm_y + 100 {
+                            self.active_submenu = Some(3);
+                        }
                         handled = true;
                     }
                 }
 
-                // Check Start Button
-                if !handled && self.mouse_x >= 2 && self.mouse_x <= 62 && self.mouse_y >= self.height as i32 - 28 && self.mouse_y <= self.height as i32 - 2 {
-                    self.start_menu_open = !self.start_menu_open;
-                    handled = true;
-                } else if !handled && self.mouse_y >= self.height as i32 - 28 && self.mouse_y <= self.height as i32 - 2 {
-                    // Check taskbar items
-                    let mut tb_x = 70;
-                    let mut clicked_idx = None;
-                    for (i, _w) in self.windows.iter().enumerate() {
-                        let item_w = 100;
-                        if self.mouse_x >= tb_x && self.mouse_x <= tb_x + item_w {
-                            clicked_idx = Some(i);
-                            break;
-                        }
-                        tb_x += item_w + 4;
-                    }
-                    if let Some(i) = clicked_idx {
-                        if self.windows[i].state == WindowState::Minimized {
-                            self.windows[i].state = WindowState::Normal;
-                        }
-                        let win = self.windows.remove(i);
-                        self.windows.push(win);
+                // Check Dock clicks
+                if !handled && self.mouse_x >= dock_x && self.mouse_x <= dock_x + dock_w && self.mouse_y >= dock_y && self.mouse_y <= dock_y + dock_h {
+                    let start_w = if dock_pos <= 1 { item_w } else { v_item_size };
+                    let start_h = if dock_pos <= 1 { item_h } else { v_item_size };
+                    let mut curr_x = dock_x + padding;
+                    let mut curr_y = dock_y + padding;
+                    let dx = if dock_pos <= 1 { item_w + padding } else { 0 };
+                    let dy = if dock_pos > 1 { v_item_size + padding } else { 0 };
+
+                    // Start button click
+                    if self.mouse_x >= curr_x && self.mouse_x <= curr_x + start_w && self.mouse_y >= curr_y && self.mouse_y <= curr_y + start_h {
+                        self.start_menu_open = !self.start_menu_open;
                         handled = true;
+                    } else {
+                        curr_x += dx;
+                        curr_y += dy;
+                        
+                        let iw = if dock_pos <= 1 { item_w } else { v_item_size };
+                        let ih = if dock_pos <= 1 { item_h } else { v_item_size };
+                        
+                        let mut clicked_idx = None;
+                        for (i, _w) in self.windows.iter().enumerate() {
+                            if self.mouse_x >= curr_x && self.mouse_x <= curr_x + iw && self.mouse_y >= curr_y && self.mouse_y <= curr_y + ih {
+                                clicked_idx = Some(i);
+                                break;
+                            }
+                            curr_x += dx;
+                            curr_y += dy;
+                        }
+                        
+                        if let Some(i) = clicked_idx {
+                            if self.windows[i].state == WindowState::Minimized {
+                                self.windows[i].state = WindowState::Normal;
+                            }
+                            let win = self.windows.remove(i);
+                            self.windows.push(win);
+                            handled = true;
+                        }
+                        self.start_menu_open = false; // Close menu if clicked elsewhere
                     }
-                    self.start_menu_open = false; // Close menu if clicked elsewhere
                 } else if !handled {
                     self.start_menu_open = false; // Close menu if clicked elsewhere
                 }
@@ -667,9 +902,7 @@ impl Compositor {
                             action = Some((i, 3)); // 3 = bring to front
                             break; // Stop checking lower windows
                         } else if w.is_point_inside(self.mouse_x, self.mouse_y) && w.state != WindowState::Minimized {
-                            let local_x = self.mouse_x - w.x;
-                            let local_y = self.mouse_y - w.y;
-                            w.app.on_mouse_event(local_x, local_y, mev.buttons);
+                            // Event dispatching to be handled by Window Manager API
                             
                             action = Some((i, 3)); // 3 = bring to front
                             break; // Stop checking lower windows
@@ -724,27 +957,6 @@ impl Compositor {
                                 // Double click
                                 let app_name = self.desktop_icons[idx].name.clone();
                                 let mut win = Window::new((self.windows.len() + 1) as u32, &app_name, 100, 100, 400, 300);
-                                match app_name.as_str() {
-                                    "Terminal" => win.app = super::app::AppType::Terminal(TerminalApp::new()),
-                                    "File Manager" => win.app = super::app::AppType::FileManager(crate::gui::file_manager_app::FileManagerApp::new()),
-                                    "Settings" => win.app = super::app::AppType::Settings(crate::gui::settings_app::SettingsApp::new()),
-                                    "Task Manager" => win.app = super::app::AppType::TaskManager(crate::gui::task_manager_app::TaskManagerApp::new()),
-                                    "Sys Monitor" => win.app = super::app::AppType::SysMon(crate::gui::sysmon_app::SysMonApp::new()),
-                                    "Notepad" => win.app = super::app::AppType::Notepad(NotepadApp::new()),
-                                    "Calculator" => win.app = super::app::AppType::Calculator(crate::gui::calculator_app::CalculatorApp::new()),
-                                    "Clock" => win.app = super::app::AppType::Clock(crate::gui::clock_app::ClockApp::new()),
-                                    "Calendar" => win.app = super::app::AppType::Calendar(crate::gui::calendar_app::CalendarApp::new()),
-                                    "Paint" => win.app = super::app::AppType::Paint(crate::gui::paint_app::PaintApp::new()),
-                                    "Snake" => win.app = super::app::AppType::Snake(crate::gui::snake_app::SnakeApp::new()),
-                                    "Minesweeper" => win.app = super::app::AppType::Minesweeper(crate::gui::minesweeper_app::MinesweeperApp::new()),
-                                    "Tetris" => win.app = super::app::AppType::Tetris(crate::gui::tetris_app::TetrisApp::new()),
-                                    "Pong" => win.app = super::app::AppType::Pong(crate::gui::pong_app::PongApp::new()),
-                                    "2048" => win.app = super::app::AppType::Game2048(crate::gui::game2048_app::Game2048App::new()),
-                                    "Sudoku" => win.app = super::app::AppType::Sudoku(crate::gui::sudoku_app::SudokuApp::new()),
-                                    "Chess" => win.app = super::app::AppType::Chess(crate::gui::chess_app::ChessApp::new()),
-                                    "Browser" => win.app = super::app::AppType::Browser(crate::gui::browser_app::BrowserApp::new()),
-                                    _ => {}
-                                }
                                 self.windows.push(win);
                                 self.last_clicked_icon = None;
                             } else {
@@ -829,19 +1041,148 @@ impl Compositor {
             self.mouse_right_down = is_right_down;
         }
         
+        let mut cursor = crate::drivers::video::CursorState::Normal;
+        if self.resized_window.is_some() {
+            let edge = self.active_edge.unwrap_or(2);
+            if edge == 0 || edge == 3 { cursor = crate::drivers::video::CursorState::ResizeH; }
+            else if edge == 1 || edge == 4 { cursor = crate::drivers::video::CursorState::ResizeV; }
+        } else {
+            for w in self.windows.iter().rev() {
+                if let Some(edge) = w.check_resize_zone(self.mouse_x, self.mouse_y) {
+                    if edge == 0 || edge == 3 { cursor = crate::drivers::video::CursorState::ResizeH; }
+                    else if edge == 1 || edge == 4 { cursor = crate::drivers::video::CursorState::ResizeV; }
+                    break;
+                }
+                if w.is_point_inside(self.mouse_x, self.mouse_y) && w.state != crate::gui::window::WindowState::Minimized {
+                    break;
+                }
+            }
+        }
+        {
+            let mut current = crate::drivers::video::CURRENT_CURSOR.lock();
+            if *current != cursor {
+                *current = cursor;
+                mouse_moved = true; // force redraw of cursor
+            }
+        }
+        
         // Check keyboard for exit
         if let Some(c) = keyboard::pop_char() {
             if c == '\x1B' { // ESC
                 return false;
             } else {
                 if let Some(w) = self.windows.last_mut() {
-                    w.app.on_key_event(c);
+                    // Event dispatching to be handled by Window Manager API
                     needs_redraw = true;
                 }
             }
         }
         
-        self.draw();
+            // Removed hardcoded w.app.update()
+            
+        // Process IPC messages from Window Manager
+        {
+            let mut msgs = crate::gui::wm::GUI_MESSAGES.lock();
+            for msg in msgs.drain(..) {
+                match msg {
+                    crate::gui::wm::GuiMessage::CreateWindow { id, title, x, y, w, h } => {
+                        let win = crate::gui::window::Window::new(id, &title, x, y, w, h);
+                        self.windows.push(win);
+                        needs_redraw = true;
+                    }
+                    crate::gui::wm::GuiMessage::UpdateBuffer { id, buffer_ptr } => {
+                        for win in &mut self.windows {
+                            if win.id == id {
+                                let slice = unsafe { core::slice::from_raw_parts(buffer_ptr as *const u32, win.buffer.len()) };
+                                win.buffer.copy_from_slice(slice);
+                                needs_redraw = true;
+                                break;
+                            }
+                        }
+                    }
+                    crate::gui::wm::GuiMessage::CloseWindow { id } => {
+                        self.windows.retain(|win| win.id != id);
+                        needs_redraw = true;
+                    }
+                }
+            }
+        }
+
+        let current_ticks = crate::process::scheduler::get_ticks();
+        
+        if needs_redraw || (current_ticks.saturating_sub(self.last_redraw_ticks) >= 5) {
+            for r in &self.last_frame_rects {
+                self.dirty_rects.push(*r);
+            }
+            self.last_frame_rects.clear();
+            
+            let mut current_rects = alloc::vec::Vec::new();
+            
+            if self.start_menu_open {
+                let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
+                let num_items = self.windows.len() as i32 + 1;
+                let item_w = 120;
+                let padding = 4;
+                let v_item_size = 40;
+                let mut dock_w;
+                let mut dock_x;
+                if dock_pos == 0 || dock_pos == 1 {
+                    dock_w = num_items * (item_w + padding) + padding;
+                    dock_x = (self.width as i32 - dock_w) / 2;
+                    if dock_x < 0 { dock_x = 0; }
+                } else {
+                    dock_w = v_item_size + padding * 2;
+                    dock_x = if dock_pos == 2 { 10 } else { self.width as i32 - dock_w - 10 };
+                }
+                
+                let sm_w = 200;
+                let sm_h = 240;
+                let sm_x = match dock_pos {
+                    0 | 1 => dock_x,
+                    2 => dock_x + dock_w + 4,
+                    _ => dock_x - sm_w - 4,
+                };
+                let sm_y = match dock_pos {
+                    0 => 10 + (30 + padding * 2) + 4,
+                    1 => self.height as i32 - (30 + padding * 2) - 10 - sm_h - 4,
+                    _ => (self.height as i32 - (num_items * (v_item_size + padding) + padding)) / 2,
+                };
+                current_rects.push(crate::gui::clip::Rect { x: sm_x, y: sm_y, w: sm_w, h: sm_h });
+            }
+            
+            if self.context_menu_open {
+                current_rects.push(crate::gui::clip::Rect { x: self.context_menu_x, y: self.context_menu_y, w: 120, h: 44 });
+            }
+            
+            current_rects.push(crate::gui::clip::Rect { x: 0, y: 0, w: self.width as i32, h: 60 });
+            current_rects.push(crate::gui::clip::Rect { x: 0, y: self.height as i32 - 60, w: self.width as i32, h: 60 });
+            current_rects.push(crate::gui::clip::Rect { x: 0, y: 0, w: 60, h: self.height as i32 });
+            current_rects.push(crate::gui::clip::Rect { x: self.width as i32 - 60, y: 0, w: 60, h: self.height as i32 });
+            
+            for w in &self.windows {
+                if w.state != WindowState::Minimized {
+                    current_rects.push(crate::gui::clip::Rect { x: w.x - 4, y: w.y - 28, w: w.width + 8, h: w.height + 32 });
+                }
+            }
+            
+            for r in &current_rects {
+                self.dirty_rects.push(*r);
+                self.last_frame_rects.push(*r);
+            }
+            
+            if mouse_moved {
+                self.dirty_rects.push(crate::gui::clip::Rect { x: old_mouse_x, y: old_mouse_y, w: 32, h: 32 });
+                self.dirty_rects.push(crate::gui::clip::Rect { x: self.mouse_x, y: self.mouse_y, w: 32, h: 32 });
+            }
+            
+            self.draw();
+            self.last_redraw_ticks = current_ticks;
+        } else if mouse_moved {
+            self.dirty_rects.push(crate::gui::clip::Rect { x: old_mouse_x, y: old_mouse_y, w: 32, h: 32 });
+            self.dirty_rects.push(crate::gui::clip::Rect { x: self.mouse_x, y: self.mouse_y, w: 32, h: 32 });
+            self.draw();
+            self.last_redraw_ticks = crate::process::scheduler::get_ticks();
+        }
         
         true
     }

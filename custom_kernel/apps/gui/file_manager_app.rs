@@ -1,4 +1,3 @@
-use crate::gui::app::App;
 use crate::drivers::keyboard;
 use crate::fs::vfs;
 use alloc::string::String;
@@ -126,117 +125,143 @@ impl FileManagerApp {
     }
 }
 
-impl App for FileManagerApp {
-    fn update(&mut self) {}
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-
-        // Background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
-
-        // Toolbar / address bar
-        Self::fill(buf, w, h, 0, 0, w as i32, 24, 0xFF313244);
-        Self::draw_text(buf, w, h, 4, 4, "📁", 0xFFCBA6F7);
-        Self::draw_text(buf, w, h, 24, 4, &self.current_path, 0xFFCDD6F4);
-
-        // Column headers
-        let header_y = 26;
-        Self::fill(buf, w, h, 0, header_y, w as i32, 18, 0xFF45475A);
-        Self::draw_text(buf, w, h, 4, header_y + 2, "Name", 0xFFBAC2E8);
-        Self::draw_text(buf, w, h, w as i32 - 100, header_y + 2, "Size", 0xFFBAC2E8);
-        Self::draw_text(buf, w, h, w as i32 - 55, header_y + 2, "Type", 0xFFBAC2E8);
-
-        // File list
-        let list_y = 46;
-        let row_h = 18;
-        let visible = ((h as i32 - list_y - 24) / row_h).max(0) as usize;
-
-        for (i, entry) in self.entries.iter().enumerate().skip(self.scroll) {
-            if i - self.scroll >= visible { break; }
-            let ry = list_y + ((i - self.scroll) as i32 * row_h);
-
-            let bg = if i == self.selected { 0xFF585B70 } else if (i - self.scroll) % 2 == 0 { 0xFF1E1E2E } else { 0xFF24273A };
-            Self::fill(buf, w, h, 0, ry, w as i32, row_h, bg);
-
-            let icon = if entry.is_dir { "D " } else { "F " };
-            let icon_color = if entry.is_dir { 0xFF89DCEB } else { 0xFFA6E3A1 };
-            Self::draw_text(buf, w, h, 4, ry + 2, icon, icon_color);
-
-            // Truncate name
-            let name_disp: String = entry.name.chars().take(28).collect();
-            Self::draw_text(buf, w, h, 22, ry + 2, &name_disp, 0xFFCDD6F4);
-
-            if !entry.is_dir && entry.size > 0 {
-                let size_str = if entry.size >= 1048576 {
-                    alloc::format!("{:.1}M", entry.size as f64 / 1048576.0)
-                } else if entry.size >= 1024 {
-                    alloc::format!("{}K", entry.size / 1024)
-                } else {
-                    alloc::format!("{}B", entry.size)
-                };
-                Self::draw_text(buf, w, h, w as i32 - 100, ry + 2, &size_str, 0xFFF5E0DC);
-            }
-
-            let type_str = if entry.is_dir { "DIR" } else {
-                if entry.name.ends_with(".elf") { "ELF" }
-                else if entry.name.ends_with(".rs") { "RS" }
-                else if entry.name.ends_with(".txt") { "TXT" }
-                else { "FILE" }
-            };
-            Self::draw_text(buf, w, h, w as i32 - 55, ry + 2, type_str, 0xFFCBA6F7);
-        }
-
-        // Status bar
-        Self::fill(buf, w, h, 0, h as i32 - 20, w as i32, 20, 0xFF313244);
-        let status = alloc::format!("{} items  |  {}", self.entries.len(), self.status);
-        Self::draw_text(buf, w, h, 4, h as i32 - 17, &status, 0xFF6C7086);
-
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, y: i32, buttons: u8) {
-        if buttons & 1 != 0 {
-            let list_y = 46;
-            let row_h = 18;
-            if y >= list_y {
-                let idx = ((y - list_y) / row_h) as usize + self.scroll;
-                if idx < self.entries.len() {
-                    let tick = crate::process::scheduler::get_ticks();
-                    // Double-click detection: same entry within 50 ticks
-                    if self.last_click_entry == Some(idx) && tick.saturating_sub(self.last_click_tick) < 50 {
-                        self.navigate_into();
-                    } else {
-                        self.selected = idx;
-                        self.last_click_entry = Some(idx);
-                        self.last_click_tick = tick;
-                        self.needs_redraw = true;
+pub fn file_manager_main() {
+    let id = 2; // Fixed ID for file manager, or passed via parameter? Let's just use 22
+    let width = 400;
+    let height = 300;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id: 22,
+        title: alloc::string::String::from("MithlFS Explorer"),
+        x: 150,
+        y: 150,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF1E1E2E; width * height];
+    let mut app = FileManagerApp::new();
+    
+    loop {
+        for event in crate::gui::wm::pop_events(22) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    match c {
+                        keyboard::KEY_UP => {
+                            if app.selected > 0 { app.selected -= 1; }
+                            if app.selected < app.scroll { app.scroll = app.selected; }
+                            app.needs_redraw = true;
+                        }
+                        keyboard::KEY_DOWN => {
+                            if app.selected + 1 < app.entries.len() { app.selected += 1; }
+                            app.needs_redraw = true;
+                        }
+                        '\r' | '\n' => { app.navigate_into(); }
+                        '\x08' => { // Backspace = go up
+                            app.selected = 0;
+                            if app.entries.first().map(|e| e.name.as_str()) == Some("..") {
+                                app.navigate_into();
+                            }
+                        }
+                        'r' | 'R' => { app.refresh(); }
+                        _ => {}
                     }
                 }
-            }
-        }
-    }
-
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            keyboard::KEY_UP => {
-                if self.selected > 0 { self.selected -= 1; }
-                if self.selected < self.scroll { self.scroll = self.selected; }
-                self.needs_redraw = true;
-            }
-            keyboard::KEY_DOWN => {
-                if self.selected + 1 < self.entries.len() { self.selected += 1; }
-                self.needs_redraw = true;
-            }
-            '\r' | '\n' => { self.navigate_into(); }
-            '\x08' => { // Backspace = go up
-                self.selected = 0;
-                if self.entries.first().map(|e| e.name.as_str()) == Some("..") {
-                    self.navigate_into();
+                crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
+                    if button & 1 != 0 {
+                        let list_y = 46;
+                        let row_h = 18;
+                        if y >= list_y {
+                            let idx = ((y - list_y) / row_h) as usize + app.scroll;
+                            if idx < app.entries.len() {
+                                let tick = crate::process::scheduler::get_ticks();
+                                if app.last_click_entry == Some(idx) && tick.saturating_sub(app.last_click_tick) < 50 {
+                                    app.navigate_into();
+                                } else {
+                                    app.selected = idx;
+                                    app.last_click_entry = Some(idx);
+                                    app.last_click_tick = tick;
+                                    app.needs_redraw = true;
+                                }
+                            }
+                        }
+                    }
                 }
+                _ => {}
             }
-            'r' | 'R' => { self.refresh(); }
-            _ => {}
         }
+        
+        if app.needs_redraw {
+            let w = width;
+            let h = height;
+            let buf = &mut buffer;
+            
+            // Background
+            FileManagerApp::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
+    
+            // Toolbar / address bar
+            FileManagerApp::fill(buf, w, h, 0, 0, w as i32, 24, 0xFF313244);
+            FileManagerApp::draw_text(buf, w, h, 4, 4, "F", 0xFFCBA6F7);
+            FileManagerApp::draw_text(buf, w, h, 24, 4, &app.current_path, 0xFFCDD6F4);
+    
+            // Column headers
+            let header_y = 26;
+            FileManagerApp::fill(buf, w, h, 0, header_y, w as i32, 18, 0xFF45475A);
+            FileManagerApp::draw_text(buf, w, h, 4, header_y + 2, "Name", 0xFFBAC2E8);
+            FileManagerApp::draw_text(buf, w, h, w as i32 - 100, header_y + 2, "Size", 0xFFBAC2E8);
+            FileManagerApp::draw_text(buf, w, h, w as i32 - 55, header_y + 2, "Type", 0xFFBAC2E8);
+    
+            // File list
+            let list_y = 46;
+            let row_h = 18;
+            let visible = ((h as i32 - list_y - 24) / row_h).max(0) as usize;
+    
+            for (i, entry) in app.entries.iter().enumerate().skip(app.scroll) {
+                if i - app.scroll >= visible { break; }
+                let ry = list_y + ((i - app.scroll) as i32 * row_h);
+    
+                let bg = if i == app.selected { 0xFF585B70 } else if (i - app.scroll) % 2 == 0 { 0xFF1E1E2E } else { 0xFF24273A };
+                FileManagerApp::fill(buf, w, h, 0, ry, w as i32, row_h, bg);
+    
+                let icon = if entry.is_dir { "D " } else { "F " };
+                let icon_color = if entry.is_dir { 0xFF89DCEB } else { 0xFFA6E3A1 };
+                FileManagerApp::draw_text(buf, w, h, 4, ry + 2, icon, icon_color);
+    
+                let name_disp: String = entry.name.chars().take(28).collect();
+                FileManagerApp::draw_text(buf, w, h, 22, ry + 2, &name_disp, 0xFFCDD6F4);
+    
+                if !entry.is_dir && entry.size > 0 {
+                    let size_str = if entry.size >= 1048576 {
+                        alloc::format!("{:.1}M", entry.size as f64 / 1048576.0)
+                    } else if entry.size >= 1024 {
+                        alloc::format!("{}K", entry.size / 1024)
+                    } else {
+                        alloc::format!("{}B", entry.size)
+                    };
+                    FileManagerApp::draw_text(buf, w, h, w as i32 - 100, ry + 2, &size_str, 0xFFF5E0DC);
+                }
+    
+                let type_str = if entry.is_dir { "DIR" } else {
+                    if entry.name.ends_with(".elf") { "ELF" }
+                    else if entry.name.ends_with(".rs") { "RS" }
+                    else if entry.name.ends_with(".txt") { "TXT" }
+                    else { "FILE" }
+                };
+                FileManagerApp::draw_text(buf, w, h, w as i32 - 55, ry + 2, type_str, 0xFFCBA6F7);
+            }
+    
+            // Status bar
+            FileManagerApp::fill(buf, w, h, 0, h as i32 - 20, w as i32, 20, 0xFF313244);
+            let status = alloc::format!("{} items  |  {}", app.entries.len(), app.status);
+            FileManagerApp::draw_text(buf, w, h, 4, h as i32 - 17, &status, 0xFF6C7086);
+            
+            app.needs_redraw = false;
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id: 22,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
+        }
+        
+        crate::process::scheduler::yield_now();
     }
 }

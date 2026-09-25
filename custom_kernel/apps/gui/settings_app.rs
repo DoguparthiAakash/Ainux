@@ -1,4 +1,3 @@
-use crate::gui::app::App;
 use crate::drivers::keyboard;
 use alloc::string::String;
 
@@ -11,6 +10,7 @@ enum Tab {
 
 // Wallpaper color presets — written to a global so the compositor can read it
 pub static WALLPAPER_COLOR: spin::Mutex<u32> = spin::Mutex::new(0x008080);
+pub static DOCK_POSITION: spin::Mutex<u8> = spin::Mutex::new(1); // 0=Top, 1=Bottom, 2=Left, 3=Right
 
 pub struct SettingsApp {
     active_tab: Tab,
@@ -73,6 +73,14 @@ impl SettingsApp {
         let font_text = alloc::format!("Font Scale: {}x", theme.font_size);
         drop(theme);
 
+        let dock_pos = *DOCK_POSITION.lock();
+        let dock_btn_text = match dock_pos {
+            0 => "Dock: Top",
+            1 => "Dock: Bottom",
+            2 => "Dock: Left",
+            _ => "Dock: Right",
+        };
+
         // Buttons for Appearance (x=280)
         let app_btns = [
             ("Resolution: Auto", 85),
@@ -81,6 +89,7 @@ impl SettingsApp {
             (scroll_btn_text, 205),
             (page_wise_text, 245),
             (&font_text, 285),
+            (dock_btn_text, 325),
         ];
 
         for (label, cy) in app_btns.iter() {
@@ -191,116 +200,150 @@ impl SettingsApp {
     }
 }
 
-impl App for SettingsApp {
-    fn update(&mut self) {
+pub fn settings_main() {
+    let id = 5;
+    let width = 480;
+    let height = 400;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: String::from("Settings"),
+        x: 100,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF1E1E2E; width * height];
+    let mut app = SettingsApp::new();
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
+                    if button & 1 == 0 { continue; }
+
+                    // Tab clicks
+                    if y >= 4 && y <= 32 {
+                        if x < 94 { app.active_tab = Tab::Display; app.needs_redraw = true; }
+                        else if x < 184 { app.active_tab = Tab::System; app.needs_redraw = true; }
+                        else if x < 274 { app.active_tab = Tab::About; app.needs_redraw = true; }
+                    }
+
+                    // Color swatch clicks (Display tab)
+                    if app.active_tab == Tab::Display && y >= 85 {
+                        for i in 0..COLOR_PRESETS.len() {
+                            let cx = 10 + (i as i32 % 2) * 120; // Matches 2 columns
+                            let cy = 85 + (i as i32 / 2) * 60;
+                            if x >= cx && x < cx + 50 && y >= cy && y < cy + 30 {
+                                app.selected_color_idx = i;
+                                *WALLPAPER_COLOR.lock() = COLOR_PRESETS[i].0;
+                                app.needs_redraw = true;
+                                break;
+                            }
+                        }
+
+                        // Button clicks (Appearance)
+                        if x >= 280 && x <= 460 {
+                            if y >= 85 && y <= 115 {
+                                crate::drivers::video::auto_resolution();
+                                app.needs_redraw = true;
+                            } else if y >= 125 && y <= 155 {
+                                crate::drivers::video::set_resolution(1024, 768, 32);
+                                app.needs_redraw = true;
+                            } else if y >= 165 && y <= 195 {
+                                crate::drivers::video::set_resolution(1920, 1080, 32);
+                                app.needs_redraw = true;
+                            } else if y >= 205 && y <= 235 {
+                                let mut t = crate::drivers::video::THEME.lock();
+                                t.scrollbar_enabled = !t.scrollbar_enabled;
+                                app.needs_redraw = true;
+                            } else if y >= 245 && y <= 275 {
+                                let mut t = crate::drivers::video::THEME.lock();
+                                t.scroll_page_wise = !t.scroll_page_wise;
+                                app.needs_redraw = true;
+                            } else if y >= 285 && y <= 315 {
+                                let mut t = crate::drivers::video::THEME.lock();
+                                t.font_size = (t.font_size % 3) + 1;
+                                app.needs_redraw = true;
+                            } else if y >= 325 && y <= 355 {
+                                let mut pos = DOCK_POSITION.lock();
+                                *pos = (*pos + 1) % 4;
+                                app.needs_redraw = true;
+                            }
+                        }
+                    }
+                }
+                crate::gui::wm::GuiEvent::KeyPress { key } => {
+                    let c = key as u8 as char;
+                    match c {
+                        '1' => { app.active_tab = Tab::Display; app.needs_redraw = true; }
+                        '2' => { app.active_tab = Tab::System; app.needs_redraw = true; }
+                        '3' => { app.active_tab = Tab::About; app.needs_redraw = true; }
+                        keyboard::KEY_LEFT | keyboard::KEY_RIGHT => {
+                            app.active_tab = match app.active_tab {
+                                Tab::Display => if c == keyboard::KEY_RIGHT { Tab::System } else { Tab::About },
+                                Tab::System  => if c == keyboard::KEY_RIGHT { Tab::About } else { Tab::Display },
+                                Tab::About   => if c == keyboard::KEY_RIGHT { Tab::Display } else { Tab::System },
+                            };
+                            app.needs_redraw = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
         // Refresh every ~200 ticks for live system stats
         static LAST: spin::Mutex<u64> = spin::Mutex::new(0);
         let t = crate::process::scheduler::get_ticks();
         let mut last = LAST.lock();
-        if t.saturating_sub(*last) > 200 && self.active_tab == Tab::System {
-            self.needs_redraw = true;
+        if t.saturating_sub(*last) > 200 && app.active_tab == Tab::System {
+            app.needs_redraw = true;
             *last = t;
         }
-    }
+        drop(last); // Avoid deadlocks
+        
+        if app.needs_redraw {
+            let buf = &mut buffer;
+            let w = width;
+            let h = height;
+            
+            // Background
+            SettingsApp::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
 
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-
-        // Background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
-
-        // Tab bar
-        let tabs = [("Display", Tab::Display), ("System", Tab::System), ("About", Tab::About)];
-        for (i, (name, tab)) in tabs.iter().enumerate() {
-            let tx = i as i32 * 90 + 4;
-            let active = *tab == self.active_tab;
-            let bg = if active { 0xFF313244 } else { 0xFF1E1E2E };
-            let fg = if active { 0xFFCBA6F7 } else { 0xFF6C7086 };
-            Self::fill(buf, w, h, tx, 4, 86, 28, bg);
-            if active {
-                Self::fill(buf, w, h, tx, 30, 86, 2, 0xFFCBA6F7); // underline
-            }
-            Self::text(buf, w, h, tx + 10, 12, name, fg);
-        }
-
-        // Divider
-        Self::fill(buf, w, h, 0, 34, w as i32, 1, 0xFF45475A);
-
-        // Tab content
-        match self.active_tab {
-            Tab::Display => self.draw_display_tab(buf, w, h),
-            Tab::System  => self.draw_system_tab(buf, w, h),
-            Tab::About   => self.draw_about_tab(buf, w, h),
-        }
-
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, x: i32, y: i32, buttons: u8) {
-        if buttons & 1 == 0 { return; }
-
-        // Tab clicks
-        if y >= 4 && y <= 32 {
-            if x < 94 { self.active_tab = Tab::Display; self.needs_redraw = true; }
-            else if x < 184 { self.active_tab = Tab::System; self.needs_redraw = true; }
-            else if x < 274 { self.active_tab = Tab::About; self.needs_redraw = true; }
-        }
-
-        // Color swatch clicks (Display tab)
-        if self.active_tab == Tab::Display && y >= 85 {
-            for i in 0..COLOR_PRESETS.len() {
-                let cx = 10 + (i as i32 % 2) * 120; // Matches 2 columns
-                let cy = 85 + (i as i32 / 2) * 60;
-                if x >= cx && x < cx + 50 && y >= cy && y < cy + 30 {
-                    self.selected_color_idx = i;
-                    *WALLPAPER_COLOR.lock() = COLOR_PRESETS[i].0;
-                    self.needs_redraw = true;
-                    break;
+            // Tab bar
+            let tabs = [("Display", Tab::Display), ("System", Tab::System), ("About", Tab::About)];
+            for (i, (name, tab)) in tabs.iter().enumerate() {
+                let tx = i as i32 * 90 + 4;
+                let active = *tab == app.active_tab;
+                let bg = if active { 0xFF313244 } else { 0xFF1E1E2E };
+                let fg = if active { 0xFFCBA6F7 } else { 0xFF6C7086 };
+                SettingsApp::fill(buf, w, h, tx, 4, 86, 28, bg);
+                if active {
+                    SettingsApp::fill(buf, w, h, tx, 30, 86, 2, 0xFFCBA6F7); // underline
                 }
+                SettingsApp::text(buf, w, h, tx + 10, 12, name, fg);
             }
 
-            // Button clicks (Appearance)
-            if x >= 280 && x <= 460 {
-                if y >= 85 && y <= 115 {
-                    crate::drivers::video::auto_resolution();
-                    self.needs_redraw = true;
-                } else if y >= 125 && y <= 155 {
-                    crate::drivers::video::set_resolution(1024, 768, 32);
-                    self.needs_redraw = true;
-                } else if y >= 165 && y <= 195 {
-                    crate::drivers::video::set_resolution(1920, 1080, 32);
-                    self.needs_redraw = true;
-                } else if y >= 205 && y <= 235 {
-                    let mut t = crate::drivers::video::THEME.lock();
-                    t.scrollbar_enabled = !t.scrollbar_enabled;
-                    self.needs_redraw = true;
-                } else if y >= 245 && y <= 275 {
-                    let mut t = crate::drivers::video::THEME.lock();
-                    t.scroll_page_wise = !t.scroll_page_wise;
-                    self.needs_redraw = true;
-                } else if y >= 285 && y <= 315 {
-                    let mut t = crate::drivers::video::THEME.lock();
-                    t.font_size = (t.font_size % 3) + 1;
-                    self.needs_redraw = true;
-                }
-            }
-        }
-    }
+            // Divider
+            SettingsApp::fill(buf, w, h, 0, 34, w as i32, 1, 0xFF45475A);
 
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            '1' => { self.active_tab = Tab::Display; self.needs_redraw = true; }
-            '2' => { self.active_tab = Tab::System; self.needs_redraw = true; }
-            '3' => { self.active_tab = Tab::About; self.needs_redraw = true; }
-            keyboard::KEY_LEFT | keyboard::KEY_RIGHT => {
-                self.active_tab = match self.active_tab {
-                    Tab::Display => if c == keyboard::KEY_RIGHT { Tab::System } else { Tab::About },
-                    Tab::System  => if c == keyboard::KEY_RIGHT { Tab::About } else { Tab::Display },
-                    Tab::About   => if c == keyboard::KEY_RIGHT { Tab::Display } else { Tab::System },
-                };
-                self.needs_redraw = true;
+            // Tab content
+            match app.active_tab {
+                Tab::Display => app.draw_display_tab(buf, w, h),
+                Tab::System  => app.draw_system_tab(buf, w, h),
+                Tab::About   => app.draw_about_tab(buf, w, h),
             }
-            _ => {}
+
+            app.needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
+        
+        crate::process::scheduler::yield_now();
     }
 }

@@ -1,6 +1,6 @@
-use crate::gui::app::App;
 use alloc::string::String;
 use alloc::vec::Vec;
+use crate::gui::wm::{GuiMessage, GuiEvent, send_message, pop_events};
 
 pub struct TaskManagerApp {
     entries: Vec<TaskEntry>,
@@ -55,7 +55,6 @@ impl TaskManagerApp {
                 }
             }
         });
-        // Sort by pid
         self.entries.sort_by_key(|e| e.pid);
         if self.selected >= self.entries.len().max(1) {
             self.selected = self.entries.len().saturating_sub(1);
@@ -86,111 +85,127 @@ impl TaskManagerApp {
     }
 }
 
-impl App for TaskManagerApp {
-    fn update(&mut self) {
+pub fn task_manager_main() {
+    let id = 3;
+    let width = 360;
+    let height = 360;
+    
+    send_message(GuiMessage::CreateWindow {
+        id,
+        title: String::from("Task Manager"),
+        x: 100,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0; width * height];
+    let mut app = TaskManagerApp::new();
+    
+    loop {
+        // Handle events
+        for ev in pop_events(id) {
+            match ev {
+                GuiEvent::MouseClick { x: _mx, y: my, button } => {
+                    if button & 1 != 0 {
+                        let list_y = 62;
+                        let row_h  = 18;
+                        if my >= list_y {
+                            let idx = ((my - list_y) / row_h) as usize + app.scroll;
+                            if idx < app.entries.len() {
+                                app.selected = idx;
+                                app.needs_redraw = true;
+                            }
+                        }
+                    }
+                }
+                GuiEvent::KeyPress { key: c } => {
+                    match c {
+                        crate::drivers::keyboard::KEY_UP => {
+                            if app.selected > 0 { app.selected -= 1; }
+                            if app.selected < app.scroll { app.scroll = app.selected; }
+                            app.needs_redraw = true;
+                        }
+                        crate::drivers::keyboard::KEY_DOWN => {
+                            if app.selected + 1 < app.entries.len() { app.selected += 1; }
+                            app.needs_redraw = true;
+                        }
+                        'k' | 'K' => { app.kill_selected(); }
+                        'r' | 'R' => { app.refresh(); }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        
         let t = crate::process::scheduler::get_ticks();
-        if t.saturating_sub(self.last_refresh) > 100 {
-            self.last_refresh = t;
-            self.refresh();
+        if t.saturating_sub(app.last_refresh) > 50 {
+            app.last_refresh = t;
+            app.refresh();
         }
-    }
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-
-        // Background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
-
-        // Header
-        Self::fill(buf, w, h, 0, 0, w as i32, 22, 0xFF313244);
-        Self::text(buf, w, h, 4, 4, "Task Manager", 0xFFCBA6F7);
-
-        let total_ticks: u64 = self.entries.iter().map(|e| e.cpu_ticks).sum();
-
-        // Summary bar
-        let summary = alloc::format!("Processes: {}   Total CPU ticks: {}", self.entries.len(), total_ticks);
-        Self::text(buf, w, h, 4, 25, &summary, 0xFF6C7086);
-
-        // Column header
-        Self::fill(buf, w, h, 0, 42, w as i32, 18, 0xFF45475A);
-        Self::text(buf, w, h, 4,   44, "PID",     0xFFBAC2E8);
-        Self::text(buf, w, h, 50,  44, "Name",    0xFFBAC2E8);
-        Self::text(buf, w, h, w as i32 - 120, 44, "State",    0xFFBAC2E8);
-        Self::text(buf, w, h, w as i32 - 60,  44, "CPU%",     0xFFBAC2E8);
-
-        // Task rows
-        let list_y = 62;
-        let row_h  = 18;
-        let visible = ((h as i32 - list_y - 24) / row_h).max(0) as usize;
-
-        for (i, entry) in self.entries.iter().enumerate().skip(self.scroll) {
-            if i - self.scroll >= visible { break; }
-            let ry = list_y + ((i - self.scroll) as i32 * row_h);
-
-            let bg = if i == self.selected { 0xFF585B70 }
-                     else if (i - self.scroll) % 2 == 0 { 0xFF1E1E2E }
-                     else { 0xFF24273A };
-            Self::fill(buf, w, h, 0, ry, w as i32, row_h, bg);
-
-            let pid_str = alloc::format!("{}", entry.pid);
-            Self::text(buf, w, h, 4, ry + 2, &pid_str, 0xFFA6E3A1);
-
-            let name_disp: String = entry.name.chars().take(18).collect();
-            Self::text(buf, w, h, 50, ry + 2, &name_disp, 0xFFCDD6F4);
-
-            let state_color = match entry.state.trim() {
-                "Running" => 0xFF89DCEB,
-                "Ready"   => 0xFFA6E3A1,
-                "Waiting" => 0xFFF9E2AF,
-                "Zombie"  => 0xFFF38BA8,
-                _         => 0xFF6C7086,
-            };
-            Self::text(buf, w, h, w as i32 - 120, ry + 2, entry.state.trim(), state_color);
-
-            // CPU percentage (rough estimate based on share of total ticks)
-            let cpu_pct = if total_ticks > 0 {
-                (entry.cpu_ticks * 100 / total_ticks) as i32
-            } else { 0 };
-            let cpu_str = alloc::format!("{}%", cpu_pct);
-            let cpu_color = if cpu_pct > 50 { 0xFFF38BA8 } else { 0xFFCDD6F4 };
-            Self::text(buf, w, h, w as i32 - 60, ry + 2, &cpu_str, cpu_color);
-        }
-
-        // Status bar
-        Self::fill(buf, w, h, 0, h as i32 - 20, w as i32, 20, 0xFF313244);
-        Self::text(buf, w, h, 4, h as i32 - 16, &self.status, 0xFF6C7086);
-
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, y: i32, buttons: u8) {
-        if buttons & 1 != 0 {
+        
+        if app.needs_redraw {
+            let w = width;
+            let h = height;
+            let buf = &mut buffer;
+            
+            TaskManagerApp::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1E1E2E);
+            TaskManagerApp::fill(buf, w, h, 0, 0, w as i32, 22, 0xFF313244);
+            TaskManagerApp::text(buf, w, h, 4, 4, "Task Manager", 0xFFCBA6F7);
+            
+            let total_ticks: u64 = app.entries.iter().map(|e| e.cpu_ticks).sum();
+            let summary = alloc::format!("Processes: {}   Total CPU ticks: {}", app.entries.len(), total_ticks);
+            TaskManagerApp::text(buf, w, h, 4, 25, &summary, 0xFF6C7086);
+            
+            TaskManagerApp::fill(buf, w, h, 0, 42, w as i32, 18, 0xFF45475A);
+            TaskManagerApp::text(buf, w, h, 4,   44, "PID",     0xFFBAC2E8);
+            TaskManagerApp::text(buf, w, h, 50,  44, "Name",    0xFFBAC2E8);
+            TaskManagerApp::text(buf, w, h, w as i32 - 120, 44, "State",    0xFFBAC2E8);
+            TaskManagerApp::text(buf, w, h, w as i32 - 60,  44, "CPU%",     0xFFBAC2E8);
+            
             let list_y = 62;
             let row_h  = 18;
-            if y >= list_y {
-                let idx = ((y - list_y) / row_h) as usize + self.scroll;
-                if idx < self.entries.len() {
-                    self.selected = idx;
-                    self.needs_redraw = true;
-                }
+            let visible = ((h as i32 - list_y - 24) / row_h).max(0) as usize;
+            
+            for (i, entry) in app.entries.iter().enumerate().skip(app.scroll) {
+                if i - app.scroll >= visible { break; }
+                let ry = list_y + ((i - app.scroll) as i32 * row_h);
+                let bg = if i == app.selected { 0xFF585B70 } else if (i - app.scroll) % 2 == 0 { 0xFF1E1E2E } else { 0xFF24273A };
+                TaskManagerApp::fill(buf, w, h, 0, ry, w as i32, row_h, bg);
+                
+                let pid_str = alloc::format!("{}", entry.pid);
+                TaskManagerApp::text(buf, w, h, 4, ry + 2, &pid_str, 0xFFA6E3A1);
+                
+                let name_disp: String = entry.name.chars().take(18).collect();
+                TaskManagerApp::text(buf, w, h, 50, ry + 2, &name_disp, 0xFFCDD6F4);
+                
+                let state_color = match entry.state.trim() {
+                    "Running" => 0xFF89DCEB,
+                    "Ready"   => 0xFFA6E3A1,
+                    "Waiting" => 0xFFF9E2AF,
+                    "Zombie"  => 0xFFF38BA8,
+                    _         => 0xFF6C7086,
+                };
+                TaskManagerApp::text(buf, w, h, w as i32 - 120, ry + 2, entry.state.trim(), state_color);
+                
+                let cpu_pct = if total_ticks > 0 { (entry.cpu_ticks * 100 / total_ticks) as i32 } else { 0 };
+                let cpu_str = alloc::format!("{}%", cpu_pct);
+                let cpu_color = if cpu_pct > 50 { 0xFFF38BA8 } else { 0xFFCDD6F4 };
+                TaskManagerApp::text(buf, w, h, w as i32 - 60, ry + 2, &cpu_str, cpu_color);
             }
+            
+            TaskManagerApp::fill(buf, w, h, 0, h as i32 - 20, w as i32, 20, 0xFF313244);
+            TaskManagerApp::text(buf, w, h, 4, h as i32 - 16, &app.status, 0xFF6C7086);
+            
+            app.needs_redraw = false;
+            
+            send_message(GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
-    }
-
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            crate::drivers::keyboard::KEY_UP => {
-                if self.selected > 0 { self.selected -= 1; }
-                if self.selected < self.scroll { self.scroll = self.selected; }
-                self.needs_redraw = true;
-            }
-            crate::drivers::keyboard::KEY_DOWN => {
-                if self.selected + 1 < self.entries.len() { self.selected += 1; }
-                self.needs_redraw = true;
-            }
-            'k' | 'K' => { self.kill_selected(); }
-            'r' | 'R' => { self.refresh(); }
-            _ => {}
-        }
+        
+        crate::process::scheduler::yield_now();
     }
 }

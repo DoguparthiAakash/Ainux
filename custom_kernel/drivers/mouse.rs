@@ -188,8 +188,8 @@ extern "C" fn rust_mouse_handler() {
                 MOUSE_CYCLE = 0;
                 
                 let flags = MOUSE_BYTE[0];
-                let dx = MOUSE_BYTE[1] as i8 as isize * 3;
-                let dy = MOUSE_BYTE[2] as i8 as isize * 3;
+                let dx = (MOUSE_BYTE[1] as i8) as isize;
+                let dy = (MOUSE_BYTE[2] as i8) as isize;
                 
                 update_position(dx, dy, flags & 0x07);
             }

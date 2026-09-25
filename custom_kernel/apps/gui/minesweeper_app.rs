@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use crate::gui::app::App;
+
 use crate::drivers::video;
 
 const GRID_W: usize = 9;
@@ -92,128 +92,159 @@ impl MinesweeperApp {
     }
 }
 
-impl App for MinesweeperApp {
-    fn update(&mut self) {}
+pub fn minesweeper_main() {
+    let id = 9;
+    let width = 240;
+    let height = 260;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Minesweeper"),
+        x: 300,
+        y: 200,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFFC0C0C0; width * height];
+    let mut app = MinesweeperApp::new();
+    let mut needs_redraw = true;
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
+                    if app.game_over || app.won {
+                        app = MinesweeperApp::new();
+                        needs_redraw = true;
+                        continue;
+                    }
 
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        // Background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFFC0C0C0);
+                    let off_x = 10i32;
+                    let off_y = 24i32;
+                    let gx = (x - off_x) / CELL;
+                    let gy = (y - off_y) / CELL;
+                    if gx < 0 || gy < 0 || gx >= GRID_W as i32 || gy >= GRID_H as i32 { continue; }
+                    let idx = gy as usize * GRID_W + gx as usize;
 
-        // Status bar
-        let status = if self.game_over    { "   BOOM! You hit a mine. Click to restart." }
-                     else if self.won     { "   You Win! All clear. Click to restart.  " }
-                     else                 { "   Minesweeper  [L=reveal  R=flag]        " };
-        Self::fill(buf, w, h, 0, 0, w as i32, 20, 0xFF808080);
-        video::draw_text_to_buffer(buf, w as i64, h as i64, 2, 2, status, 0xFFFFFF00);
-
-        // Flags remaining
-        let flags_str = {
-            let mut s = alloc::string::String::from("Flags: ");
-            if self.flags_left < 0 {
-                s.push('-');
-                let v = (-self.flags_left) as u32;
-                s.push((b'0' + (v % 10) as u8) as char);
-            } else {
-                s.push((b'0' + (self.flags_left / 10) as u8) as char);
-                s.push((b'0' + (self.flags_left % 10) as u8) as char);
-            }
-            s
-        };
-        video::draw_text_to_buffer(buf, w as i64, h as i64, (w as i32 - 80) as i64, 2, &flags_str, 0xFF000000);
-
-        // Grid
-        let off_x = 10i32;
-        let off_y = 24i32;
-
-        for gy in 0..GRID_H {
-            for gx in 0..GRID_W {
-                let px = off_x + gx as i32 * CELL;
-                let py = off_y + gy as i32 * CELL;
-                let cell = &self.cells[gy * GRID_W + gx];
-
-                if cell.revealed {
-                    if cell.is_mine {
-                        // Bomb — red square
-                        Self::fill(buf, w, h, px, py, CELL, CELL, 0xFFFF4444);
-                        Self::fill(buf, w, h, px+4, py+4, CELL-8, CELL-8, 0xFF000000);
-                    } else {
-                        Self::fill(buf, w, h, px, py, CELL, CELL, 0xFFDDDDDD);
-                        // Recessed border
-                        Self::fill(buf, w, h, px, py, CELL, 1, 0xFF808080);
-                        Self::fill(buf, w, h, px, py, 1, CELL, 0xFF808080);
-                        if cell.neighbors > 0 {
-                            let colors = [0xFF0000FF, 0xFF008000, 0xFFFF0000,
-                                          0xFF000080, 0xFF800000, 0xFF008080,
-                                          0xFF333333, 0xFF808080];
-                            let c = colors[(cell.neighbors - 1) as usize % 8];
-                            let ch = (b'0' + cell.neighbors) as char;
-                            video::draw_char_to_buffer(buf, w, h, (px + 8) as usize, (py + 4) as usize, ch, c);
+                    if button & 1 != 0 {
+                        // Left click = reveal
+                        if !app.cells[idx].flagged && !app.cells[idx].revealed {
+                            if app.cells[idx].is_mine {
+                                app.cells[idx].revealed = true;
+                                app.game_over = true;
+                            } else {
+                                app.reveal_flood(gx as usize, gy as usize);
+                                if app.check_win() { app.won = true; }
+                            }
+                            needs_redraw = true;
+                        }
+                    } else if button & 2 != 0 {
+                        // Right click = flag
+                        if !app.cells[idx].revealed {
+                            if app.cells[idx].flagged {
+                                app.cells[idx].flagged = false;
+                                app.flags_left += 1;
+                            } else {
+                                app.cells[idx].flagged = true;
+                                app.flags_left -= 1;
+                            }
+                            needs_redraw = true;
                         }
                     }
-                } else if cell.flagged {
-                    // Raised + red flag indicator
-                    Self::fill(buf, w, h, px, py, CELL, CELL, 0xFFC0C0C0);
-                    Self::fill(buf, w, h, px, py, CELL, 1, 0xFFFFFFFF);
-                    Self::fill(buf, w, h, px, py, 1, CELL, 0xFFFFFFFF);
-                    Self::fill(buf, w, h, px, py+CELL-1, CELL, 1, 0xFF808080);
-                    Self::fill(buf, w, h, px+CELL-1, py, 1, CELL, 0xFF808080);
-                    Self::fill(buf, w, h, px+6, py+6, CELL-12, CELL-12, 0xFFFF0000);
-                    video::draw_char_to_buffer(buf, w, h, (px + 8) as usize, (py + 4) as usize, 'F', 0xFF000000);
-                } else {
-                    // Unrevealed — raised 3D look
-                    Self::fill(buf, w, h, px, py, CELL, CELL, 0xFFC0C0C0);
-                    Self::fill(buf, w, h, px, py, CELL, 1, 0xFFFFFFFF);
-                    Self::fill(buf, w, h, px, py, 1, CELL, 0xFFFFFFFF);
-                    Self::fill(buf, w, h, px, py+CELL-1, CELL, 1, 0xFF555555);
-                    Self::fill(buf, w, h, px+CELL-1, py, 1, CELL, 0xFF555555);
+                }
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    if c == 'r' || c == 'R' {
+                        app = MinesweeperApp::new();
+                        needs_redraw = true;
+                    }
                 }
             }
         }
-    }
+        
+        if needs_redraw {
+            // Background
+            MinesweeperApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFFC0C0C0);
 
-    fn on_mouse_event(&mut self, x: i32, y: i32, buttons: u8) {
-        if buttons == 0 { return; }
+            // Status bar
+            let status = if app.game_over    { "   BOOM! You hit a mine." }
+                         else if app.won     { "   You Win! All clear.  " }
+                         else                 { "   Minesweeper          " };
+            MinesweeperApp::fill(&mut buffer, width, height, 0, 0, width as i32, 20, 0xFF808080);
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 2, 2, status, 0xFFFFFF00);
 
-        if self.game_over || self.won {
-            *self = MinesweeperApp::new();
-            return;
-        }
-
-        let off_x = 10i32;
-        let off_y = 24i32;
-        let gx = (x - off_x) / CELL;
-        let gy = (y - off_y) / CELL;
-        if gx < 0 || gy < 0 || gx >= GRID_W as i32 || gy >= GRID_H as i32 { return; }
-        let idx = gy as usize * GRID_W + gx as usize;
-
-        if buttons & 1 != 0 {
-            // Left click = reveal
-            if !self.cells[idx].flagged && !self.cells[idx].revealed {
-                if self.cells[idx].is_mine {
-                    self.cells[idx].revealed = true;
-                    self.game_over = true;
+            // Flags remaining
+            let flags_str = {
+                let mut s = alloc::string::String::from("Flags: ");
+                if app.flags_left < 0 {
+                    s.push('-');
+                    let v = (-app.flags_left) as u32;
+                    s.push((b'0' + (v % 10) as u8) as char);
                 } else {
-                    self.reveal_flood(gx as usize, gy as usize);
-                    if self.check_win() { self.won = true; }
+                    s.push((b'0' + (app.flags_left / 10) as u8) as char);
+                    s.push((b'0' + (app.flags_left % 10) as u8) as char);
+                }
+                s
+            };
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, (width as i32 - 80) as i64, 2, &flags_str, 0xFF000000);
+
+            // Grid
+            let off_x = 10i32;
+            let off_y = 24i32;
+
+            for gy in 0..GRID_H {
+                for gx in 0..GRID_W {
+                    let px = off_x + gx as i32 * CELL;
+                    let py = off_y + gy as i32 * CELL;
+                    let cell = &app.cells[gy * GRID_W + gx];
+
+                    if cell.revealed {
+                        if cell.is_mine {
+                            // Bomb — red square
+                            MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, CELL, 0xFFFF4444);
+                            MinesweeperApp::fill(&mut buffer, width, height, px+4, py+4, CELL-8, CELL-8, 0xFF000000);
+                        } else {
+                            MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, CELL, 0xFFDDDDDD);
+                            // Recessed border
+                            MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, 1, 0xFF808080);
+                            MinesweeperApp::fill(&mut buffer, width, height, px, py, 1, CELL, 0xFF808080);
+                            if cell.neighbors > 0 {
+                                let colors = [0xFF0000FF, 0xFF008000, 0xFFFF0000,
+                                              0xFF000080, 0xFF800000, 0xFF008080,
+                                              0xFF333333, 0xFF808080];
+                                let c = colors[(cell.neighbors - 1) as usize % 8];
+                                let ch = (b'0' + cell.neighbors) as char;
+                                video::draw_char_to_buffer(&mut buffer, width, height, (px + 8) as usize, (py + 4) as usize, ch, c);
+                            }
+                        }
+                    } else if cell.flagged {
+                        // Raised + red flag indicator
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, CELL, 0xFFC0C0C0);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, 1, 0xFFFFFFFF);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, 1, CELL, 0xFFFFFFFF);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py+CELL-1, CELL, 1, 0xFF808080);
+                        MinesweeperApp::fill(&mut buffer, width, height, px+CELL-1, py, 1, CELL, 0xFF808080);
+                        MinesweeperApp::fill(&mut buffer, width, height, px+6, py+6, CELL-12, CELL-12, 0xFFFF0000);
+                        video::draw_char_to_buffer(&mut buffer, width, height, (px + 8) as usize, (py + 4) as usize, 'F', 0xFF000000);
+                    } else {
+                        // Unrevealed — raised 3D look
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, CELL, 0xFFC0C0C0);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, CELL, 1, 0xFFFFFFFF);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py, 1, CELL, 0xFFFFFFFF);
+                        MinesweeperApp::fill(&mut buffer, width, height, px, py+CELL-1, CELL, 1, 0xFF555555);
+                        MinesweeperApp::fill(&mut buffer, width, height, px+CELL-1, py, 1, CELL, 0xFF555555);
+                    }
                 }
             }
-        } else if buttons & 2 != 0 {
-            // Right click = flag
-            if !self.cells[idx].revealed {
-                if self.cells[idx].flagged {
-                    self.cells[idx].flagged = false;
-                    self.flags_left += 1;
-                } else {
-                    self.cells[idx].flagged = true;
-                    self.flags_left -= 1;
-                }
-            }
-        }
-    }
 
-    fn on_key_event(&mut self, c: char) {
-        if c == 'r' || c == 'R' {
-            *self = MinesweeperApp::new();
+            needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
+        
+        crate::process::scheduler::yield_now();
     }
 }

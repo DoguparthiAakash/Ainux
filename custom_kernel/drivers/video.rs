@@ -886,30 +886,178 @@ pub unsafe fn panic_clear() {
 
 // ── UI Components: Cursor & Scrollbar ────────────────────────────────────────
 
+use crate::drivers::cursors;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CursorState {
+    Normal,
+    ResizeH,
+    ResizeV,
+    Wait,
+    Text,
+}
+
+pub static CURRENT_CURSOR: Mutex<CursorState> = Mutex::new(CursorState::Normal);
 pub static LAST_CURSOR_X: AtomicU32 = AtomicU32::new(0);
 pub static LAST_CURSOR_Y: AtomicU32 = AtomicU32::new(0);
-pub static CURSOR_BACKUP: Mutex<[u32; 256]> = Mutex::new([0; 256]); // 16x16 max cursor area
+pub static CURSOR_BACKUP: Mutex<[u32; 1024]> = Mutex::new([0; 1024]); // 32x32 max cursor area
 pub static HAS_BACKUP: Mutex<bool> = Mutex::new(false);
 
+/// Invalidate the saved backup so next draw_cursor_from_backbuffer starts fresh.
+pub fn invalidate_cursor_backup() {
+    *HAS_BACKUP.lock() = false;
+}
+
+/// Restore the previously saved framebuffer region (erases the cursor from screen).
+/// Only call this if you KNOW the framebuffer is still showing the old cursor.
+pub fn restore_cursor_backup() {
+    let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr == 0 { return; }
+
+    crate::cpu::without_interrupts(|| {
+        let mut has_backup = HAS_BACKUP.lock();
+        if *has_backup {
+            let last_x = LAST_CURSOR_X.load(Ordering::SeqCst);
+            let last_y = LAST_CURSOR_Y.load(Ordering::SeqCst);
+            let backup = CURSOR_BACKUP.lock();
+            let cursor_size = cursors::CURSOR_SIZE;
+            
+            for row in 0..cursor_size {
+                for col in 0..cursor_size {
+                    draw_pixel((last_x + col as u32) as i64, (last_y + row as u32) as i64, backup[row * cursor_size + col]);
+                }
+            }
+            *has_backup = false;
+        }
+    });
+}
+
+/// Draw the mouse cursor to the hardware framebuffer, sampling the backup pixels from the
+/// COMPOSITOR'S CLEAN BACKBUFFER (which never has the cursor drawn to it).
+/// This completely eliminates the framebuffer read-back feedback loop.
+///
+/// Parameters:
+///   backbuf   - the compositor's backbuffer (pixel-packed, same dims as framebuffer)
+///   buf_w     - width of backbuf in pixels
+///   buf_h     - height of backbuf in pixels  
+///   x, y      - new cursor hotspot position in screen coordinates
+pub fn draw_cursor_from_backbuffer(backbuf: &[u32], buf_w: usize, buf_h: usize, x: i32, y: i32) {
+    let fb_addr = *FRAMEBUFFER_ADDR.lock();
+    if fb_addr == 0 { return; }
+
+    crate::cpu::without_interrupts(|| {
+        let cursor_size = cursors::CURSOR_SIZE;
+        let fb_w = *FRAMEBUFFER_WIDTH.lock() as i32;
+        let fb_h = *FRAMEBUFFER_HEIGHT.lock() as i32;
+
+        let last_x = LAST_CURSOR_X.load(Ordering::SeqCst) as i32;
+        let last_y = LAST_CURSOR_Y.load(Ordering::SeqCst) as i32;
+        let has_moved = last_x != x || last_y != y;
+
+        // Step 0: Erase the OLD cursor from the framebuffer by restoring pixels from the
+        // clean backbuffer at the previous cursor position. This is what prevents trails.
+        if *HAS_BACKUP.lock() && has_moved {
+            let mut erase_patch = [0u32; 1024]; // 32x32 Max
+            for row in 0..cursor_size {
+                let py = last_y + row as i32;
+                for col in 0..cursor_size {
+                    let px = last_x + col as i32;
+                    let src_px = if px >= 0 && px < buf_w as i32 && py >= 0 && py < buf_h as i32 {
+                        backbuf[py as usize * buf_w + px as usize]
+                    } else { 0 };
+                    erase_patch[row * cursor_size + col] = src_px;
+                }
+            }
+            unsafe {
+                gfx_blit_buffer_opaque(erase_patch.as_ptr(), last_x, last_y, cursor_size as i32, cursor_size as i32, cursor_size as i32);
+            }
+        }
+
+        // Step 1: Save the clean background from the BACKBUFFER at the new cursor position.
+        let mut backup = CURSOR_BACKUP.lock();
+        if has_moved || !*HAS_BACKUP.lock() {
+            for row in 0..cursor_size {
+                let py = y + row as i32;
+                for col in 0..cursor_size {
+                    let px = x + col as i32;
+                    if px >= 0 && px < buf_w as i32 && py >= 0 && py < buf_h as i32 {
+                        backup[row * cursor_size + col] = backbuf[py as usize * buf_w + px as usize];
+                    } else {
+                        backup[row * cursor_size + col] = 0;
+                    }
+                }
+            }
+        }
+        
+        LAST_CURSOR_X.store(x as u32, Ordering::SeqCst);
+        LAST_CURSOR_Y.store(y as u32, Ordering::SeqCst);
+        *HAS_BACKUP.lock() = true;
+
+        // Step 2: Draw cursor pixels to a fast RAM patch, then blit.
+        let state = *CURRENT_CURSOR.lock();
+        let bitmap = match state {
+            CursorState::Normal   => &cursors::CURSOR_PTR,
+            CursorState::ResizeH  => &cursors::CURSOR_RESIZE_H,
+            CursorState::ResizeV  => &cursors::CURSOR_RESIZE_V,
+            CursorState::Wait     => &cursors::CURSOR_WAIT,
+            CursorState::Text     => &cursors::CURSOR_TEXT,
+        };
+
+        let mut draw_patch = [0u32; 1024]; // 32x32 Max
+        for row in 0..cursor_size {
+            for col in 0..cursor_size {
+                let pixel = bitmap[row * cursor_size + col];
+                let alpha = (pixel >> 24) & 0xFF;
+                let bg = backup[row * cursor_size + col];
+                
+                if alpha == 0 {
+                    draw_patch[row * cursor_size + col] = bg;
+                } else if alpha == 255 {
+                    draw_patch[row * cursor_size + col] = pixel & 0x00FFFFFF;
+                } else {
+                    let bg_r = (bg >> 16) & 0xFF;
+                    let bg_g = (bg >>  8) & 0xFF;
+                    let bg_b =  bg        & 0xFF;
+                    let fg_r = (pixel >> 16) & 0xFF;
+                    let fg_g = (pixel >>  8) & 0xFF;
+                    let fg_b =  pixel        & 0xFF;
+                    let inv_alpha = 255 - alpha;
+                    let out_r = (fg_r * alpha + bg_r * inv_alpha) / 255;
+                    let out_g = (fg_g * alpha + bg_g * inv_alpha) / 255;
+                    let out_b = (fg_b * alpha + bg_b * inv_alpha) / 255;
+                    draw_patch[row * cursor_size + col] = (out_r << 16) | (out_g << 8) | out_b;
+                }
+            }
+        }
+        
+        unsafe {
+            gfx_blit_buffer_opaque(draw_patch.as_ptr(), x, y, cursor_size as i32, cursor_size as i32, cursor_size as i32);
+        }
+    });
+}
+
+/// Legacy function - kept for any callers outside the main compositor loop.
+/// Prefer draw_cursor_from_backbuffer instead.
 pub fn draw_mouse_cursor(x: i32, y: i32) {
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr == 0 { return; }
 
     crate::cpu::without_interrupts(|| {
+        let cursor_size = cursors::CURSOR_SIZE;
         // 1. Restore old background if it exists
         if *HAS_BACKUP.lock() {
             let last_x = LAST_CURSOR_X.load(Ordering::SeqCst);
             let last_y = LAST_CURSOR_Y.load(Ordering::SeqCst);
             let backup = CURSOR_BACKUP.lock();
             
-            for row in 0..16 {
-                for col in 0..16 {
-                    draw_pixel((last_x + col as u32) as i64, (last_y + row as u32) as i64, backup[row * 16 + col]);
+            for row in 0..cursor_size {
+                for col in 0..cursor_size {
+                    draw_pixel((last_x + col as u32) as i64, (last_y + row as u32) as i64, backup[row * cursor_size + col]);
                 }
             }
         }
 
-        // 2. Save new background
+        // 2. Save new background from framebuffer
         {
             let mut backup = CURSOR_BACKUP.lock();
             let fb_w = *FRAMEBUFFER_WIDTH.lock() as i32;
@@ -918,15 +1066,17 @@ pub fn draw_mouse_cursor(x: i32, y: i32) {
             let ptr = fb_addr as *mut u32;
             let words_per_pitch = fb_pitch / 4;
 
-            for row in 0..16 {
+            for row in 0..cursor_size {
                 let py = y + row as i32;
-                for col in 0..16 {
+                for col in 0..cursor_size {
                     let px = x + col as i32;
                     if px >= 0 && px < fb_w && py >= 0 && py < fb_h {
                         let offset = py as usize * words_per_pitch + px as usize;
                         unsafe {
-                            backup[row * 16 + col] = *ptr.add(offset);
+                            backup[row * cursor_size + col] = *ptr.add(offset);
                         }
+                    } else {
+                        backup[row * cursor_size + col] = 0;
                     }
                 }
             }
@@ -935,36 +1085,55 @@ pub fn draw_mouse_cursor(x: i32, y: i32) {
             LAST_CURSOR_Y.store(y as u32, Ordering::SeqCst);
         }
 
-        // 3. Draw new cursor (Arrow shape from bitmap)
-        const CURSOR_BITMAP: [u8; 256] = [
-            2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-            2,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
-            2,1,1,2,0,0,0,0,0,0,0,0,0,0,0,0,
-            2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0,
-            2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0,
-            2,1,1,1,1,1,2,0,0,0,0,0,0,0,0,0,
-            2,1,1,1,1,1,1,2,0,0,0,0,0,0,0,0,
-            2,1,1,1,1,1,1,1,2,0,0,0,0,0,0,0,
-            2,1,1,1,1,1,1,1,1,2,0,0,0,0,0,0,
-            2,1,1,1,1,1,1,1,1,1,2,0,0,0,0,0,
-            2,1,1,1,1,1,1,1,1,1,1,2,0,0,0,0,
-            2,1,1,1,1,1,1,2,2,2,2,2,2,0,0,0,
-            2,1,1,1,2,2,1,1,2,0,0,0,0,0,0,0,
-            2,1,2,2,0,0,2,1,1,2,0,0,0,0,0,0,
-            2,2,0,0,0,0,0,2,1,1,2,0,0,0,0,0,
-            0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,
-        ];
+        // 3. Draw new cursor with alpha blending
+        let state = *CURRENT_CURSOR.lock();
+        let bitmap = match state {
+            CursorState::Normal => &cursors::CURSOR_PTR,
+            CursorState::ResizeH => &cursors::CURSOR_RESIZE_H,
+            CursorState::ResizeV => &cursors::CURSOR_RESIZE_V,
+            CursorState::Wait => &cursors::CURSOR_WAIT,
+            CursorState::Text => &cursors::CURSOR_TEXT,
+        };
         
-        let color_fill = 0x00FFFFFF; // White inner
-        let color_border = 0x00000000; // Black outline
+        let fb_w = *FRAMEBUFFER_WIDTH.lock() as i32;
+        let fb_h = *FRAMEBUFFER_HEIGHT.lock() as i32;
+        let fb_pitch = *FRAMEBUFFER_PITCH.lock();
+        let ptr = fb_addr as *mut u32;
+        let words_per_pitch = fb_pitch / 4;
         
-        for row in 0..16 {
-            for col in 0..16 {
-                let px = CURSOR_BITMAP[row * 16 + col];
-                if px == 1 {
-                    draw_pixel((x + col as i32) as i64, (y + row as i32) as i64, color_fill);
-                } else if px == 2 {
-                    draw_pixel((x + col as i32) as i64, (y + row as i32) as i64, color_border);
+        for row in 0..cursor_size {
+            let py = y + row as i32;
+            if py < 0 || py >= fb_h { continue; }
+            for col in 0..cursor_size {
+                let px = x + col as i32;
+                if px < 0 || px >= fb_w { continue; }
+                
+                let pixel = bitmap[row * cursor_size + col];
+                let alpha = (pixel >> 24) & 0xFF;
+                
+                if alpha > 0 {
+                    let offset = py as usize * words_per_pitch + px as usize;
+                    if alpha == 255 {
+                        unsafe { *ptr.add(offset) = pixel & 0x00FFFFFF; }
+                    } else {
+                        unsafe {
+                            let bg = *ptr.add(offset);
+                            let bg_r = (bg >> 16) & 0xFF;
+                            let bg_g = (bg >> 8) & 0xFF;
+                            let bg_b = bg & 0xFF;
+                            
+                            let fg_r = (pixel >> 16) & 0xFF;
+                            let fg_g = (pixel >> 8) & 0xFF;
+                            let fg_b = pixel & 0xFF;
+                            
+                            let inv_alpha = 255 - alpha;
+                            let out_r = ((fg_r * alpha) + (bg_r * inv_alpha)) / 255;
+                            let out_g = ((fg_g * alpha) + (bg_g * inv_alpha)) / 255;
+                            let out_b = ((fg_b * alpha) + (bg_b * inv_alpha)) / 255;
+                            
+                            *ptr.add(offset) = (out_r << 16) | (out_g << 8) | out_b;
+                        }
+                    }
                 }
             }
         }

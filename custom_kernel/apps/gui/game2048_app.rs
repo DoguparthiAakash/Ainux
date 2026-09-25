@@ -1,4 +1,4 @@
-use crate::gui::app::App;
+
 use crate::drivers::keyboard;
 use alloc::vec::Vec;
 use alloc::format;
@@ -214,77 +214,101 @@ impl Game2048App {
     }
 }
 
-impl App for Game2048App {
-    fn update(&mut self) {}
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-        
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFFFAF8EF);
-        
-        crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 4, "2048", 0xFF776E65);
-        let score_str = format!("SCORE: {}", self.score);
-        crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 20, &score_str, 0xFF776E65);
-        
-        let available_dim = (h as i32 - 40).min(w as i32 - 10).max(100);
-        let spacing = available_dim / 30;
-        let cell_size = (available_dim - (5 * spacing)) / 4;
-        let board_size = 4 * cell_size + 5 * spacing;
-        
-        let start_x = (w as i32 / 2) - (board_size / 2);
-        let start_y = (h as i32 / 2) - (board_size / 2) + 15;
-        
-        Self::fill(buf, w, h, start_x, start_y, board_size, board_size, 0xFFBBADA0);
-
-        for y in 0..4 {
-            for x in 0..4 {
-                let val = self.grid[y][x];
-                let (bg, fg) = get_color_for_value(val);
-                
-                let px = start_x + spacing + (x as i32 * (cell_size + spacing));
-                let py = start_y + spacing + (y as i32 * (cell_size + spacing));
-                
-                Self::fill(buf, w, h, px, py, cell_size, cell_size, bg);
-                
-                if val > 0 {
-                    let mut num_len = 0;
-                    let mut temp = val;
-                    while temp > 0 { num_len += 1; temp /= 10; }
+pub fn game2048_main() {
+    let id = 14;
+    let width = 320;
+    let height = 360;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("2048"),
+        x: 200,
+        y: 200,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFFFAF8EF; width * height];
+    let mut app = Game2048App::new();
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    if app.game_over { continue; }
+                    let mut moved = false;
+                    match c {
+                        'w' | 'W' | keyboard::KEY_UP => moved = app.move_up(),
+                        's' | 'S' | keyboard::KEY_DOWN => moved = app.move_down(),
+                        'a' | 'A' | keyboard::KEY_LEFT => moved = app.move_left(),
+                        'd' | 'D' | keyboard::KEY_RIGHT => moved = app.move_right(),
+                        _ => {}
+                    }
                     
-                    let scale = if num_len >= 4 { (cell_size / 30).max(1) } else { (cell_size / 25).max(1) };
-                    let text_w = num_len as i32 * 6 * scale;
-                    let text_x = px + (cell_size / 2) - (text_w / 2);
-                    let text_y = py + (cell_size / 2) - (5 * scale / 2);
-                    
-                    draw_number_fb(buf, w, h, text_x, text_y, val, scale, fg);
+                    if moved {
+                        app.spawn_tile();
+                        app.check_game_over();
+                        app.needs_redraw = true;
+                    }
                 }
+                _ => {}
             }
         }
+        
+        if app.needs_redraw {
+            Game2048App::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFFFAF8EF);
+            
+            crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 4, "2048", 0xFF776E65);
+            let score_str = format!("SCORE: {}", app.score);
+            crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 20, &score_str, 0xFF776E65);
+            
+            let available_dim = (height as i32 - 40).min(width as i32 - 10).max(100);
+            let spacing = available_dim / 30;
+            let cell_size = (available_dim - (5 * spacing)) / 4;
+            let board_size = 4 * cell_size + 5 * spacing;
+            
+            let start_x = (width as i32 / 2) - (board_size / 2);
+            let start_y = (height as i32 / 2) - (board_size / 2) + 15;
+            
+            Game2048App::fill(&mut buffer, width, height, start_x, start_y, board_size, board_size, 0xFFBBADA0);
 
-        if self.game_over {
-            crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 40, "GAME OVER", 0xFFFF0000);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let val = app.grid[y][x];
+                    let (bg, fg) = get_color_for_value(val);
+                    
+                    let px = start_x + spacing + (x as i32 * (cell_size + spacing));
+                    let py = start_y + spacing + (y as i32 * (cell_size + spacing));
+                    
+                    Game2048App::fill(&mut buffer, width, height, px, py, cell_size, cell_size, bg);
+                    
+                    if val > 0 {
+                        let mut num_len = 0;
+                        let mut temp = val;
+                        while temp > 0 { num_len += 1; temp /= 10; }
+                        
+                        let scale = if num_len >= 4 { (cell_size / 30).max(1) } else { (cell_size / 25).max(1) };
+                        let text_w = num_len as i32 * 6 * scale;
+                        let text_x = px + (cell_size / 2) - (text_w / 2);
+                        let text_y = py + (cell_size / 2) - (5 * scale / 2);
+                        
+                        draw_number_fb(&mut buffer, width, height, text_x, text_y, val, scale, fg);
+                    }
+                }
+            }
+
+            if app.game_over {
+                crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 40, "GAME OVER", 0xFFFF0000);
+            }
+            
+            app.needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
         
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        if self.game_over { return; }
-        let mut moved = false;
-        match c {
-            'w' | 'W' | keyboard::KEY_UP => moved = self.move_up(),
-            's' | 'S' | keyboard::KEY_DOWN => moved = self.move_down(),
-            'a' | 'A' | keyboard::KEY_LEFT => moved = self.move_left(),
-            'd' | 'D' | keyboard::KEY_RIGHT => moved = self.move_right(),
-            _ => {}
-        }
-        
-        if moved {
-            self.spawn_tile();
-            self.check_game_over();
-            self.needs_redraw = true;
-        }
+        crate::process::scheduler::yield_now();
     }
 }

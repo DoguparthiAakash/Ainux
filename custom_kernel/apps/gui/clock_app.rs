@@ -1,4 +1,4 @@
-use crate::gui::app::App;
+
 use crate::drivers::video;
 
 /// Read a byte from a CMOS register via ports 0x70/0x71
@@ -112,99 +112,128 @@ impl ClockApp {
     }
 }
 
-impl App for ClockApp {
-    fn update(&mut self) {
-        self.ticks += 1;
-        // Refresh from RTC every ~60 ticks (≈1 second at 60Hz update)
-        if self.ticks % 60 == 0 {
+pub fn clock_main() {
+    let id = 10;
+    let width = 360;
+    let height = 140;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Clock"),
+        x: 400,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF1A1A2E; width * height];
+    let mut app = ClockApp::new();
+    
+    loop {
+        let mut needs_redraw = false;
+        
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    if c == 'r' || c == 'R' {
+                        let (h, m, s) = read_rtc_time();
+                        let (y, mo, d) = read_rtc_date();
+                        app.hours = h; app.minutes = m; app.seconds = s;
+                        app.year = y; app.month = mo; app.day = d;
+                        needs_redraw = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        app.ticks += 1;
+        // Refresh from RTC every ~60 ticks
+        if app.ticks % 60 == 0 {
             let (h, m, s) = read_rtc_time();
-            self.hours   = h;
-            self.minutes = m;
-            self.seconds = s;
+            app.hours   = h;
+            app.minutes = m;
+            app.seconds = s;
             let (y, mo, d) = read_rtc_date();
-            self.year  = y;
-            self.month = mo;
-            self.day   = d;
+            app.year  = y;
+            app.month = mo;
+            app.day   = d;
+            needs_redraw = true;
         }
-    }
+        
+        if needs_redraw || app.ticks == 1 {
+            // Dark background
+            ClockApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFF1A1A2E);
 
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        // Dark background
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF1A1A2E);
+            // Title
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, 8, "Clock", 0xFF888888);
 
-        // Title
-        video::draw_text_to_buffer(buf, w as i64, h as i64, 10, 8, "Clock", 0xFF888888);
+            // Separator line
+            ClockApp::fill(&mut buffer, width, height, 0, 24, width as i32, 1, 0xFF333355);
 
-        // Separator line
-        Self::fill(buf, w, h, 0, 24, w as i32, 1, 0xFF333355);
+            // --- Digital clock ---
+            let digit_w = 46i32;
+            let colon_w = 14i32;
+            let total_w = digit_w * 6 + colon_w * 2;
+            let start_x = (width as i32 - total_w) / 2;
+            let dy = 38i32;
 
-        // --- Digital clock ---
-        // Each digit is ~44px wide (sw=16, sl=24, sh=4 → width = sh+sl+sh = 44)
-        let digit_w = 46i32;
-        let colon_w = 14i32;
-        let total_w = digit_w * 6 + colon_w * 2;
-        let start_x = (w as i32 - total_w) / 2;
-        let dy = 38i32;
+            // HH : MM : SS
+            let segments = [
+                (app.hours   / 10, 0),
+                (app.hours   % 10, 1),
+                (app.minutes / 10, 3),
+                (app.minutes % 10, 4),
+                (app.seconds / 10, 6),
+                (app.seconds % 10, 7),
+            ];
 
-        // HH : MM : SS
-        let segments = [
-            (self.hours   / 10, 0),
-            (self.hours   % 10, 1),
-            (self.minutes / 10, 3),
-            (self.minutes % 10, 4),
-            (self.seconds / 10, 6),
-            (self.seconds % 10, 7),
-        ];
+            let clock_color = 0xFF00FFCC;
 
-        let clock_color = 0xFF00FFCC;
+            for (digit, slot) in segments {
+                let px = start_x + slot * digit_w + (slot / 2) * colon_w;
+                ClockApp::draw_digit(&mut buffer, width, height, px, dy, digit, clock_color);
+            }
 
-        for (digit, slot) in segments {
-            let px = start_x + slot * digit_w + (slot / 2) * colon_w;
-            Self::draw_digit(buf, w, h, px, dy, digit, clock_color);
+            // Colons (blink on odd seconds)
+            let colon_color = if app.seconds % 2 == 0 { clock_color } else { 0xFF004444 };
+            let c1x = start_x + 2 * digit_w;
+            let c2x = start_x + 4 * digit_w + colon_w;
+            ClockApp::fill(&mut buffer, width, height, c1x + 4, dy + 16, 5, 5, colon_color);
+            ClockApp::fill(&mut buffer, width, height, c1x + 4, dy + 32, 5, 5, colon_color);
+            ClockApp::fill(&mut buffer, width, height, c2x + 4, dy + 16, 5, 5, colon_color);
+            ClockApp::fill(&mut buffer, width, height, c2x + 4, dy + 32, 5, 5, colon_color);
+
+            // --- Date line ---
+            let months = ["", "January","February","March","April","May","June",
+                          "July","August","September","October","November","December"];
+            let month_name = if app.month >= 1 && app.month <= 12 {
+                months[app.month as usize]
+            } else { "Unknown" };
+
+            let mut date_str = alloc::string::String::new();
+            date_str.push_str(month_name);
+            date_str.push(' ');
+            date_str.push((b'0' + app.day / 10) as char);
+            date_str.push((b'0' + app.day % 10) as char);
+            date_str.push_str(", ");
+            date_str.push((b'0' + (app.year / 1000) as u8) as char);
+            date_str.push((b'0' + ((app.year % 1000) / 100) as u8) as char);
+            date_str.push((b'0' + ((app.year % 100)  / 10)  as u8) as char);
+            date_str.push((b'0' + (app.year % 10)    as u8) as char);
+
+            let date_x = (width as i32 - date_str.len() as i32 * 8) / 2;
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, date_x as i64, (dy + 72) as i64, &date_str, 0xFFAAAAAA);
+
+            // Dim hint
+            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, height as i64 - 18, "Press R to refresh manually", 0xFF444466);
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
-
-        // Colons (blink on odd seconds)
-        let colon_color = if self.seconds % 2 == 0 { clock_color } else { 0xFF004444 };
-        let c1x = start_x + 2 * digit_w;
-        let c2x = start_x + 4 * digit_w + colon_w;
-        Self::fill(buf, w, h, c1x + 4, dy + 16, 5, 5, colon_color);
-        Self::fill(buf, w, h, c1x + 4, dy + 32, 5, 5, colon_color);
-        Self::fill(buf, w, h, c2x + 4, dy + 16, 5, 5, colon_color);
-        Self::fill(buf, w, h, c2x + 4, dy + 32, 5, 5, colon_color);
-
-        // --- Date line ---
-        let months = ["", "January","February","March","April","May","June",
-                      "July","August","September","October","November","December"];
-        let month_name = if self.month >= 1 && self.month <= 12 {
-            months[self.month as usize]
-        } else { "Unknown" };
-
-        let mut date_str = alloc::string::String::new();
-        date_str.push_str(month_name);
-        date_str.push(' ');
-        date_str.push((b'0' + self.day / 10) as char);
-        date_str.push((b'0' + self.day % 10) as char);
-        date_str.push_str(", ");
-        date_str.push((b'0' + (self.year / 1000) as u8) as char);
-        date_str.push((b'0' + ((self.year % 1000) / 100) as u8) as char);
-        date_str.push((b'0' + ((self.year % 100)  / 10)  as u8) as char);
-        date_str.push((b'0' + (self.year % 10)    as u8) as char);
-
-        let date_x = (w as i32 - date_str.len() as i32 * 8) / 2;
-        video::draw_text_to_buffer(buf, w as i64, h as i64, date_x as i64, (dy + 72) as i64, &date_str, 0xFFAAAAAA);
-
-        // Dim hint
-        video::draw_text_to_buffer(buf, w as i64, h as i64, 10, h as i64 - 18, "Press R to refresh manually", 0xFF444466);
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        if c == 'r' || c == 'R' {
-            let (h, m, s) = read_rtc_time();
-            let (y, mo, d) = read_rtc_date();
-            self.hours = h; self.minutes = m; self.seconds = s;
-            self.year = y; self.month = mo; self.day = d;
-        }
+        
+        crate::process::scheduler::yield_now();
     }
 }

@@ -1,7 +1,8 @@
+pub mod clip;
 pub mod desktop;
 pub mod compositor;
 pub mod window;
-pub mod app;
+pub mod wm;
 pub mod terminal_app;
 pub mod notepad_app;
 pub mod snake_app;

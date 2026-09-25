@@ -17,7 +17,7 @@ pub extern "C" fn main() -> isize {
     };
     syscalls::sys_sigaction(2, &act, core::ptr::null_mut());
 
-    println!("Welcome to Ainux User Shell (ush)!");
+    println!("Welcome to Mithl OS User Shell (ush)!");
     
     let mut input = [0u8; 1024];
     let mut input_len = 0;

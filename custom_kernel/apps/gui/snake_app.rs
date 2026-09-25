@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use crate::gui::app::App;
 use crate::drivers::video;
 
 #[derive(Clone, PartialEq, Copy)]
@@ -72,44 +71,74 @@ impl SnakeApp {
     }
 }
 
-impl App for SnakeApp {
-    fn update(&mut self) {
-        self.ticks += 1;
-        if self.ticks % 20 == 0 {
-            self.step();
-        }
-    }
-
-    fn draw(&mut self, buffer: &mut [u32], width: usize, height: usize) {
-        for i in 0..buffer.len() {
-            buffer[i] = 0xFF000000; // Black background
+pub fn snake_main() {
+    let id = 17;
+    let width = 400;
+    let height = 300;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Snake"),
+        x: 100,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF000000; width * height];
+    let mut app = SnakeApp::new();
+    let mut ticks = 0;
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    match c {
+                        'w' | 'W' | crate::drivers::keyboard::KEY_UP => if app.direction != Direction::Down { app.direction = Direction::Up },
+                        's' | 'S' | crate::drivers::keyboard::KEY_DOWN => if app.direction != Direction::Up { app.direction = Direction::Down },
+                        'a' | 'A' | crate::drivers::keyboard::KEY_LEFT => if app.direction != Direction::Right { app.direction = Direction::Left },
+                        'd' | 'D' | crate::drivers::keyboard::KEY_RIGHT => if app.direction != Direction::Left { app.direction = Direction::Right },
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
         
-        let cell_size = 20;
-        for &(x, y) in &self.snake {
-            let px = x * cell_size as i32;
-            let py = y * cell_size as i32;
-            fill_rect_buffer(buffer, width, height, px, py, cell_size as i32, cell_size as i32, 0xFF00FF00); // Green
+        ticks += 1;
+        let mut needs_redraw = false;
+        
+        if ticks % 20 == 0 {
+            app.step();
+            needs_redraw = true;
         }
         
-        let fx = self.food.0 * cell_size as i32;
-        let fy = self.food.1 * cell_size as i32;
-        fill_rect_buffer(buffer, width, height, fx, fy, cell_size as i32, cell_size as i32, 0xFFFF0000); // Red
+        if needs_redraw {
+            for i in 0..buffer.len() {
+                buffer[i] = 0xFF000000;
+            }
+            
+            let cell_size = 20;
+            for &(x, y) in &app.snake {
+                let px = x * cell_size as i32;
+                let py = y * cell_size as i32;
+                fill_rect_buffer(&mut buffer, width, height, px, py, cell_size as i32, cell_size as i32, 0xFF00FF00); // Green
+            }
+            
+            let fx = app.food.0 * cell_size as i32;
+            let fy = app.food.1 * cell_size as i32;
+            fill_rect_buffer(&mut buffer, width, height, fx, fy, cell_size as i32, cell_size as i32, 0xFFFF0000); // Red
+            
+            if app.game_over {
+                video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, 10, "GAME OVER", 0xFFFFFFFF);
+            }
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
+        }
         
-        if self.game_over {
-            video::draw_text_to_buffer(buffer, width as i64, height as i64, 10, 10, "GAME OVER", 0xFFFFFFFF);
-        }
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        match c {
-            'w' | 'W' => if self.direction != Direction::Down { self.direction = Direction::Up },
-            's' | 'S' => if self.direction != Direction::Up { self.direction = Direction::Down },
-            'a' | 'A' => if self.direction != Direction::Right { self.direction = Direction::Left },
-            'd' | 'D' => if self.direction != Direction::Left { self.direction = Direction::Right },
-            _ => {}
-        }
+        crate::process::scheduler::yield_now();
     }
 }

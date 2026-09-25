@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  Ainux OS — Start Script
+#  Mithl OS — Start Script
 #  Runs the pre-built ainux.iso directly in QEMU.
 # =============================================================================
 set -e
@@ -38,7 +38,7 @@ fi
 
 echo ""
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║         Ainux OS Bootloader          ║"
+echo "  ║         Mithl OS Bootloader          ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 echo "  Ctrl+Alt        → Release mouse"
@@ -46,7 +46,7 @@ echo "  Ctrl+Alt+F      → Toggle fullscreen"
 echo ""
 
 qemu-system-x86_64 \
-    -name "Ainux OS" \
+    -name "Mithl OS" \
     -M pc \
     -smp 4 \
     -m 2G \
@@ -55,10 +55,10 @@ qemu-system-x86_64 \
     $DISK_ARG \
     $ACCEL \
     -vga std \
-    -vnc 127.0.0.1:0 \
+    -display gtk \
     -serial file:"$SCRIPT_DIR/serial.log" \
     -net nic,model=rtl8139 \
     -net user
 
 echo ""
-echo "Ainux OS session ended."
+echo "Mithl OS session ended."

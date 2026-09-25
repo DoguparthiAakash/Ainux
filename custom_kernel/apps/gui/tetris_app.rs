@@ -1,4 +1,4 @@
-use crate::gui::app::App;
+
 use crate::drivers::keyboard;
 
 const PIECES: [[[u8; 4]; 4]; 7] = [
@@ -191,92 +191,117 @@ impl TetrisApp {
     }
 }
 
-impl App for TetrisApp {
-    fn update(&mut self) {
-        if self.game_over { return; }
-        let current_tick = crate::process::scheduler::get_ticks();
-        let fall_speed: u64 = 50; 
-        if current_tick > self.last_fall_tick + fall_speed {
-            self.fall();
-            self.last_fall_tick = current_tick;
-            self.needs_redraw = true;
-        }
-    }
-
-    fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
-        if !self.needs_redraw { return; }
-        
-        Self::fill(buf, w, h, 0, 0, w as i32, h as i32, 0xFF111111);
-        
-        crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 4, "TETRIS", 0xFF00FF00);
-        let score_str = alloc::format!("Score: {}", self.score);
-        crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 20, &score_str, 0xFFFFFFFF);
-        
-        if self.game_over {
-            crate::drivers::video::draw_text_to_buffer(buf, w as i64, h as i64, 4, 40, "GAME OVER", 0xFFFF0000);
-        }
-        
-        // Calculate cell size
-        let available_h = h as i32 - 10;
-        let available_w = w as i32 - 80;
-        let spacing = 1;
-        let max_cell_h = (available_h - (21 * spacing)) / 20;
-        let max_cell_w = (available_w - (11 * spacing)) / 10;
-        let cell_size = max_cell_h.min(max_cell_w).max(5);
-        
-        let board_w = 10 * cell_size + 11 * spacing;
-        let board_h = 20 * cell_size + 21 * spacing;
-        let start_x = 75; // Right of the score
-        let start_y = (h as i32 - board_h) / 2;
-        
-        Self::fill(buf, w, h, start_x, start_y, board_w, board_h, 0xFF333333);
-        
-        for gy in 0..20 {
-            for gx in 0..10 {
-                let val = self.grid[gy as usize][gx as usize];
-                let px = start_x + spacing + (gx as i32 * (cell_size + spacing));
-                let py = start_y + spacing + (gy as i32 * (cell_size + spacing));
-                Self::fill(buf, w, h, px, py, cell_size, cell_size, COLORS[val as usize]);
+pub fn tetris_main() {
+    let id = 12;
+    let width = 280;
+    let height = 400;
+    
+    crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
+        id,
+        title: alloc::string::String::from("Tetris"),
+        x: 100,
+        y: 100,
+        w: width as i32,
+        h: height as i32,
+    });
+    
+    let mut buffer = alloc::vec![0xFF111111; width * height];
+    let mut app = TetrisApp::new();
+    
+    loop {
+        for event in crate::gui::wm::pop_events(id) {
+            match event {
+                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
+                    if app.game_over { continue; }
+                    match c {
+                        'a' | 'A' | keyboard::KEY_LEFT => { app.move_dx(-1); app.needs_redraw = true; },
+                        'd' | 'D' | keyboard::KEY_RIGHT => { app.move_dx(1); app.needs_redraw = true; },
+                        'w' | 'W' | keyboard::KEY_UP => { app.rotate(); app.needs_redraw = true; },
+                        's' | 'S' | keyboard::KEY_DOWN => { 
+                            app.fall(); 
+                            app.last_fall_tick = crate::process::scheduler::get_ticks(); 
+                            app.needs_redraw = true; 
+                        },
+                        ' ' => { 
+                            app.hard_drop(); 
+                            app.last_fall_tick = crate::process::scheduler::get_ticks(); 
+                            app.needs_redraw = true; 
+                        },
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
         
-        for r in 0..4 {
-            for c in 0..4 {
-                let val = self.curr_piece[r][c];
-                if val != 0 {
-                    let gx = self.curr_x + c as i32;
-                    let gy = self.curr_y + r as i32;
-                    if gy >= 0 {
-                        let px = start_x + spacing + (gx * (cell_size + spacing));
-                        let py = start_y + spacing + (gy * (cell_size + spacing));
-                        Self::fill(buf, w, h, px, py, cell_size, cell_size, COLORS[val as usize]);
+        if !app.game_over {
+            let current_tick = crate::process::scheduler::get_ticks();
+            let fall_speed: u64 = 50; 
+            if current_tick > app.last_fall_tick + fall_speed {
+                app.fall();
+                app.last_fall_tick = current_tick;
+                app.needs_redraw = true;
+            }
+        }
+        
+        if app.needs_redraw {
+            TetrisApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFF111111);
+            
+            crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 4, "TETRIS", 0xFF00FF00);
+            let score_str = alloc::format!("Score: {}", app.score);
+            crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 20, &score_str, 0xFFFFFFFF);
+            
+            if app.game_over {
+                crate::drivers::video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 4, 40, "GAME OVER", 0xFFFF0000);
+            }
+            
+            // Calculate cell size
+            let available_h = height as i32 - 10;
+            let available_w = width as i32 - 80;
+            let spacing = 1;
+            let max_cell_h = (available_h - (21 * spacing)) / 20;
+            let max_cell_w = (available_w - (11 * spacing)) / 10;
+            let cell_size = max_cell_h.min(max_cell_w).max(5);
+            
+            let board_w = 10 * cell_size + 11 * spacing;
+            let board_h = 20 * cell_size + 21 * spacing;
+            let start_x = 75; // Right of the score
+            let start_y = (height as i32 - board_h) / 2;
+            
+            TetrisApp::fill(&mut buffer, width, height, start_x, start_y, board_w, board_h, 0xFF333333);
+            
+            for gy in 0..20 {
+                for gx in 0..10 {
+                    let val = app.grid[gy as usize][gx as usize];
+                    let px = start_x + spacing + (gx as i32 * (cell_size + spacing));
+                    let py = start_y + spacing + (gy as i32 * (cell_size + spacing));
+                    TetrisApp::fill(&mut buffer, width, height, px, py, cell_size, cell_size, COLORS[val as usize]);
+                }
+            }
+            
+            for r in 0..4 {
+                for c in 0..4 {
+                    let val = app.curr_piece[r][c];
+                    if val != 0 {
+                        let gx = app.curr_x + c as i32;
+                        let gy = app.curr_y + r as i32;
+                        if gy >= 0 {
+                            let px = start_x + spacing + (gx * (cell_size + spacing));
+                            let py = start_y + spacing + (gy * (cell_size + spacing));
+                            TetrisApp::fill(&mut buffer, width, height, px, py, cell_size, cell_size, COLORS[val as usize]);
+                        }
                     }
                 }
             }
+            
+            app.needs_redraw = false;
+            
+            crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
+                id,
+                buffer_ptr: buffer.as_ptr() as u64,
+            });
         }
         
-        self.needs_redraw = false;
-    }
-
-    fn on_mouse_event(&mut self, _x: i32, _y: i32, _buttons: u8) {}
-
-    fn on_key_event(&mut self, c: char) {
-        if self.game_over { return; }
-        match c {
-            'a' | 'A' | keyboard::KEY_LEFT => { self.move_dx(-1); self.needs_redraw = true; },
-            'd' | 'D' | keyboard::KEY_RIGHT => { self.move_dx(1); self.needs_redraw = true; },
-            'w' | 'W' | keyboard::KEY_UP => { self.rotate(); self.needs_redraw = true; },
-            's' | 'S' | keyboard::KEY_DOWN => { 
-                self.fall(); 
-                self.last_fall_tick = crate::process::scheduler::get_ticks(); 
-                self.needs_redraw = true; 
-            },
-            ' ' => { 
-                self.hard_drop(); 
-                self.last_fall_tick = crate::process::scheduler::get_ticks(); 
-                self.needs_redraw = true; 
-            },
-            _ => {}
-        }
+        crate::process::scheduler::yield_now();
     }
 }

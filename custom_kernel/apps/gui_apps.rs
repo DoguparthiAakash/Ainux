@@ -2,9 +2,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use crate::gui::window::Window;
 use crate::gui::compositor::Compositor;
-use crate::gui::app::AppType;
-use crate::gui::terminal_app::TerminalApp;
-use crate::gui::notepad_app::NotepadApp;
+
+use crate::gui::terminal_app::terminal_main;
+use crate::gui::notepad_app::notepad_main;
 use crate::drivers::video;
 
 // Helper to draw text into a window's buffer
@@ -20,51 +20,93 @@ fn draw_text_to_window(win: &mut Window, text: &str, x: i32, y: i32) {
     }
 }
 
+use crate::gui::task_manager_app::task_manager_main;
+use crate::gui::sysmon_app::sysmon_main;
+
 pub fn launch_task_manager(comp: &mut Compositor) {
-    let mut win = Window::new(1, "Task Manager", 100, 100, 300, 200);
-    
-    draw_text_to_window(&mut win, "CPU Usage: 4%", 10, 10);
-    draw_text_to_window(&mut win, "Memory: 18MB / 1024MB", 10, 30);
-    draw_text_to_window(&mut win, "---------------------", 10, 50);
-    draw_text_to_window(&mut win, "Processes:", 10, 70);
-    draw_text_to_window(&mut win, "1. kernel_task (1%)", 10, 90);
-    draw_text_to_window(&mut win, "2. compositor (3%)", 10, 110);
-    draw_text_to_window(&mut win, "3. idle (96%)", 10, 130);
-    
-    comp.add_window(win);
+    crate::process::scheduler::spawn_kernel_task(task_manager_main as u64, "task_manager");
 }
 
+pub fn launch_sysmon(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(sysmon_main as u64, "sysmon");
+}
+
+use crate::gui::settings_app::settings_main;
+pub fn launch_settings(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(settings_main as u64, "settings");
+}
+
+use crate::gui::paint_app::paint_main;
+pub fn launch_paint(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(paint_main as u64, "paint");
+}
+
+use crate::gui::browser_app::browser_main;
+pub fn launch_browser(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(browser_main as u64, "browser");
+}
+
+use crate::gui::calculator_app::calculator_main;
+pub fn launch_calculator(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(calculator_main as u64, "calculator");
+}
+
+use crate::gui::minesweeper_app::minesweeper_main;
+pub fn launch_minesweeper(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(minesweeper_main as u64, "minesweeper");
+}
+
+use crate::gui::clock_app::clock_main;
+pub fn launch_clock(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(clock_main as u64, "clock");
+}
+
+use crate::gui::calendar_app::calendar_main;
+pub fn launch_calendar(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(calendar_main as u64, "calendar");
+}
+
+use crate::gui::tetris_app::tetris_main;
+pub fn launch_tetris(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(tetris_main as u64, "tetris");
+}
+
+use crate::gui::pong_app::pong_main;
+pub fn launch_pong(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(pong_main as u64, "pong");
+}
+
+use crate::gui::game2048_app::game2048_main;
+pub fn launch_2048(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(game2048_main as u64, "game2048");
+}
+
+use crate::gui::chess_app::chess_main;
+pub fn launch_chess(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(chess_main as u64, "chess");
+}
+
+use crate::gui::sudoku_app::sudoku_main;
+pub fn launch_sudoku(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(sudoku_main as u64, "sudoku");
+}
+
+use crate::gui::snake_app::snake_main;
+pub fn launch_snake(comp: &mut Compositor) {
+    crate::process::scheduler::spawn_kernel_task(snake_main as u64, "snake");
+}
+
+use crate::gui::file_manager_app::file_manager_main;
+
 pub fn launch_file_manager(comp: &mut Compositor) {
-    let mut win = Window::new(2, "Files", 150, 150, 400, 300);
-    
-    let lines = [
-        "/",
-        "  |- boot/",
-        "  |- bin/",
-        "  |- etc/",
-        "  |- home/",
-        "      |- user/",
-        "          |- documents/",
-        "          |- downloads/",
-        "  |- tmp/",
-        "  |- var/",
-    ];
-    
-    for (i, line) in lines.iter().enumerate() {
-        draw_text_to_window(&mut win, line, 10, 10 + (i as i32 * 20));
-    }
-    
-    comp.add_window(win);
+    crate::process::scheduler::spawn_kernel_task(file_manager_main as u64, "file_manager");
 }
 
 pub fn launch_terminal(comp: &mut Compositor) {
-    let mut win = Window::new(3, "Terminal", 200, 200, 500, 350);
-    win.app = AppType::Terminal(TerminalApp::new());
-    comp.add_window(win);
+    let id = comp.windows.len() as u64 + 1;
+    crate::process::scheduler::spawn_kernel_task(terminal_main as u64, "terminal_app");
 }
 
 pub fn launch_notepad(comp: &mut Compositor) {
-    let mut win = Window::new(4, "Notepad", 300, 300, 400, 300);
-    win.app = AppType::Notepad(NotepadApp::new());
-    comp.add_window(win);
+    crate::process::scheduler::spawn_kernel_task(notepad_main as u64, "notepad_app");
 }

@@ -1,7 +1,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::drivers::video;
-use crate::gui::app::AppType;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum WindowState {
@@ -25,7 +24,6 @@ pub struct Window {
     pub state: WindowState,
     pub drag_offset_x: i32,
     pub drag_offset_y: i32,
-    pub app: AppType,
 }
 
 impl Window {
@@ -45,7 +43,6 @@ impl Window {
             state: WindowState::Normal,
             drag_offset_x: 0,
             drag_offset_y: 0,
-            app: AppType::None,
         }
     }
     

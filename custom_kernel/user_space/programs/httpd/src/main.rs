@@ -6,7 +6,7 @@ use libainux::println;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> isize {
-    println!("Starting Ainux httpd on port 8080...");
+    println!("Starting Mithl OS httpd on port 8080...");
     
     let sock = sys_socket(2, 1, 0); // AF_INET, SOCK_STREAM
     if sock < 0 {

@@ -22,7 +22,7 @@ pub extern "C" fn main() -> isize {
     }
     
     println!("Connected. Type your message:");
-    let msg = "Hello from Ainux Netcat!\n";
+    let msg = "Hello from Mithl OS Netcat!\n";
     syscalls::sys_write(fd as usize, msg.as_bytes());
     
     // Attempt to read response
