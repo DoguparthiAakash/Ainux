@@ -17,6 +17,15 @@ pub mod wifi_80211;
 pub mod baseos;
 pub mod inet;
 
+// Ainux OSI 7-Layer Architecture
+pub mod layer1_physical;
+pub mod layer2_datalink;
+pub mod layer3_network;
+pub mod layer4_transport;
+pub mod layer5_session;
+pub mod layer6_presentation;
+pub mod layer7_application;
+
 pub struct AinuxDevice;
 
 impl Device for AinuxDevice {
@@ -143,6 +152,15 @@ pub fn init() {
         dhcp_handle: Some(dhcp_handle),
         icmp_handle: Some(icmp_handle),
     });
+
+    // Initialize OSI Architecture Modules
+    layer1_physical::init();
+    layer2_datalink::init();
+    layer3_network::init();
+    layer4_transport::init();
+    layer5_session::init();
+    layer6_presentation::init();
+    layer7_application::init();
 
     crate::drivers::video::put_str("Net: smoltcp Stack Initialized (DHCP Active).\n");
 }
