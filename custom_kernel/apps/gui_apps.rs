@@ -7,18 +7,7 @@ use crate::gui::terminal_app::terminal_main;
 use crate::gui::notepad_app::notepad_main;
 use crate::drivers::video;
 
-// Helper to draw text into a window's buffer
-fn draw_text_to_window(win: &mut Window, text: &str, x: i32, y: i32) {
-    let mut curr_x = x;
-    for c in text.chars() {
-        if c as u32 >= 32 && c as u32 <= 126 {
-            let fg = 0x000000; // Black text
-            // We use video::draw_char_to_buffer using the window's buffer dimensions
-            video::draw_char_to_buffer(&mut win.buffer, win.width as usize, win.height as usize, curr_x as usize, y as usize, c, fg);
-        }
-        curr_x += 8;
-    }
-}
+
 
 use crate::gui::task_manager_app::task_manager_main;
 use crate::gui::sysmon_app::sysmon_main;

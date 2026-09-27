@@ -14,7 +14,7 @@ use smoltcp::socket::AnySocket;
 
 pub mod dns;
 pub mod wifi_80211;
-pub mod unix;
+pub mod baseos;
 pub mod inet;
 
 pub struct AinuxDevice;
@@ -427,7 +427,7 @@ pub fn dispatch_packets() {
 
 pub fn sys_socket(domain: i32, type_: i32, protocol: i32) -> isize {
     if domain == 1 { // AF_UNIX
-        crate::net::unix::sys_socket(domain, type_, protocol)
+        crate::net::baseos::sys_socket(domain, type_, protocol)
     } else if domain == 2 { // AF_INET
         let socket_type = crate::cpu::without_interrupts(|| {
             let mut net_opt = NET_STACK.lock();
@@ -530,7 +530,7 @@ pub fn sys_connect(fd: usize, addr_ptr: *const u8, addr_len: usize) -> isize {
     }
 
     // Fallback to Unix sockets
-    crate::net::unix::sys_connect(fd, addr_ptr, addr_len)
+    crate::net::baseos::sys_connect(fd, addr_ptr, addr_len)
 }
 
 pub fn sys_accept(fd: usize) -> isize {
@@ -622,7 +622,7 @@ pub fn sys_accept(fd: usize) -> isize {
         }
     }
 
-    crate::net::unix::sys_accept(fd)
+    crate::net::baseos::sys_accept(fd)
 }
 
 pub fn sys_bind(fd: usize, addr_ptr: *const u8, addr_len: usize) -> isize {
@@ -646,7 +646,7 @@ pub fn sys_bind(fd: usize, addr_ptr: *const u8, addr_len: usize) -> isize {
         inet_handle.bound_port.store(port, core::sync::atomic::Ordering::SeqCst);
         return 0;
     }
-    crate::net::unix::sys_bind(fd, addr_ptr, addr_len)
+    crate::net::baseos::sys_bind(fd, addr_ptr, addr_len)
 }
 
 pub fn sys_listen(fd: usize, backlog: i32) -> isize {
@@ -689,5 +689,5 @@ pub fn sys_listen(fd: usize, backlog: i32) -> isize {
         }
         return -1;
     }
-    crate::net::unix::sys_listen(fd, backlog)
+    crate::net::baseos::sys_listen(fd, backlog)
 }

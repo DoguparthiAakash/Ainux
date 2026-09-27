@@ -14,5 +14,5 @@ void c_hardware_init() {
 }
 
 void ifinit(void) {
-    // Stub for NetBSD network initialization
+    // Stub for OtherOS network initialization
 }

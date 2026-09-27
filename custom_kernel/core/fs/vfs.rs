@@ -115,7 +115,12 @@ pub trait FileHandle: Send + Sync + core::fmt::Debug {
         Ok(0)
     }
     
-    // Hack for downcasting Unix Domain Sockets without full Any trait integration
+    // Hack for downcasting BaseOS Domain Sockets without full Any trait integration
+    fn as_baseos_socket_ptr(&self) -> *const () {
+        core::ptr::null()
+    }
+    
+    // Hack for downcasting Unix Sockets
     fn as_unix_socket_ptr(&self) -> *const () {
         core::ptr::null()
     }

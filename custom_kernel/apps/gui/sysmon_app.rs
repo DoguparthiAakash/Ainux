@@ -203,6 +203,6 @@ pub fn sysmon_main() {
             });
         }
         
-        crate::process::scheduler::yield_now();
+        crate::process::scheduler::sleep(1);
     }
 }

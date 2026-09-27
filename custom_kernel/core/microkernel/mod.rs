@@ -7,6 +7,6 @@ pub fn init() {
     let _ = write!(serial, "Microkernel Manager Initialized.\n");
     
     // The microkernel will eventually orchestrate the sibling monolithic kernels
-    // (Ainux and BSD Hybrid)
+    // (Ainux and ExtOS Hybrid)
     scheduler::init();
 }

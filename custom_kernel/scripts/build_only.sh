@@ -98,6 +98,18 @@ echo "Building test_drm.c..."
 echo "Building test_fork.c..."
 ./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables test_progs/test_fork.c -o disk3_root/bin/test_fork.elf
 
+echo "Building BaseOS tools..."
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables c_src/baseos_tools/cat.c -o disk3_root/bin/baseos_cat.elf
+./musl-libc/sysroot/bin/musl-gcc -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables c_src/baseos_tools/echo.c -o disk3_root/bin/baseos_echo.elf
+
+echo "Building ExternalOS userland tools..."
+for tool in cat echo pwd; do
+    if [ -f "external/externalos-src/bin/$tool/$tool.c" ]; then
+        echo "Building ExternalOS $tool..."
+        ./musl-libc/sysroot/bin/musl-gcc -Ic_src/extos_compat/include -static -fno-pie -mno-red-zone -fno-asynchronous-unwind-tables "external/externalos-src/bin/$tool/$tool.c" -o "disk3_root/bin/externalos_${tool}.elf" || echo "Failed to build ExternalOS $tool"
+    fi
+done
+
 echo "Building user_space Rust binaries..."
 (cd user_space && RUSTFLAGS="-C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000" cargo build --release --offline --target x86_64-unknown-none) || { echo "User space build failed"; exit 1; }
 cp user_space/target/x86_64-unknown-none/release/ls disk3_root/bin/ls.elf
@@ -117,12 +129,12 @@ cp user_space/target/x86_64-unknown-none/release/terminald disk3_root/bin/termin
 cp user_space/target/x86_64-unknown-none/release/sh disk3_root/bin/sh
 
 echo "Injecting LLVM compiler (via statically linked Zig as clang)..."
-if [ -f "compilers/zig-linux-x86_64-0.11.0/zig" ]; then
-    cp compilers/zig-linux-x86_64-0.11.0/zig disk3_root/bin/clang
+if [ -f "compilers/zig-legacyos-x86_64-0.11.0/zig" ]; then
+    cp compilers/zig-legacyos-x86_64-0.11.0/zig disk3_root/bin/clang
     # Optionally symlink or copy as lld, cc, etc.
     # ln -s clang disk3_root/bin/cc
 else
-    echo "Warning: Zig/LLVM static binary not found in compilers/zig-linux-x86_64-0.11.0/zig"
+    echo "Warning: Zig/LLVM static binary not found in compilers/zig-legacyos-x86_64-0.11.0/zig"
 fi
 
 # Hybrid Nux-LLVM Compiler Step

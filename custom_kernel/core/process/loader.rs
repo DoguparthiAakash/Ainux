@@ -149,7 +149,7 @@ pub struct ProgramHeader {
     pub p_align: u64,
 }
 
-pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
+pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<(u64, crate::process::task::AbiType), ()> {
     let handle = match inode.open(0) {
         Ok(h) => h,
         Err(_) => {
@@ -175,6 +175,13 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
         crate::drivers::video::put_str("ELF LOAD ERROR: invalid magic\n");
         return Err(()); // Not an ELF
     }
+
+    let abi_type = match header.os_abi {
+        3 => crate::process::task::AbiType::LinuxCompat,
+        9 => crate::process::task::AbiType::BsdCompat,
+        0 => crate::process::task::AbiType::LinuxCompat, // SYSV usually means Linux with musl
+        _ => crate::process::task::AbiType::AinuxNative,
+    };
 
     let mut load_bias = 0u64;
     if header.e_type == 3 { // ET_DYN (PIE)
@@ -270,7 +277,7 @@ pub fn load_elf(inode: ArcInode, cr3: u64) -> Result<u64, ()> {
         }
     }
 
-    Ok(header.entry + load_bias)
+    Ok((header.entry + load_bias, abi_type))
 }
 
 pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState) -> Result<(), ()> {
@@ -281,7 +288,7 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
             if cr3 == 0 { return Err(()); }
             
             match load_elf(inode, cr3) {
-                Ok(entry) => {
+                Ok((entry, abi_type)) => {
                     let stack_base = 0x00007FFFFFFFE000u64;
                     let stack_pages = 32u64;
                     for p in 0..stack_pages {
@@ -310,6 +317,7 @@ pub fn exec_elf(path: &str, state: *mut crate::process::scheduler::SyscallState)
                         if let Some(task) = &mut tasks[pid] {
                             task.cr3 = cr3;
                             task.address_space = Some(address_space);
+                            task.abi = abi_type;
                             unsafe {
                                 core::arch::asm!("mov cr3, {}", in(reg) cr3);
                             }
@@ -340,7 +348,7 @@ pub fn load_elf_from_file(path: &str, cmd_args: &[&str]) -> Result<usize, ()> {
             }
             
             match load_elf(inode, cr3) {
-                Ok(entry) => {
+                Ok((entry, abi_type)) => {
                     {
                         let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
                         use core::fmt::Write;
@@ -374,7 +382,7 @@ pub fn load_elf_from_file(path: &str, cmd_args: &[&str]) -> Result<usize, ()> {
                     }
                     let initial_sp = setup_user_stack(cr3, stack_top, entry, &str_args);
                     
-                    let pid = crate::process::scheduler::spawn_user(entry, initial_sp, address_space, path);
+                    let pid = crate::process::scheduler::spawn_user(entry, initial_sp, address_space, path, abi_type);
                     return Ok(pid);
                 },
                 Err(_) => {
@@ -489,7 +497,7 @@ pub fn load_alo_from_file(path: &str) -> Result<usize, ()> {
                 unsafe { crate::mm::vmm::map_page_in_pml4(cr3, stack_top - (p * 4096), frame, 0x07); }
             }
             
-            let pid = crate::process::scheduler::spawn_user(entry, stack_top, address_space, path);
+            let pid = crate::process::scheduler::spawn_user(entry, stack_top, address_space, path, crate::process::task::AbiType::AinuxNative);
             return Ok(pid);
         }
     }

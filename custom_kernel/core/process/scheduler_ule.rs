@@ -1,4 +1,4 @@
-// FreeBSD ULE Scheduler Port for Ainux (Rust)
+// OtherOS ULE Scheduler Port for Ainux (Rust)
 // Based on sys/kern/sched_ule.c
 // 
 // ULE: Everything is about Thread Queues (TDQ) and Run Queues (Runq).
@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-// Priorities (FreeBSD Defaults)
+// Priorities (OtherOS Defaults)
 const PRI_MAX_INTERACT: u8 = 88;
 const PRI_MIN_INTERACT: u8 = 48;
 const PRI_MIN_BATCH: u8 = 104;

@@ -1,0 +1,45 @@
+name: Ainux Kernel & Mithl OS CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+        components: rust-src, llvm-tools-preview
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm mtools xorriso grub-pc-bin grub-common qemu-system-x86 gcc clang llvm
+
+    - name: Install bootimage
+      run: cargo install bootimage
+
+    - name: Build Kernel and Userspace
+      run: |
+        ./scripts/build_only.sh
+
+    - name: Build ISO
+      run: |
+        ./scripts/build_iso.sh
+
+    - name: Archive build artifacts (ISO and Disk Image)
+      uses: actions/upload-artifact@v3
+      with:
+        name: ainux-os-release
+        path: |
+          ainux.iso
+          disk3.img

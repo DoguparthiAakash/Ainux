@@ -121,7 +121,7 @@ pub fn terminal_main() {
         });
         
         for _ in 0..10 {
-            crate::process::scheduler::yield_now();
+            crate::process::scheduler::sleep(1);
         }
     }
 }

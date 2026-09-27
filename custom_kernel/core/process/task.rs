@@ -7,6 +7,13 @@ pub enum TaskState {
     Free,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiType {
+    AinuxNative, // Native API
+    LinuxCompat, // Linux Syscall ABI
+    BsdCompat,   // FreeBSD Syscall ABI
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Context {
@@ -71,13 +78,14 @@ pub struct Task {
     pub sigactions: [crate::process::signal::SigAction; 64],
     pub brk: u64,
     pub mmap_base: u64,
-    // --- UNIX Process Credentials ---
+    // --- BaseOS Process Credentials ---
     pub ruid: u32,
     pub euid: u32,
     pub rgid: u32,
     pub egid: u32,
     pub umask: u16,
     pub namespace: crate::ipc::styx::Namespace,
+    pub abi: AbiType,
 }
 
 impl KernelObject for Task {
@@ -133,7 +141,14 @@ impl Task {
             userspace_stack_top: 0,
             caps: CapTable::new(),
             sleep_ticks: 0,
-            fds: crate::process::fd::FileDescriptorTable::new(),
+            fds: {
+                let mut table = crate::process::fd::FileDescriptorTable::new();
+                let tty_handle: alloc::sync::Arc<dyn crate::fs::vfs::FileHandle> = alloc::sync::Arc::new(crate::fs::devfs::DevTtyHandle);
+                table.alloc_fd_at(0, tty_handle.clone()); // stdin
+                table.alloc_fd_at(1, tty_handle.clone()); // stdout
+                table.alloc_fd_at(2, tty_handle.clone()); // stderr
+                table
+            },
             parent_id: None,
             exit_code: 0,
             wait_queue: alloc::vec::Vec::new(),
@@ -163,6 +178,7 @@ impl Task {
             egid: 0,
             umask: 0o022,
             namespace: crate::ipc::styx::Namespace::new(),
+            abi: AbiType::AinuxNative,
         }
     }
 }

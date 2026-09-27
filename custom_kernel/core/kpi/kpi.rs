@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 //! Ainux KPI — Kernel Programming Interface
 //!
-//! This module implements the `extern "C"` symbols that back the Linux
-//! compatibility headers in `c_src/kpi/include/linux/`. Linux driver C code
+//! This module implements the `extern "C"` symbols that back the LegacyOS
+//! compatibility headers in `c_src/kpi/include/linux/`. LegacyOS driver C code
 //! calls these functions; we implement them using Ainux's native Rust subsystems.
 //!
 //! Rules for this module:
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn kpi_kmalloc(size: usize, flags: u32) -> *mut u8 {
 }
 
 /// kfree — free memory allocated by kmalloc/kzalloc/etc.
-/// Linux drivers may call kfree(NULL), which must be a no-op.
+/// LegacyOS drivers may call kfree(NULL), which must be a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn kpi_kfree(ptr: *const u8) {
     if ptr.is_null() {
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn kpi_printk(buf: *const u8) -> i32 {
 
 // ── Panic ─────────────────────────────────────────────────────────────────────
 
-/// kpi_panic — called by BUG() macro in Linux drivers.
+/// kpi_panic — called by BUG() macro in LegacyOS drivers.
 #[no_mangle]
 pub extern "C" fn kpi_panic(msg: *const u8) -> ! {
     unsafe {

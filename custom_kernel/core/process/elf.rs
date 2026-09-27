@@ -33,8 +33,12 @@ pub struct ProgramHeader {
 
 pub const PT_LOAD: u32 = 1;
 pub const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
+pub const EI_OSABI: usize = 7;
+pub const ELFOSABI_SYSV: u8 = 0;
+pub const ELFOSABI_LINUX: u8 = 3;
+pub const ELFOSABI_FREEBSD: u8 = 9;
 
-pub fn load_elf(elf_data: &[u8]) -> Result<u64, &'static str> {
+pub fn load_elf(elf_data: &[u8]) -> Result<(u64, crate::process::task::AbiType), &'static str> {
     if elf_data.len() < core::mem::size_of::<ElfHeader>() {
         return Err("File too small");
     }
@@ -47,6 +51,18 @@ pub fn load_elf(elf_data: &[u8]) -> Result<u64, &'static str> {
     if header.machine != 0x3E { // x86_64
         return Err("Unsupported architecture");
     }
+
+    let osabi = header.ident[EI_OSABI];
+    let abi_type = match osabi {
+        ELFOSABI_LINUX => crate::process::task::AbiType::LinuxCompat,
+        ELFOSABI_FREEBSD => crate::process::task::AbiType::BsdCompat,
+        ELFOSABI_SYSV => {
+            // SYSV often implies Linux if compiled with older tools, but it could be native Ainux too.
+            // For now, default SYSV to Linux compat unless it's a native Ainux flag (which we don't have yet)
+            crate::process::task::AbiType::LinuxCompat
+        },
+        _ => crate::process::task::AbiType::AinuxNative, // Default to Native
+    };
 
     let ph_offset = header.phoff as usize;
     let ph_size = header.phentsize as usize;
@@ -70,5 +86,5 @@ pub fn load_elf(elf_data: &[u8]) -> Result<u64, &'static str> {
         }
     }
 
-    Ok(header.entry)
+    Ok((header.entry, abi_type))
 }

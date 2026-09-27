@@ -64,15 +64,15 @@ fn c_source_files() -> Vec<String> {
 
     files.push("c_src/crypto/aes.c".to_string());
     
-    // BSD Multi-Kernel C-Integration testing
-    // Compiling OpenBSD's explicit_bzero.c to verify the cross-compiler and shim
-    files.push("c_src/bsd_external/openbsd/lib/libc/string/explicit_bzero.c".to_string());
+    // ExtOS Multi-Kernel C-Integration testing
+    // Compiling AltOS's explicit_bzero.c to verify the cross-compiler and shim
+    files.push("c_src/extos_external/altos/lib/libc/string/explicit_bzero.c".to_string());
     
-    // FreeBSD VFS integration
-    files.push("c_src/bsd_external/freebsd/sys/kern/vfs_init.c".to_string());
+    // OtherOS VFS integration
+    files.push("c_src/extos_external/otheros/sys/kern/vfs_init.c".to_string());
     
-    // NetBSD Networking Source
-    // files.push("external/netbsd-src/sys/net/if.c".to_string());
+    // ExternalOS Networking Source
+    files.push("external/externalos-src/sys/net/if.c".to_string());
     
     files
 }
@@ -94,9 +94,13 @@ fn kernel_cflags() -> Vec<&'static str> {
         "-Wno-address-of-packed-member",
         "-nostdlib",
         "-O2",
-        "-DDEF_WEAK(x)=", // Ignore OpenBSD weak symbol macros
-        "-D__KERNEL_RCSID(x,y)=", // Ignore NetBSD RCS ID macros
-        "-D__NetBSD__", // Fake NetBSD for networking code
+        "-DDEF_WEAK(x)=", // Ignore AltOS weak symbol macros
+        "-D__KERNEL_RCSID(x,y)=", // Ignore ExternalOS RCS ID macros
+        "-D__ExternalOS__", // Fake ExternalOS for networking code
+        "-D_KERNEL",
+        "-U__legacyos__",
+        "-U__legacyos",
+        "-Ulegacyos",
     ]
 }
 
@@ -117,17 +121,15 @@ fn build_via_wsl(out_dir: &str) {
 
     let manifest_path = std::path::Path::new(&manifest_dir);
 
-    // BSD Shims
-    let bsd_compat_dir = windows_to_wsl_path(manifest_path.join("c_src/bsd_compat/include").to_str().unwrap());
+    // ExtOS Shims
+    let extos_compat_dir = windows_to_wsl_path(manifest_path.join("c_src/extos_compat/include").to_str().unwrap());
     
-    // FreeBSD VFS Source
-    let freebsd_sys_dir = windows_to_wsl_path(manifest_path.join("c_src/bsd_external/freebsd/sys").to_str().unwrap());
+    // OtherOS VFS Source
+    let otheros_sys_dir = windows_to_wsl_path(manifest_path.join("c_src/extos_external/otheros/sys").to_str().unwrap());
     let c_dir = manifest_path.join("c_src");
     let c_dir_wsl = windows_to_wsl_path(c_dir.to_str().unwrap());
 
-    // NetBSD Networking Source
-    let netbsd_sys_dir = windows_to_wsl_path(manifest_path.join("external/netbsd-src/sys").to_str().unwrap());
-    let netbsd_if_c = windows_to_wsl_path(manifest_path.join("external/netbsd-src/sys/net/if.c").to_str().unwrap());
+
 
     for src in &sources {
         let src_path = format!("{}/{}", wsl_manifest, src);
@@ -138,18 +140,25 @@ fn build_via_wsl(out_dir: &str) {
 
         let mut args: Vec<String> = vec![gcc.clone()];
         args.extend(flags.iter().map(|s| s.to_string()));
+        if src.contains("externalos-src") {
+            args.extend([
+                format!("-I{}/external/externalos-src/sys", wsl_manifest),
+                format!("-I{}/external/externalos-src/sys/arch/amd64/include", wsl_manifest),
+                format!("-I{}/external/externalos-src/common/include", wsl_manifest),
+                format!("-I{}/external/externalos-src/external/extos/libpcap/dist", wsl_manifest),
+            ]);
+        }
+
         args.extend([
             format!("-I{}", c_dir_wsl),
             format!("-I{}/libc", c_dir_wsl),
             format!("-I{}/include", wsl_manifest),
-            format!("-I{}", bsd_compat_dir),
+            format!("-I{}", extos_compat_dir),
             format!("-I{}/c_src/kpi/include", wsl_manifest),
-            format!("-I{}/external/netbsd-src/sys", wsl_manifest),
-            format!("-I{}/external/netbsd-src/sys/arch/amd64/include", wsl_manifest),
         ]);
         
-        if src.contains("freebsd") {
-            args.push(format!("-I{}", freebsd_sys_dir));
+        if src.contains("otheros") {
+            args.push(format!("-I{}", otheros_sys_dir));
         }
 
         args.extend([
@@ -220,14 +229,24 @@ fn build_via_wsl(out_dir: &str) {
 
 fn build_via_cc(out_dir: &str) {
     let mut build = cc::Build::new();
+    let mut externalos_build = cc::Build::new();
+    
     let sources = c_source_files();
     for src in &sources {
-        build.file(src);
+        if src.contains("externalos-src") {
+            externalos_build.file(src);
+        } else {
+            build.file(src);
+        }
     }
+    
     let flags = kernel_cflags();
     for flag in &flags {
         build.flag(flag);
+        externalos_build.flag(flag);
     }
+    
+    // Ainux/OtherOS Build
     build.include("c_src")
         .include("c_src/libc")
         .include("include")
@@ -236,12 +255,23 @@ fn build_via_cc(out_dir: &str) {
         .include("c_src/crypto")
         .include("c_src/drivers")
         .include("c_src/drivers/usb")
-        .include("c_src/bsd_compat/include")
+        .include("c_src/extos_compat/include")
         .include("c_src/kpi/include")
-        .include("c_src/bsd_external/freebsd/sys")
-        .include("external/netbsd-src/sys")
-        .include("external/netbsd-src/sys/arch/amd64/include")
+        .include("c_src/extos_external/otheros/sys")
         .compile("legacy_kernel");
+        
+    // ExternalOS Build
+    externalos_build
+        .include("external/externalos-src/sys")
+        .include("external/externalos-src/sys/arch/amd64/include")
+        .include("external/externalos-src/common/include")
+        .include("external/externalos-src/external/extos/libpcap/dist")
+        .include("c_src")
+        .include("c_src/libc")
+        .include("include")
+        .include("c_src/extos_compat/include")
+        .include("c_src/kpi/include")
+        .compile("externalos_kernel");
 
     // ── Compile NASM assembly (boot.asm = _start_multiboot entry point) ──────
     let asm_sources = ["arch/x86_64/asm/boot.asm", "arch/x86_64/asm/utils.asm"];

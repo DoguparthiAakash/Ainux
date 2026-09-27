@@ -1,5 +1,5 @@
 // src/fs/pipe.rs
-// Unix-style Anonymous Pipes for Ainux
+// BaseOS-style Anonymous Pipes for Ainux
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;

@@ -7,7 +7,7 @@
 /* 
  * Ainux File System (AxFS)
  * A modern, extent-based, copy-on-write friendly filesystem.
- * Inspired by Linux Ext4 (Extents) and ZFS (Object-based Dnodes).
+ * Inspired by LegacyOS Ext4 (Extents) and ZFS (Object-based Dnodes).
  * 
  * Goals: High Performance, Large File Support, Memory Efficiency.
  */

@@ -14,8 +14,8 @@ fn sleep_ms(ms: u64) {
 }
 
 fn get_dhcp_ip() -> Option<[u8; 4]> {
-    // Ask the kernel's BSD net stack for the assigned IP via sys_ipc_send
-    // to BSD_NET_PORT. For now we use a well-known port ID of 2 (set by bsd_compat init).
+    // Ask the kernel's ExtOS net stack for the assigned IP via sys_ipc_send
+    // to EXTOS_NET_PORT. For now we use a well-known port ID of 2 (set by extos_compat init).
     let mut msg_type: u64 = 0;
     let mut a1: u64 = 0; let mut a2: u64 = 0; let mut a3: u64 = 0;
     
@@ -36,7 +36,7 @@ fn get_dhcp_ip() -> Option<[u8; 4]> {
 #[no_mangle]
 pub extern "C" fn main() -> isize {
     println!("netd: Network Daemon v1.0 starting...");
-    println!("netd: Connecting to BSD net subsystem via Mach IPC...");
+    println!("netd: Connecting to ExtOS net subsystem via Mach IPC...");
 
     // Short wait for the network stack to be ready.
     sleep_ms(200);
@@ -56,7 +56,7 @@ pub extern "C" fn main() -> isize {
 
     // Daemon loop — yield constantly so other tasks get CPU.
     loop {
-        // Poll for link-down events from BSD net port.
+        // Poll for link-down events from ExtOS net port.
         let mut msg_type: u64 = 0;
         let mut a1: u64 = 0; let mut a2: u64 = 0; let mut a3: u64 = 0;
         let ret = syscalls::sys_ipc_recv(2, &mut msg_type, &mut a1, &mut a2, &mut a3);

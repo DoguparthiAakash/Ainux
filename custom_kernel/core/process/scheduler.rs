@@ -172,6 +172,18 @@ pub fn get_current_pid() -> usize {
     crate::cpu::smp::get_current_pid()
 }
 
+pub fn current_abi() -> crate::process::task::AbiType {
+    crate::cpu::without_interrupts(|| {
+        let tasks = TASKS.lock();
+        let current_pid = crate::cpu::smp::get_current_pid();
+        if let Some(task) = &tasks[current_pid] {
+            task.abi
+        } else {
+            crate::process::task::AbiType::AinuxNative
+        }
+    })
+}
+
 pub fn get_current_cell_context() -> Arc<crate::process::cell::ExecutionCell> {
     get_current_cell()
 }
@@ -301,7 +313,7 @@ pub fn clone_task(entry: u64, stack_ptr: u64) -> isize {
     })
 }
 
-pub fn spawn_user(rip: u64, rsp: u64, address_space: alloc::sync::Arc<spin::Mutex<crate::mm::address_space::AddressSpace>>, name: &str) -> usize {
+pub fn spawn_user(rip: u64, rsp: u64, address_space: alloc::sync::Arc<spin::Mutex<crate::mm::address_space::AddressSpace>>, name: &str, abi: crate::process::task::AbiType) -> usize {
     crate::cpu::without_interrupts(|| {
         let mut tasks = TASKS.lock();
         for i in 0..MAX_TASKS {
@@ -316,6 +328,7 @@ pub fn spawn_user(rip: u64, rsp: u64, address_space: alloc::sync::Arc<spin::Mute
                 task.address_space = Some(address_space);
                 task.userspace_stack_top = rsp;
                 task.parent_id = Some(crate::process::scheduler::get_current_pid());
+                task.abi = abi;
                 
                 tasks[i] = Some(task);
                 let task_ref = tasks[i].as_mut().unwrap();
@@ -498,6 +511,14 @@ pub fn pick_next_task() -> Option<usize> {
 }
 
 pub fn yield_now() {
+    schedule();
+}
+
+pub fn sleep(ticks: u64) {
+    unsafe {
+        let current = get_ticks();
+        set_current_sleep(current + ticks);
+    }
     schedule();
 }
 
@@ -1167,7 +1188,7 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
         let new_cr3 = address_space.lock().pml4_phys;
         if new_cr3 == 0 { return -12; } // ENOMEM
         
-        if let Ok(entry) = crate::process::loader::load_elf(inode, new_cr3) {
+        if let Ok((entry, abi)) = crate::process::loader::load_elf(inode, new_cr3) {
             let stack_base = 0x00007FFFFFFFE000u64;
             let stack_pages = 256u64;
             for p in 0..stack_pages {
@@ -1185,6 +1206,7 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
                     task.cr3 = new_cr3;
                     task.address_space = Some(address_space);
                     task.name = alloc::string::String::from(path);
+                    task.abi = abi;
                     unsafe { core::arch::asm!("mov cr3, {}", in(reg) new_cr3); }
                 }
             });
@@ -1215,7 +1237,7 @@ pub fn sys_exit(code: isize) {
                         parent.state = TaskState::Ready;
                         set_ready(parent_id);
                     }
-                    parent.pending_signals |= 1 << 17; // SIGCHLD (17 on Linux)
+                    parent.pending_signals |= 1 << 17; // SIGCHLD (17 on LegacyOS)
                 }
             }
         }

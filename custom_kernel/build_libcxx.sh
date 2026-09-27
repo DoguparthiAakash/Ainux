@@ -8,8 +8,8 @@ SYSROOT="$WORKSPACE_DIR/tools/sysroot"
 echo "Building libc++ and libc++abi for Ainux using Musl sysroot..."
 
 cd "$LLVM_SRC"
-mkdir -p build-libcxx
-cd build-libcxx
+mkdir -p build-libcxx-musl
+cd build-libcxx-musl
 
 # Configure CMake for runtimes (libcxx and libcxxabi)
 # We set CMAKE_SYSTEM_NAME to Linux so it uses standard POSIX paths, which Ainux mimics.
@@ -20,9 +20,11 @@ cmake -G "Unix Makefiles" \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_C_FLAGS="--target=x86_64-linux-musl --sysroot=$SYSROOT" \
-    -DCMAKE_CXX_FLAGS="--target=x86_64-linux-musl --sysroot=$SYSROOT" \
+    -DCMAKE_CXX_FLAGS="--target=x86_64-linux-musl --sysroot=$SYSROOT -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCPP_HAS_NO_THREAD_SAFETY_ANNOTATIONS -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE" \
     -DCMAKE_SYSROOT="$SYSROOT" \
     -DCMAKE_INSTALL_PREFIX="$SYSROOT" \
+    -DLIBCXX_ENABLE_VISIBILITY_ANNOTATIONS=OFF \
+    -DLIBCXXABI_ENABLE_VISIBILITY_ANNOTATIONS=OFF \
     -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
     -DLIBCXX_ENABLE_SHARED=OFF \
     -DLIBCXX_ENABLE_STATIC=ON \

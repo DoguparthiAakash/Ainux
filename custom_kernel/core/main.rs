@@ -28,10 +28,10 @@ pub mod manager;
 pub mod net;
 pub mod syscall;
 pub mod microkernel;
-#[path = "../c_src/bsd_compat/mod.rs"]
-pub mod bsd_compat;
-#[path = "../net/bsd_rust/mod.rs"]
-pub mod bsd_rust;
+#[path = "../c_src/extos_compat/mod.rs"]
+pub mod extos_compat;
+#[path = "../net/extos_rust/mod.rs"]
+pub mod extos_rust;
 #[path = "kpi/mod.rs"]
 pub mod kpi;
 
@@ -131,7 +131,7 @@ pub extern "C" fn _start() -> ! {
     let _ = write!(serial, "\n");
     let _ = write!(serial, "╔══════════════════════════════════════════════════╗\n");
     let _ = write!(serial, "║        AINUX KERNEL v0.3 — GRUB/MULTIBOOT       ║\n");
-    let _ = write!(serial, "║    Advanced Interrupt & Nucleus Unix eXtended    ║\n");
+    let _ = write!(serial, "║    Advanced Interrupt & Nucleus BaseOS eXtended    ║\n");
     let _ = write!(serial, "╚══════════════════════════════════════════════════╝\n");
     let _ = write!(serial, "\n");
 
@@ -362,10 +362,10 @@ pub extern "C" fn _start() -> ! {
     process::scheduler::init();
     crate::sem::init(); // Initialize Semantic Core
 
-    // Initialize Multi-Kernel Orchestrator & BSD Subsystems
+    // Initialize Multi-Kernel Orchestrator & ExtOS Subsystems
     crate::microkernel::init();
-    crate::bsd_compat::init();
-    crate::bsd_rust::init();
+    crate::extos_compat::init();
+    crate::extos_rust::init();
 
     let _ = write!(serial, "Sovereign Runtime: Cell Manager & Scheduler Initialized.\n");
 

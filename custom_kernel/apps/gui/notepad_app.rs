@@ -60,7 +60,7 @@ pub fn notepad_main() {
         }
         
         for _ in 0..50 {
-            crate::process::scheduler::yield_now();
+            crate::process::scheduler::sleep(1);
         }
     }
 }

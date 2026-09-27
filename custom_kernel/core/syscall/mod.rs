@@ -4,6 +4,9 @@
 use core::arch::asm;
 use core::arch::global_asm;
 
+pub mod linux_compat;
+pub mod bsd_compat;
+
 pub const SYS_READ: usize = 0;
 pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
@@ -29,11 +32,16 @@ pub extern "C" fn syscall_handler(
     if sys_num_i < 0 {
         crate::microkernel::ipc::handle_mach_trap(sys_num_i, arg1, arg2, arg3, arg4, arg5, arg6) as usize
     } else {
-        handle_bsd_syscall(sys_num, arg1, arg2, arg3, arg4, arg5, arg6)
+        let abi = crate::process::scheduler::current_abi();
+        match abi {
+            crate::process::task::AbiType::AinuxNative => handle_extos_syscall(sys_num, arg1, arg2, arg3, arg4, arg5, arg6),
+            crate::process::task::AbiType::LinuxCompat => linux_compat::handle_linux_syscall(sys_num, arg1, arg2, arg3, arg4, arg5, arg6),
+            crate::process::task::AbiType::BsdCompat => bsd_compat::handle_bsd_syscall(sys_num, arg1, arg2, arg3, arg4, arg5, arg6),
+        }
     }
 }
 
-fn handle_bsd_syscall(
+pub fn handle_extos_syscall(
     sys_num: usize,
     arg1: usize,
     arg2: usize,
@@ -66,15 +74,7 @@ fn handle_bsd_syscall(
             
             let slice = unsafe { core::slice::from_raw_parts(buf, len) };
             
-            // For now, if writing to stdout (fd=1) or stderr (fd=2), output to serial/VGA
-            if fd == 1 || fd == 2 {
-                if let Ok(s) = core::str::from_utf8(slice) {
-                    crate::print!("{}", s);
-                }
-                len
-            } else {
-                crate::process::scheduler::process_write(fd, slice) as usize
-            }
+            crate::process::scheduler::process_write(fd, slice) as usize
         }
         SYS_OPEN => {
             let path_ptr = arg1 as *const u8;

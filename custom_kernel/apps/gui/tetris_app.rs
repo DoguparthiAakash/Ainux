@@ -302,6 +302,6 @@ pub fn tetris_main() {
             });
         }
         
-        crate::process::scheduler::yield_now();
+        crate::process::scheduler::sleep(1);
     }
 }

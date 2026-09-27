@@ -309,6 +309,6 @@ pub fn game2048_main() {
             });
         }
         
-        crate::process::scheduler::yield_now();
+        crate::process::scheduler::sleep(1);
     }
 }

@@ -1,5 +1,5 @@
 // =============================================================================
-// Advanced Unix/BSD Management & Security (Sysctl)
+// Advanced BaseOS/ExtOS Management & Security (Sysctl)
 // =============================================================================
 
 use spin::Mutex;

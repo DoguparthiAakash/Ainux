@@ -419,7 +419,12 @@ impl Compositor {
                         let dx = sx - w.x;
                         let src_idx = (dy * w.width + dx) as usize;
                         let dst_idx = (sy * self.width as i32 + sx) as usize;
-                        self.backbuffer[dst_idx] = w.buffer[src_idx];
+                        if w.buffer_ptr != 0 && src_idx < w.buffer_len {
+                            let src_ptr = w.buffer_ptr as *const u32;
+                            unsafe {
+                                self.backbuffer[dst_idx] = *src_ptr.add(src_idx);
+                            }
+                        }
                     }
                 }
             }
@@ -693,23 +698,13 @@ impl Compositor {
                 continue;
             }
             
-            // Handle right click
-            if is_right_down && !self.mouse_right_down {
-                let mut clicked_idx = None;
-                for (i, icon) in self.desktop_icons.iter().enumerate() {
-                    if self.mouse_x >= icon.x && self.mouse_x <= icon.x + 48 && self.mouse_y >= icon.y && self.mouse_y <= icon.y + 60 {
-                        clicked_idx = Some(i);
-                        break;
-                    }
-                }
-                self.context_menu_open = true;
-                self.context_menu_x = self.mouse_x;
-                self.context_menu_y = self.mouse_y;
-                self.context_menu_target = clicked_idx;
-            }
-            
             // Handle clicking & dragging
-            if is_down && !self.mouse_left_down {
+            let just_pressed_left = is_down && !self.mouse_left_down;
+            let just_pressed_right = is_right_down && !self.mouse_right_down;
+            
+            if just_pressed_left || just_pressed_right {
+                let btn = if just_pressed_right { 2 } else { 1 };
+                let is_left_click = btn == 1;
                 // Mouse just pressed
                 let mut handled = false;
                 
@@ -883,26 +878,40 @@ impl Compositor {
                     for i in (0..self.windows.len()).rev() {
                         let w = &mut self.windows[i];
                         
-                        if w.is_point_in_close_btn(self.mouse_x, self.mouse_y) {
+                        if w.is_point_in_close_btn(self.mouse_x, self.mouse_y) && is_left_click {
                             action = Some((i, 0)); // 0 = close
                             break;
-                        } else if w.is_point_in_max_btn(self.mouse_x, self.mouse_y) {
+                        } else if w.is_point_in_max_btn(self.mouse_x, self.mouse_y) && is_left_click {
                             action = Some((i, 1)); // 1 = maximize
                             break;
                         } else if let Some(edge) = w.check_resize_zone(self.mouse_x, self.mouse_y) {
-                            self.resized_window = Some(i);
-                            self.active_edge = Some(edge);
+                            if is_left_click {
+                                self.resized_window = Some(i);
+                                self.active_edge = Some(edge);
+                            }
                             action = Some((i, 3)); // 3 = bring to front
                             break;
                         } else if w.is_point_in_titlebar(self.mouse_x, self.mouse_y) {
-                            self.dragged_window = Some(i);
-                            w.drag_offset_x = self.mouse_x - w.x;
-                            w.drag_offset_y = self.mouse_y - w.y;
-                            
+                            if is_left_click {
+                                self.dragged_window = Some(i);
+                                w.drag_offset_x = self.mouse_x - w.x;
+                                w.drag_offset_y = self.mouse_y - w.y;
+                            }
                             action = Some((i, 3)); // 3 = bring to front
                             break; // Stop checking lower windows
                         } else if w.is_point_inside(self.mouse_x, self.mouse_y) && w.state != WindowState::Minimized {
-                            // Event dispatching to be handled by Window Manager API
+                            let rel_x = self.mouse_x - w.x;
+                            let rel_y = self.mouse_y - w.y - 24; // offset titlebar
+                            if rel_y >= 0 {
+                                crate::gui::wm::WINDOW_EVENTS.lock().push((
+                                    w.id,
+                                    crate::gui::wm::GuiEvent::MouseClick {
+                                        x: rel_x,
+                                        y: rel_y,
+                                        button: btn
+                                    }
+                                ));
+                            }
                             
                             action = Some((i, 3)); // 3 = bring to front
                             break; // Stop checking lower windows
@@ -920,7 +929,6 @@ impl Compositor {
                                 w.y = w.restore_y;
                                 w.width = w.restore_width;
                                 w.height = w.restore_height;
-                                w.buffer = alloc::vec![0xFFFFFF; (w.width * w.height) as usize];
                             } else {
                                 w.state = WindowState::Maximized;
                                 w.restore_x = w.x;
@@ -931,7 +939,6 @@ impl Compositor {
                                 w.y = 24;
                                 w.width = self.width as i32;
                                 w.height = self.height as i32 - 30 - 24;
-                                w.buffer = alloc::vec![0xFFFFFF; (w.width * w.height) as usize];
                             }
                             let win = self.windows.remove(i);
                             self.windows.push(win);
@@ -942,7 +949,7 @@ impl Compositor {
                             self.windows.push(win);
                         }
                     } else {
-                        // Desktop icon clicking
+                        // Desktop click
                         let mut clicked_idx = None;
                         for (i, icon) in self.desktop_icons.iter().enumerate() {
                             if self.mouse_x >= icon.x && self.mouse_x <= icon.x + 48 && self.mouse_y >= icon.y && self.mouse_y <= icon.y + 60 {
@@ -951,7 +958,12 @@ impl Compositor {
                             }
                         }
                         
-                        if let Some(idx) = clicked_idx {
+                        if btn == 2 {
+                            self.context_menu_open = true;
+                            self.context_menu_x = self.mouse_x;
+                            self.context_menu_y = self.mouse_y;
+                            self.context_menu_target = clicked_idx;
+                        } else if let Some(idx) = clicked_idx {
                             let current_ticks = crate::process::scheduler::get_ticks();
                             if self.last_clicked_icon == Some(idx) && (current_ticks - self.last_click_ticks) < 50 {
                                 // Double click
@@ -1032,7 +1044,6 @@ impl Compositor {
                         w.y = new_y;
                         w.width = new_w;
                         w.height = new_h;
-                        w.buffer = alloc::vec![0xFFFFFF; (new_w * new_h) as usize];
                     }
                 }
             }
@@ -1072,7 +1083,10 @@ impl Compositor {
                 return false;
             } else {
                 if let Some(w) = self.windows.last_mut() {
-                    // Event dispatching to be handled by Window Manager API
+                    crate::gui::wm::WINDOW_EVENTS.lock().push((
+                        w.id,
+                        crate::gui::wm::GuiEvent::KeyPress { key: c }
+                    ));
                     needs_redraw = true;
                 }
             }
@@ -1093,8 +1107,7 @@ impl Compositor {
                     crate::gui::wm::GuiMessage::UpdateBuffer { id, buffer_ptr } => {
                         for win in &mut self.windows {
                             if win.id == id {
-                                let slice = unsafe { core::slice::from_raw_parts(buffer_ptr as *const u32, win.buffer.len()) };
-                                win.buffer.copy_from_slice(slice);
+                                win.buffer_ptr = buffer_ptr;
                                 needs_redraw = true;
                                 break;
                             }
@@ -1110,7 +1123,7 @@ impl Compositor {
 
         let current_ticks = crate::process::scheduler::get_ticks();
         
-        if needs_redraw || (current_ticks.saturating_sub(self.last_redraw_ticks) >= 5) {
+        if needs_redraw {
             for r in &self.last_frame_rects {
                 self.dirty_rects.push(*r);
             }

@@ -49,7 +49,7 @@ func kmain() {
     serial::puts("\n");
     serial::puts("╔══════════════════════════════════════════════════╗\n");
     serial::puts("║          AINUX KERNEL v0.3 (Pure Nux)            ║\n");
-    serial::puts("║    Advanced Interrupt & Nucleus Unix eXtended    ║\n");
+    serial::puts("║    Advanced Interrupt & Nucleus BaseOS eXtended    ║\n");
     serial::puts("╚══════════════════════════════════════════════════╝\n");
     serial::puts("\n");
 

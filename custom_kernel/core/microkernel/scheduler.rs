@@ -6,8 +6,8 @@ use spin::Mutex;
 pub enum KernelType {
     /// The primary monolithic OS core (Mithl OS). Runs with highest priority.
     MonolithicCore,
-    /// A sibling kernel for BSD subsystems (Networking, Security).
-    BSDHybrid,
+    /// A sibling kernel for ExtOS subsystems (Networking, Security).
+    ExtOSHybrid,
     /// A lightweight hypervisor-level task.
     MicroTask,
 }
@@ -100,7 +100,7 @@ pub extern "C" fn microkernel_schedule(old_rsp: u64) -> u64 {
 
     // Priority + Round Robin Scheduling Algorithm:
     // 1. Try to schedule the Monolithic Core (highest priority) 75% of the time.
-    // 2. Schedule BSD / MicroTasks in a round-robin fashion the other 25% of the time.
+    // 2. Schedule ExtOS / MicroTasks in a round-robin fashion the other 25% of the time.
     
     // For this stub, we implement a simple round-robin favoring ID 0 (Monolithic).
     let mut next_id = (current_id + 1) % envs.len();

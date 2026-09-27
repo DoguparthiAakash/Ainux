@@ -46,7 +46,7 @@ pub fn run() {
             break;
         }
         
-        crate::hlt();
+        crate::process::scheduler::sleep(1);
     }
     
     // Clear screen on exit

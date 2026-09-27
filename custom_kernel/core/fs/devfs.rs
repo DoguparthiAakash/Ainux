@@ -36,13 +36,14 @@ impl Inode for DevFsRoot {
             "urandom" => Ok(Arc::new(DevURandom)),
             "dri" => Ok(Arc::new(DriDir)),
             "fb0" => Ok(Arc::new(DevFb0)),
+            "tty" => Ok(Arc::new(DevTty)),
             _ => Err(VfsError::NotFound),
         }
     }
     fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> { Err(VfsError::IsADirectory) }
     fn create(&self, _name: &str, _type: FileType) -> VfsResult<ArcInode> { Err(VfsError::PermissionDenied) }
     fn read_dir(&self) -> VfsResult<Vec<String>> {
-        Ok(alloc::vec![String::from("null"), String::from("zero"), String::from("urandom"), String::from("dri"), String::from("fb0")])
+        Ok(alloc::vec![String::from("null"), String::from("zero"), String::from("urandom"), String::from("dri"), String::from("fb0"), String::from("tty")])
     }
     fn mkdir(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::PermissionDenied) }
     fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
@@ -343,4 +344,53 @@ impl FileHandle for DevFb0Handle {
             Err(VfsError::NotFound)
         }
     }
+}
+
+// /dev/tty
+#[derive(Debug)]
+pub struct DevTty;
+
+impl KernelObject for DevTty {
+    fn id(&self) -> usize { 0 }
+    fn object_type(&self) -> &'static str { "Device" }
+    fn name(&self) -> String { String::from("DevTty") }
+    fn snapshot(&self) -> Result<crate::object::ObjectSnapshot, &str> { Err("Not implemented") }
+    fn restore(&self, _snapshot: crate::object::ObjectSnapshot) -> Result<(), &str> { Err("Not implemented") }
+}
+
+impl Inode for DevTty {
+    fn inode_num(&self) -> u32 { 8 }
+    fn stat(&self) -> VfsResult<FileStat> {
+        Ok(FileStat { size: 0, file_type: FileType::Device, mode: 0o666, uid: 0, gid: 0, mtime: 0 })
+    }
+    fn lookup(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn open(&self, _mode: u32) -> VfsResult<Arc<dyn FileHandle>> { Ok(Arc::new(DevTtyHandle)) }
+    fn create(&self, _name: &str, _type: FileType) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn read_dir(&self) -> VfsResult<Vec<String>> { Err(VfsError::NotADirectory) }
+    fn mkdir(&self, _name: &str) -> VfsResult<ArcInode> { Err(VfsError::NotADirectory) }
+    fn unlink(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn remove_dir(&self, _name: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn rename(&self, _o: &str, _np: ArcInode, _nn: &str) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn link(&self, _name: &str, _inode: ArcInode) -> VfsResult<()> { Err(VfsError::PermissionDenied) }
+    fn chmod(&self, _mode: u16) -> VfsResult<()> { Ok(()) }
+    fn chown(&self, _uid: u16, _gid: u16) -> VfsResult<()> { Ok(()) }
+}
+
+#[derive(Debug)]
+pub struct DevTtyHandle;
+
+impl FileHandle for DevTtyHandle {
+    fn read(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        // TTY reading could read from current keyboard buffer.
+        // For now, return 0 (EOF) until we implement a line discipline buffer.
+        Ok(0)
+    }
+    fn write(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        if let Ok(s) = core::str::from_utf8(buf) {
+            crate::print!("{}", s);
+        }
+        Ok(buf.len())
+    }
+    fn truncate(&self) -> VfsResult<()> { Ok(()) }
+    fn close(&self) -> VfsResult<()> { Ok(()) }
 }

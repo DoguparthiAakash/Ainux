@@ -125,11 +125,19 @@ pub unsafe extern "C" fn mouse_handler_addr() -> u64 {
 }
 
 unsafe fn wait_write() {
-    while (inb(0x64) & 2) != 0 {}
+    let mut timeout = 100000;
+    while (inb(0x64) & 2) != 0 && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
 }
 
 unsafe fn wait_read() {
-    while (inb(0x64) & 1) == 0 {}
+    let mut timeout = 100000;
+    while (inb(0x64) & 1) == 0 && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
 }
 
 unsafe fn mouse_write(byte: u8) {

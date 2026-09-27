@@ -4930,7 +4930,7 @@ fn cmd_fdisk() {
             let end = lba_first + sectors - 1;
             
             let type_str = match part_type {
-                0x83 => "Linux",
+                0x83 => "LegacyOS",
                 0x07 => "HPFS/NTFS",
                 0x0C | 0x0B => "W95 FAT32",
                 0xEE => "GPT Protective",
