@@ -70,7 +70,7 @@ pub fn tick() {
     let mut tasks = TASKS.lock();
     
     // Wake up sleeping tasks
-    for i in 1..MAX_TASKS {
+    for i in 0..MAX_TASKS {
         if let Some(task) = &mut tasks[i] {
             if task.state == TaskState::Waiting && task.sleep_ticks > 0 && current_ticks >= task.sleep_ticks {
                 task.sleep_ticks = 0;

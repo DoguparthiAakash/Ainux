@@ -367,6 +367,7 @@ pub extern "C" fn _start() -> ! {
     crate::extos_compat::init();
     crate::extos_rust::init();
     crate::kpi::aaa::init();
+    crate::kpi::wm::init();
 
     let _ = write!(serial, "Sovereign Runtime: Cell Manager & Scheduler Initialized.\n");
 

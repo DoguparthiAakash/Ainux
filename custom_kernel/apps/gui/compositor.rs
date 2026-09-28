@@ -658,7 +658,7 @@ impl Compositor {
         let old_mouse_x = self.mouse_x;
         let old_mouse_y = self.mouse_y;
         
-        let mut needs_redraw = false;
+        let mut needs_redraw = self.full_redraw;
         let mut mouse_moved = false;
         
         while let Some(mev) = mouse::pop_event() {
