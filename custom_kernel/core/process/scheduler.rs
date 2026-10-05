@@ -702,44 +702,98 @@ pub fn process_close(fd: usize) -> isize {
     })
 }
 
-pub fn process_mmap(addr: u64, length: u64, prot: u32, flags: u32, _fd: i32, _offset: u64) -> isize {
-    // Only support anonymous mapping for now (MAP_ANONYMOUS = 0x20)
+pub fn process_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i32, offset: u64) -> isize {
     let map_anonymous = 0x20;
-    if (flags & map_anonymous) == 0 {
-        return usize::MAX as isize; // -ENODEV or -EINVAL
-    }
     
-    crate::cpu::without_interrupts(|| {
-        let mut tasks = TASKS.lock();
-        let current_pid = crate::cpu::smp::get_current_pid();
-        if let Some(task) = &mut tasks[current_pid] {
-            let num_pages = (length + 0xFFF) / 0x1000;
-            let target_addr = if addr == 0 {
-                let start = task.mmap_base;
-                task.mmap_base += num_pages * 0x1000;
-                start
+    // MAP_ANONYMOUS
+    if (flags & map_anonymous) != 0 {
+        crate::cpu::without_interrupts(|| {
+            let mut tasks = TASKS.lock();
+            let current_pid = crate::cpu::smp::get_current_pid();
+            if let Some(task) = &mut tasks[current_pid] {
+                let num_pages = (length + 0xFFF) / 0x1000;
+                let target_addr = if addr == 0 {
+                    let start = task.mmap_base;
+                    task.mmap_base += num_pages * 0x1000;
+                    start
+                } else {
+                    addr
+                };
+                
+                // Map the pages
+                for i in 0..num_pages {
+                    let virt = target_addr + i * 0x1000;
+                    // vmm_flags: USER = 4, WRITE = 2, PRESENT = 1 -> 0x07
+                    let vmm_flags = 0x07; 
+                    let _ = unsafe { crate::mm::vmm::map_page_allocate_in_pml4(task.cr3, virt, vmm_flags) };
+                }
+                
+                // Zero the memory since it's an anonymous mapping
+                unsafe {
+                    core::ptr::write_bytes(target_addr as *mut u8, 0, (num_pages * 0x1000) as usize);
+                }
+                
+                target_addr as isize
             } else {
-                addr
-            };
-            
-            // Map the pages
-            for i in 0..num_pages {
-                let virt = target_addr + i * 0x1000;
-                // vmm_flags: USER = 4, WRITE = 2, PRESENT = 1 -> 0x07
-                let vmm_flags = 0x07; 
-                let _ = unsafe { crate::mm::vmm::map_page_allocate_in_pml4(task.cr3, virt, vmm_flags) };
+                usize::MAX as isize
             }
-            
-            // Zero the memory since it's an anonymous mapping
-            unsafe {
-                core::ptr::write_bytes(target_addr as *mut u8, 0, (num_pages * 0x1000) as usize);
+        })
+    } else {
+        // File-backed mapping
+        if fd < 0 {
+            return usize::MAX as isize;
+        }
+        
+        let current_pid = crate::cpu::smp::get_current_pid();
+        
+        let mmap_res = crate::cpu::without_interrupts(|| {
+            let tasks = TASKS.lock();
+            if let Some(task) = &tasks[current_pid] {
+                if let Some(entry) = task.fds.get_entry(fd as usize) {
+                    Some(entry.handle.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
             }
-            
-            target_addr as isize
+        });
+        
+        if let Some(handle) = mmap_res {
+            match handle.mmap(offset, length as usize) {
+                Ok(Some(phys_addr)) => {
+                    let num_pages = (length + 0xFFF) / 0x1000;
+                    crate::cpu::without_interrupts(|| {
+                        let mut tasks = TASKS.lock();
+                        if let Some(task) = &mut tasks[current_pid] {
+                            let target_addr = if addr == 0 {
+                                let start = task.mmap_base;
+                                task.mmap_base += num_pages * 0x1000;
+                                start
+                            } else {
+                                addr
+                            };
+                            
+                            // Map the pages directly to physical address
+                            for i in 0..num_pages {
+                                let virt = target_addr + i * 0x1000;
+                                let phys = phys_addr + i * 0x1000;
+                                let vmm_flags = 0x0F; // USER | WRITE | PRESENT | WRITE_THROUGH (PAT1 = WC)
+                                unsafe { crate::mm::vmm::map_page_in_pml4(task.cr3, virt, phys, vmm_flags); }
+                            }
+                            
+                            target_addr as isize
+                        } else {
+                            usize::MAX as isize
+                        }
+                    })
+                }
+                _ => usize::MAX as isize,
+            }
         } else {
             usize::MAX as isize
         }
-    })
+    }
 }
 
 pub fn exit_current_task(exit_code: isize) {

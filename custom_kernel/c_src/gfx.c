@@ -99,9 +99,7 @@ void gfx_clear(uint32_t color) {
     if (fb_bpp == 32) {
         uint32_t *dest = (uint32_t *)fb_addr;
         uint64_t pixels = (fb_height * fb_pitch) / 4;
-        for (uint64_t i = 0; i < pixels; i++) {
-            dest[i] = color;
-        }
+        __asm__ volatile("rep stosl" : "+D"(dest), "+c"(pixels) : "a"(color) : "memory");
     } else if (fb_bpp == 24) {
         uint64_t total = fb_height * fb_pitch;
         for (uint64_t i = 0; i < total; i += 3) {
@@ -246,10 +244,11 @@ void gfx_blit_buffer_opaque(const uint32_t *src, int x, int y, int w, int h, int
         int src_offset = j * src_stride + start_x;
         
         if (fb_bpp == 32) {
-            // Direct memory copy (allows CPU to use ERMS and proper Write-Combining bursts)
-            for (int i = 0; i < draw_w; i++) {
-                ((uint32_t*)(fb_addr + dest_offset))[i] = src[src_offset + i];
-            }
+            // Direct memory copy using rep movsl (allows CPU to use ERMS and proper Write-Combining bursts)
+            uint32_t *d = (uint32_t*)(fb_addr + dest_offset);
+            const uint32_t *s = &src[src_offset];
+            uint32_t n = draw_w;
+            __asm__ volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
         } else if (fb_bpp == 24) {
             for (int i = 0; i < draw_w; i++) {
                 uint32_t color = src[src_offset + i];

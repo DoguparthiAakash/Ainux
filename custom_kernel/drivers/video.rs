@@ -504,8 +504,6 @@ pub fn put_char(c: char) {
     let bg = theme.bg;
     drop(theme);
     
-    crate::drivers::serial::SERIAL.lock().write_byte(c as u8);
-    
     put_char_colored(c, fg, bg);
 }
 
@@ -533,6 +531,8 @@ pub fn put_char_colored(c: char, fg: u32, bg: u32) {
             *y += 1;
             if *y >= height {
                 *y = height - 1;
+                drop(x);
+                drop(y);
                 scroll_screen(1);
             }
         } else if c == '\x08' {
@@ -558,7 +558,10 @@ pub fn put_char_colored(c: char, fg: u32, bg: u32) {
                 *y += 1;
                 if *y >= height {
                     *y = height - 1;
+                    drop(x);
+                    drop(y);
                     scroll_screen(1);
+                    return;
                 }
             }
             flush_region(old_x * 8, old_y * 12, 8, 12);

@@ -413,16 +413,19 @@ impl Compositor {
                 by2 = by2.min(c.y + c.h);
             }
             if bx1 < bx2 && by1 < by2 {
-                for sy in by1..by2 {
-                    let dy = sy - w.y;
-                    for sx in bx1..bx2 {
-                        let dx = sx - w.x;
+                if w.buffer_ptr != 0 {
+                    let src_ptr = w.buffer_ptr as *const u32;
+                    let copy_width = (bx2 - bx1) as usize;
+                    for sy in by1..by2 {
+                        let dy = sy - w.y;
+                        let dx = bx1 - w.x;
                         let src_idx = (dy * w.width + dx) as usize;
-                        let dst_idx = (sy * self.width as i32 + sx) as usize;
-                        if w.buffer_ptr != 0 && src_idx < w.buffer_len {
-                            let src_ptr = w.buffer_ptr as *const u32;
+                        let dst_idx = (sy * self.width as i32 + bx1) as usize;
+                        
+                        if src_idx + copy_width <= w.buffer_len && dst_idx + copy_width <= self.backbuffer.len() {
                             unsafe {
-                                self.backbuffer[dst_idx] = *src_ptr.add(src_idx);
+                                let src_slice = core::slice::from_raw_parts(src_ptr.add(src_idx), copy_width);
+                                self.backbuffer[dst_idx..dst_idx + copy_width].copy_from_slice(src_slice);
                             }
                         }
                     }

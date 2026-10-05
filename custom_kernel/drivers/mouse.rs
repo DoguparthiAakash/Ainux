@@ -113,6 +113,18 @@ pub fn init() {
         mouse_write(0xF6); // Set Default
         mouse_read(); 
         
+        // Set Sample Rate to 200 packets/sec for smoother movement
+        mouse_write(0xF3);
+        mouse_read();
+        mouse_write(200);
+        mouse_read();
+        
+        // Set Resolution to 8 counts/mm for faster tracking
+        mouse_write(0xE8);
+        mouse_read();
+        mouse_write(0x03);
+        mouse_read();
+        
         mouse_write(0xF4); // Enable Streaming
         mouse_read(); 
 
@@ -196,8 +208,24 @@ extern "C" fn rust_mouse_handler() {
                 MOUSE_CYCLE = 0;
                 
                 let flags = MOUSE_BYTE[0];
-                let dx = (MOUSE_BYTE[1] as i8) as isize;
-                let dy = (MOUSE_BYTE[2] as i8) as isize;
+                
+                // PS/2 mouse movement is 9-bit two's complement.
+                // The lower 8 bits are in MOUSE_BYTE[1] and [2].
+                // The 9th (sign) bit is in flags.
+                let mut dx = MOUSE_BYTE[1] as isize;
+                let mut dy = MOUSE_BYTE[2] as isize;
+                
+                if (flags & 0x10) != 0 {
+                    dx |= -256; // Sign extend if negative
+                }
+                if (flags & 0x20) != 0 {
+                    dy |= -256; // Sign extend if negative
+                }
+                
+                // Increase sensitivity
+                let sensitivity = 3;
+                dx *= sensitivity;
+                dy *= sensitivity;
                 
                 update_position(dx, dy, flags & 0x07);
             }
