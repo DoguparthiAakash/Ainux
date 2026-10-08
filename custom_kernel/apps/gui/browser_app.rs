@@ -43,7 +43,7 @@ impl BrowserApp {
 }
 
 pub fn browser_main() {
-    let id = 7;
+    let id = crate::gui::wm::generate_window_id();
     let width = 640;
     let height = 480;
     
@@ -63,6 +63,7 @@ pub fn browser_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::MouseClick { .. } => {}
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     if c == '\n' {

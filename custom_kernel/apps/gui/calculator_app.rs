@@ -14,7 +14,7 @@ impl CalculatorApp {
 }
 
 pub fn calculator_main() {
-    let id = 8;
+    let id = crate::gui::wm::generate_window_id();
     let width = 300;
     let height = 250;
     
@@ -34,6 +34,7 @@ pub fn calculator_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::MouseClick { .. } => {}
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     if c == 'c' || c == 'C' {

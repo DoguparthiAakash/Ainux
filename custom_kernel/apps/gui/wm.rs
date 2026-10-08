@@ -1,11 +1,18 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
 
+static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(100);
+
+pub fn generate_window_id() -> u32 {
+    NEXT_WINDOW_ID.fetch_add(1, Ordering::SeqCst)
+}
 #[derive(Clone)]
 pub enum GuiEvent {
     MouseClick { x: i32, y: i32, button: u8 },
     KeyPress { key: char },
+    WindowClosed,
 }
 
 pub enum GuiMessage {

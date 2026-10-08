@@ -1,0 +1,41 @@
+name: Ainux Kernel CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  LINK_ARGS: "-C code-model=kernel -C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000 -C link-arg=-Tlinker.ld"
+
+jobs:
+  build-kernel:
+    name: Build Custom Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm build-essential qemu-system-x86
+
+    - name: Setup Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: nightly
+        targets: x86_64-unknown-none
+
+    - name: Build Kernel
+      working-directory: ./custom_kernel
+      run: |
+        CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="$LINK_ARGS" cargo build --release --target x86_64-unknown-none
+
+    - name: Build Userspace Programs
+      working-directory: ./custom_kernel/user_space
+      run: |
+        RUSTFLAGS="-C relocation-model=static -C link-arg=-z -C link-arg=max-page-size=0x1000" cargo build --release --target x86_64-unknown-none

@@ -126,12 +126,12 @@ impl FileManagerApp {
 }
 
 pub fn file_manager_main() {
-    let id = 2; // Fixed ID for file manager, or passed via parameter? Let's just use 22
+    let id = crate::gui::wm::generate_window_id(); // Fixed ID for file manager, or passed via parameter? Let's just use 22
     let width = 400;
     let height = 300;
     
     crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
-        id: 22,
+        id,
         title: alloc::string::String::from("MithlFS Explorer"),
         x: 150,
         y: 150,
@@ -143,8 +143,9 @@ pub fn file_manager_main() {
     let mut app = FileManagerApp::new();
     
     loop {
-        for event in crate::gui::wm::pop_events(22) {
+        for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     match c {
                         keyboard::KEY_UP => {
@@ -257,7 +258,7 @@ pub fn file_manager_main() {
             
             app.needs_redraw = false;
             crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
-                id: 22,
+                id,
                 buffer_ptr: buffer.as_ptr() as u64,
             });
         }

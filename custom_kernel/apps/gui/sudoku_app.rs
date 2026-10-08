@@ -59,7 +59,7 @@ impl SudokuApp {
 }
 
 pub fn sudoku_main() {
-    let id = 16;
+    let id = crate::gui::wm::generate_window_id();
     let width = 360;
     let height = 400;
     
@@ -78,6 +78,7 @@ pub fn sudoku_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     match c {
                         'w' | 'W' | keyboard::KEY_UP => { if app.cursor_y > 0 { app.cursor_y -= 1; app.needs_redraw = true; } },

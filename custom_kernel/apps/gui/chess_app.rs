@@ -113,7 +113,7 @@ impl ChessApp {
 }
 
 pub fn chess_main() {
-    let id = 15;
+    let id = crate::gui::wm::generate_window_id();
     let width = 360;
     let height = 400;
     
@@ -132,6 +132,7 @@ pub fn chess_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     let shift = keyboard::is_shift_active();
                     let up_dy = if app.white_turn { -1 } else { 1 };

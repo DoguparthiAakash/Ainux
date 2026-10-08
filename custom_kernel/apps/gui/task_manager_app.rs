@@ -86,7 +86,7 @@ impl TaskManagerApp {
 }
 
 pub fn task_manager_main() {
-    let id = 3;
+    let id = crate::gui::wm::generate_window_id();
     let width = 360;
     let height = 360;
     
@@ -106,6 +106,10 @@ pub fn task_manager_main() {
         // Handle events
         for ev in pop_events(id) {
             match ev {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
+                GuiEvent::WindowClosed => {
+                    return;
+                }
                 GuiEvent::MouseClick { x: _mx, y: my, button } => {
                     if button & 1 != 0 {
                         let list_y = 62;

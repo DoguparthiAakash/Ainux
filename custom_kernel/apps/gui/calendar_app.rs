@@ -132,7 +132,7 @@ impl CalendarApp {
 }
 
 pub fn calendar_main() {
-    let id = 11;
+    let id = crate::gui::wm::generate_window_id();
     let width = 300;
     let height = 240;
     
@@ -152,6 +152,7 @@ pub fn calendar_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     match c {
                         'a' | 'A' | '\x1B' => {  // left / prev month

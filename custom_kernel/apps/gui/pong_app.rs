@@ -88,7 +88,7 @@ impl PongApp {
 }
 
 pub fn pong_main() {
-    let id = 13;
+    let id = crate::gui::wm::generate_window_id();
     let width = 400;
     let height = 320;
     
@@ -107,6 +107,7 @@ pub fn pong_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     match c {
                         'w' | 'W' | keyboard::KEY_UP => { if app.p1_y > 0 { app.p1_y -= 2; app.needs_redraw = true; } },

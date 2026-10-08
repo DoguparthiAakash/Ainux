@@ -7,7 +7,7 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub fn terminal_main() {
-    let id = 1;
+    let id = crate::gui::wm::generate_window_id();
     let width = 500;
     let height = 350;
     
@@ -31,12 +31,16 @@ pub fn terminal_main() {
     
     let (reader, writer) = create_pipe();
     let reader_arc = reader as ArcHandle;
-    *crate::shell::CURRENT_OUT.lock() = Some(writer as ArcHandle);
+    let writer_arc = writer as ArcHandle;
+    *crate::shell::CURRENT_OUT.lock() = Some(writer_arc.clone());
     
     loop {
         let events = crate::gui::wm::pop_events(id);
         for ev in events {
             match ev {
+                crate::gui::wm::GuiEvent::WindowClosed => {
+                    return;
+                }
                 crate::gui::wm::GuiEvent::KeyPress { key } => {
                     if key == '\n' {
                         let cmd = current_line.clone();
@@ -48,7 +52,15 @@ pub fn terminal_main() {
                         if !cmd.trim().is_empty() {
                             lines.push(String::new());
                             // Execute synchronously for now (or offload to worker later)
+                            *crate::shell::CURRENT_OUT.lock() = Some(writer_arc.clone());
                             crate::shell::execute_command(&cmd);
+                            
+                            // Print a newline and the prompt to the pipe so it appears after output
+                            let _ = writer_arc.write(b"\n", 0);
+                            let prompt = crate::shell::get_prompt();
+                            let _ = writer_arc.write(prompt.as_bytes(), 0);
+                            
+                            *crate::shell::CURRENT_OUT.lock() = Some(writer_arc.clone());
                         } else {
                             lines.push(crate::shell::get_prompt());
                         }

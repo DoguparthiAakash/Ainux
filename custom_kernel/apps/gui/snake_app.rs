@@ -72,7 +72,7 @@ impl SnakeApp {
 }
 
 pub fn snake_main() {
-    let id = 17;
+    let id = crate::gui::wm::generate_window_id();
     let width = 400;
     let height = 300;
     
@@ -92,6 +92,7 @@ pub fn snake_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     match c {
                         'w' | 'W' | crate::drivers::keyboard::KEY_UP => if app.direction != Direction::Down { app.direction = Direction::Up },

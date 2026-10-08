@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::drivers::video;
 
 pub fn notepad_main() {
-    let id = 18;
+    let id = crate::gui::wm::generate_window_id();
     let width = 400;
     let height = 300;
     
@@ -24,6 +24,9 @@ pub fn notepad_main() {
         let mut dirty = true; // Always update initially
         for ev in events {
             match ev {
+                crate::gui::wm::GuiEvent::WindowClosed => {
+                    return;
+                }
                 crate::gui::wm::GuiEvent::KeyPress { key } => {
                     if key == '\x08' {
                         if !content.is_empty() {

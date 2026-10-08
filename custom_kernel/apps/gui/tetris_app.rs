@@ -192,7 +192,7 @@ impl TetrisApp {
 }
 
 pub fn tetris_main() {
-    let id = 12;
+    let id = crate::gui::wm::generate_window_id();
     let width = 280;
     let height = 400;
     
@@ -211,6 +211,7 @@ pub fn tetris_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     if app.game_over { continue; }
                     match c {

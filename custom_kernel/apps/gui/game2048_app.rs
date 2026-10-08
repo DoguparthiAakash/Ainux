@@ -215,7 +215,7 @@ impl Game2048App {
 }
 
 pub fn game2048_main() {
-    let id = 14;
+    let id = crate::gui::wm::generate_window_id();
     let width = 320;
     let height = 360;
     
@@ -234,6 +234,7 @@ pub fn game2048_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     if app.game_over { continue; }
                     let mut moved = false;

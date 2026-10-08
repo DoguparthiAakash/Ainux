@@ -93,7 +93,7 @@ impl MinesweeperApp {
 }
 
 pub fn minesweeper_main() {
-    let id = 9;
+    let id = crate::gui::wm::generate_window_id();
     let width = 240;
     let height = 260;
     
@@ -113,6 +113,7 @@ pub fn minesweeper_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
                     if app.game_over || app.won {
                         app = MinesweeperApp::new();

@@ -201,7 +201,7 @@ impl SettingsApp {
 }
 
 pub fn settings_main() {
-    let id = 5;
+    let id = crate::gui::wm::generate_window_id();
     let width = 480;
     let height = 400;
     
@@ -220,6 +220,7 @@ pub fn settings_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
                     if button & 1 == 0 { continue; }
 

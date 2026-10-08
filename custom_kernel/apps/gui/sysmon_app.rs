@@ -73,7 +73,7 @@ impl SysMonApp {
 }
 
 pub fn sysmon_main() {
-    let id = 4;
+    let id = crate::gui::wm::generate_window_id();
     let width = 300;
     let height = 250;
     
@@ -91,8 +91,14 @@ pub fn sysmon_main() {
     
     loop {
         // Drain events to avoid filling queue
-        for _ in crate::gui::wm::pop_events(id) {
-            // SysMon doesn't handle inputs right now
+        for ev in crate::gui::wm::pop_events(id) {
+            match ev {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
+                crate::gui::wm::GuiEvent::WindowClosed => {
+                    return;
+                }
+                _ => {}
+            }
         }
         
         let t = crate::process::scheduler::get_ticks();

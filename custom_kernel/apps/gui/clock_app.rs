@@ -113,7 +113,7 @@ impl ClockApp {
 }
 
 pub fn clock_main() {
-    let id = 10;
+    let id = crate::gui::wm::generate_window_id();
     let width = 360;
     let height = 140;
     
@@ -134,6 +134,7 @@ pub fn clock_main() {
         
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::KeyPress { key: c } => {
                     if c == 'r' || c == 'R' {
                         let (h, m, s) = read_rtc_time();

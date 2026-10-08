@@ -107,7 +107,14 @@ impl Compositor {
         add_icon("Terminal", include_bytes!("../../icons/terminal.bmp"));
         add_icon("Settings", include_bytes!("../../icons/settings.bmp"));
         add_icon("File Mgr", include_bytes!("../../icons/fileexplorer.bmp"));
-        add_icon("Games", include_bytes!("../../icons/games.bmp"));
+        add_icon("Notepad", include_bytes!("../../icons/notepad.bmp"));
+        add_icon("Clock", include_bytes!("../../icons/clock.bmp"));
+        add_icon("Calendar", include_bytes!("../../icons/calander.bmp"));
+        add_icon("Mines", include_bytes!("../../icons/mine.bmp"));
+        add_icon("Tetris", include_bytes!("../../icons/tetris.bmp"));
+        add_icon("Pong", include_bytes!("../../icons/pong.bmp"));
+        add_icon("Sys Mon", include_bytes!("../../icons/controlcenter.bmp"));
+        add_icon("Task Mgr", include_bytes!("../../icons/controlcenter.bmp"));
         add_icon("Task Mgr", include_bytes!("../../icons/discmanagement.bmp"));
         add_icon("Sys Mon", include_bytes!("../../icons/controlcenter.bmp"));
         add_icon("Paint", include_bytes!("../../icons/images.bmp"));
@@ -117,6 +124,12 @@ impl Compositor {
         add_icon("Pong", include_bytes!("../../icons/pong.bmp"));
         add_icon("Mines", include_bytes!("../../icons/mine.bmp"));
         add_icon("Browser", include_bytes!("../../icons/bookmark.bmp"));
+        add_icon("Notepad", include_bytes!("../../icons/notepad.bmp"));
+        add_icon("Calculator", include_bytes!("../../icons/sheetviewer.bmp"));
+        add_icon("Snake", include_bytes!("../../icons/game.bmp"));
+        add_icon("2048", include_bytes!("../../icons/game.bmp"));
+        add_icon("Sudoku", include_bytes!("../../icons/game.bmp"));
+        add_icon("Chess", include_bytes!("../../icons/game.bmp"));
         
         Self {
             dirty_rects: alloc::vec::Vec::new(),
@@ -413,19 +426,35 @@ impl Compositor {
                 by2 = by2.min(c.y + c.h);
             }
             if bx1 < bx2 && by1 < by2 {
-                if w.buffer_ptr != 0 {
+                if w.buffer_ptr != 0 && w.buffer_width > 0 && w.buffer_height > 0 {
                     let src_ptr = w.buffer_ptr as *const u32;
                     let copy_width = (bx2 - bx1) as usize;
                     for sy in by1..by2 {
                         let dy = sy - w.y;
-                        let dx = bx1 - w.x;
-                        let src_idx = (dy * w.width + dx) as usize;
-                        let dst_idx = (sy * self.width as i32 + bx1) as usize;
+                        let src_y = (dy * w.buffer_height) / w.height;
                         
-                        if src_idx + copy_width <= w.buffer_len && dst_idx + copy_width <= self.backbuffer.len() {
-                            unsafe {
-                                let src_slice = core::slice::from_raw_parts(src_ptr.add(src_idx), copy_width);
-                                self.backbuffer[dst_idx..dst_idx + copy_width].copy_from_slice(src_slice);
+                        let dst_idx_start = (sy * self.width as i32 + bx1) as usize;
+                        let dx_start = bx1 - w.x;
+                        
+                        if w.width == w.buffer_width && w.height == w.buffer_height {
+                            let src_idx = (src_y * w.buffer_width + dx_start) as usize;
+                            if src_idx + copy_width <= w.buffer_len && dst_idx_start + copy_width <= self.backbuffer.len() {
+                                unsafe {
+                                    let src_slice = core::slice::from_raw_parts(src_ptr.add(src_idx), copy_width);
+                                    self.backbuffer[dst_idx_start..dst_idx_start + copy_width].copy_from_slice(src_slice);
+                                }
+                            }
+                        } else {
+                            for (i, dx) in (dx_start..dx_start + copy_width as i32).enumerate() {
+                                let src_x = (dx * w.buffer_width) / w.width;
+                                let src_idx = (src_y * w.buffer_width + src_x) as usize;
+                                let dst_idx = dst_idx_start + i;
+                                
+                                if src_idx < w.buffer_len && dst_idx < self.backbuffer.len() {
+                                    unsafe {
+                                        self.backbuffer[dst_idx] = *src_ptr.add(src_idx);
+                                    }
+                                }
                             }
                         }
                     }
@@ -497,7 +526,21 @@ impl Compositor {
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height, curr_x, curr_y, iw, ih, color, clip_opt);
             
             // Draw Icon
-            if let Some(icon) = self.desktop_icons.iter().find(|ic| ic.name == w.title) {
+            let icon_name = match w.title.as_str() {
+                "Mithl Terminal" => "Terminal",
+                "MithlFS Explorer" => "File Mgr",
+                "System Monitor" => "Sys Mon",
+                "Minesweeper" => "Mines",
+                "Task Manager" => "Task Mgr",
+                "Notepad" => "Notepad",
+                "Clock" => "Clock",
+                "Calendar" => "Calendar",
+                "Tetris" => "Tetris",
+                "Pong" => "Pong",
+                "Settings" => "Settings",
+                other => other,
+            };
+            if let Some(icon) = self.desktop_icons.iter().find(|ic| ic.name == icon_name) {
                 let draw_w = 16;
                 let draw_h = 16;
                 let scale_x_mul = (icon.bmp.width * 1024) / draw_w;
@@ -923,7 +966,8 @@ impl Compositor {
                     
                     if let Some((i, act)) = action {
                         if act == 0 {
-                            self.windows.remove(i);
+                            let w = self.windows.remove(i);
+                            crate::gui::wm::WINDOW_EVENTS.lock().push((w.id, crate::gui::wm::GuiEvent::WindowClosed));
                         } else if act == 1 {
                             let w = &mut self.windows[i];
                             if w.state == WindowState::Maximized {
@@ -968,11 +1012,30 @@ impl Compositor {
                             self.context_menu_target = clicked_idx;
                         } else if let Some(idx) = clicked_idx {
                             let current_ticks = crate::process::scheduler::get_ticks();
-                            if self.last_clicked_icon == Some(idx) && (current_ticks - self.last_click_ticks) < 50 {
+                            if self.last_clicked_icon == Some(idx) && (current_ticks - self.last_click_ticks) < 100 {
                                 // Double click
                                 let app_name = self.desktop_icons[idx].name.clone();
-                                let mut win = Window::new((self.windows.len() + 1) as u32, &app_name, 100, 100, 400, 300);
-                                self.windows.push(win);
+                                match app_name.as_str() {
+                                    "Terminal" => crate::apps::gui_apps::launch_terminal(self),
+                                    "Settings" => crate::apps::gui_apps::launch_settings(self),
+                                    "File Mgr" => crate::apps::gui_apps::launch_file_manager(self),
+                                    "Task Mgr" => crate::apps::gui_apps::launch_task_manager(self),
+                                    "Sys Mon" => crate::apps::gui_apps::launch_sysmon(self),
+                                    "Paint" => crate::apps::gui_apps::launch_paint(self),
+                                    "Clock" => crate::apps::gui_apps::launch_clock(self),
+                                    "Calendar" => crate::apps::gui_apps::launch_calendar(self),
+                                    "Tetris" => crate::apps::gui_apps::launch_tetris(self),
+                                    "Pong" => crate::apps::gui_apps::launch_pong(self),
+                                    "Mines" => crate::apps::gui_apps::launch_minesweeper(self),
+                                    "Browser" => crate::apps::gui_apps::launch_browser(self),
+                                    "Notepad" => crate::apps::gui_apps::launch_notepad(self),
+                                    "Calculator" => crate::apps::gui_apps::launch_calculator(self),
+                                    "Snake" => crate::apps::gui_apps::launch_snake(self),
+                                    "2048" => crate::apps::gui_apps::launch_2048(self),
+                                    "Sudoku" => crate::apps::gui_apps::launch_sudoku(self),
+                                    "Chess" => crate::apps::gui_apps::launch_chess(self),
+                                    _ => {} // Fallback for things like "Games" folder
+                                }
                                 self.last_clicked_icon = None;
                             } else {
                                 // Single click -> Select / Drag

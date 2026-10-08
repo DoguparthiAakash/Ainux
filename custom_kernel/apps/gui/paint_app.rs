@@ -80,7 +80,7 @@ impl PaintApp {
 }
 
 pub fn paint_main() {
-    let id = 6;
+    let id = crate::gui::wm::generate_window_id();
     let width = 420;
     let height = 360;
     
@@ -100,6 +100,7 @@ pub fn paint_main() {
     loop {
         for event in crate::gui::wm::pop_events(id) {
             match event {
+                crate::gui::wm::GuiEvent::WindowClosed => { return; },
                 crate::gui::wm::GuiEvent::MouseClick { x, y, button } => {
                     let left_down = (button & 1) != 0;
 
