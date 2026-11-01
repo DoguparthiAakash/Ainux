@@ -150,7 +150,7 @@ impl SettingsApp {
         ];
 
         let labels = [
-            alloc::format!("System:       Ainux OS"),
+            alloc::format!("System:       Mithl OS"),
             alloc::format!("Version:      1.0.0-alpha"),
             alloc::format!("Architecture: x86_64"),
             uptime_str,
@@ -292,6 +292,7 @@ pub fn settings_main() {
                         _ => {}
                     }
                 }
+                _ => {}
             }
         }
         

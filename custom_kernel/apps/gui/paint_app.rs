@@ -141,6 +141,7 @@ pub fn paint_main() {
                     }
                 }
                 crate::gui::wm::GuiEvent::KeyPress { .. } => {}
+                _ => {}
             }
         }
         

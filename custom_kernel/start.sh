@@ -46,15 +46,80 @@ else
     echo "🌐  Network: User NAT with LAN Port Forward (8080, 9000)"
 fi
 
-# ── Audio configuration ──────────────────────────────────────────────────────
-AUDIO_DRIVER="none"
-if qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'sdl'; then
-    AUDIO_DRIVER="sdl"
-elif qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'pa'; then
-    AUDIO_DRIVER="pa"
+# ── Windows Host QEMU Detection (Direct Host Audio & WHPX) ───────────────────
+WIN_QEMU="/mnt/c/Program Files/qemu/qemu-system-x86_64.exe"
+if [ -f "$WIN_QEMU" ]; then
+    echo "🪟  Windows Host QEMU detected (/mnt/c/Program Files/qemu/qemu-system-x86_64.exe)"
+    echo "🔊  Audio: AC97 (Host DirectSound / SDL backend) + PC Speaker"
+    
+    # Check WHPX accelerator
+    if "$WIN_QEMU" -accel whpx -m 64M -display none -version &>/dev/null; then
+        WIN_ACCEL="-accel whpx"
+        echo "⚡  Acceleration: WHPX enabled"
+    else
+        WIN_ACCEL="-accel tcg"
+        echo "⚠️   Acceleration: TCG software emulation"
+    fi
+
+    WIN_ISO="$(wslpath -w "$ISO")"
+    WIN_SERIAL="$(wslpath -w "$SCRIPT_DIR/serial.log")"
+    WIN_DISK_ARG=""
+    if [ -f "$DISK" ]; then
+        WIN_DISK_ARG="-drive file=$(wslpath -w "$DISK"),format=raw,index=0,media=disk"
+    fi
+
+    echo ""
+    echo "  ╔══════════════════════════════════════╗"
+    echo "  ║         Mithl OS Bootloader          ║"
+    echo "  ╚══════════════════════════════════════╝"
+    echo ""
+    echo "  Ctrl+Alt        → Release mouse"
+    echo "  Ctrl+Alt+F      → Toggle fullscreen"
+    echo ""
+
+    exec "$WIN_QEMU" \
+        -name "Mithl OS" \
+        -M pc,pcspk-audiodev=snd0 \
+        -smp 4 \
+        -m 2G \
+        -cdrom "$WIN_ISO" \
+        -boot d \
+        $WIN_DISK_ARG \
+        $WIN_ACCEL \
+        -vga std \
+        -audiodev sdl,id=snd0 \
+        -device AC97,audiodev=snd0 \
+        -serial file:"$WIN_SERIAL" \
+        $NET_ARGS
 fi
-AUDIO_ARGS="-audiodev $AUDIO_DRIVER,id=snd0 -device AC97,audiodev=snd0"
-echo "🔊  Audio: AC97 ($AUDIO_DRIVER backend) + PC Speaker"
+
+# ── Linux QEMU Fallback ──────────────────────────────────────────────────────
+AUDIO_ARGS="-audiodev none,id=snd0 -device AC97,audiodev=snd0"
+WSL_PULSE_SOCKET=""
+for s in "/mnt/wslg/runtime-dir/pulse/native" "/mnt/wslg/run/user/$(id -u)/pulse/native" "/mnt/wslg/PulseServer"; do
+    if [ -S "$s" ]; then
+        WSL_PULSE_SOCKET="$s"
+        break
+    fi
+done
+
+if [ -n "$WSL_PULSE_SOCKET" ] && qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'pa'; then
+    export PULSE_SERVER="unix:$WSL_PULSE_SOCKET"
+    export SDL_AUDIODRIVER="pulseaudio"
+    if timeout 1 qemu-system-x86_64 -m 64M -audiodev pa,id=snd0 -display none 2>&1 | grep -q 'could not connect'; then
+        echo "⚠️   WSLg PulseAudio server timed out. Running without host audio bridge."
+        AUDIO_ARGS="-audiodev none,id=snd0 -device AC97,audiodev=snd0"
+    else
+        AUDIO_ARGS="-audiodev pa,id=snd0 -device AC97,audiodev=snd0"
+        echo "🔊  Audio: AC97 (WSLg PulseAudio via $WSL_PULSE_SOCKET) + PC Speaker"
+    fi
+elif qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'pa'; then
+    AUDIO_ARGS="-audiodev pa,id=snd0 -device AC97,audiodev=snd0"
+    echo "🔊  Audio: AC97 (PulseAudio backend) + PC Speaker"
+elif qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'sdl'; then
+    AUDIO_ARGS="-audiodev sdl,id=snd0 -device AC97,audiodev=snd0"
+    echo "🔊  Audio: AC97 (SDL backend) + PC Speaker"
+fi
 
 echo ""
 echo "  ╔══════════════════════════════════════╗"

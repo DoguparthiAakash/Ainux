@@ -403,23 +403,16 @@ pub fn schedule() {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
 
-        let next_pid = loop {
-            if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
-                break next;
-            }
-            if let Some(task) = &tasks[current_pid] {
-                if task.state == TaskState::Running {
-                    return; // The current task is the only one runnable. Keep running it.
-                }
-            }
-            // Clear Linux C-state idle:
-            // No tasks are ready to run right now.
-            // Release lock, enable interrupts, halt CPU in low-power state until next interrupt.
-            drop(tasks);
-            unsafe {
-                core::arch::asm!("sti; hlt; cli");
-            }
-            tasks = TASKS.lock();
+        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
+            next
+        } else {
+             if let Some(task) = &tasks[current_pid] {
+                 if task.state == TaskState::Running {
+                     return; // The current task is the only one runnable. Keep running it.
+                 }
+             }
+             // Fallback to Task 0 (kernel / desktop main loop)
+             0
         };
         
         crate::cpu::smp::set_current_pid(next_pid);
@@ -564,6 +557,7 @@ pub unsafe fn set_current_sleep(target_ticks: u64) {
             task.sleep_ticks = target_ticks;
             if target_ticks > 0 {
                 task.state = TaskState::Waiting;
+                clear_ready(current_pid);
             }
         }
     });

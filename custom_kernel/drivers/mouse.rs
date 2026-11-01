@@ -222,12 +222,8 @@ extern "C" fn rust_mouse_handler() {
                     dy |= -256; // Sign extend if negative
                 }
                 
-                // Invert axes based on user feedback (moving right went left, etc)
-                dx = -dx;
-                dy = -dy;
-                
-                // Increase sensitivity
-                let sensitivity = 4;
+                // Mouse sensitivity multiplier
+                let sensitivity = 3;
                 dx *= sensitivity;
                 dy *= sensitivity;
                 

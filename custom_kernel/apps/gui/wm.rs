@@ -13,6 +13,7 @@ pub enum GuiEvent {
     MouseClick { x: i32, y: i32, button: u8 },
     KeyPress { key: char },
     WindowClosed,
+    Resize { w: i32, h: i32 },
 }
 
 pub enum GuiMessage {
@@ -26,6 +27,12 @@ pub enum GuiMessage {
     },
     UpdateBuffer {
         id: u32,
+        buffer_ptr: u64,
+    },
+    ResizeBuffer {
+        id: u32,
+        w: i32,
+        h: i32,
         buffer_ptr: u64,
     },
     CloseWindow {

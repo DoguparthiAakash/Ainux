@@ -30,7 +30,7 @@ pub fn run() {
             }
         }
     }
-    let loading_txt = "Loading Mithl OS powered by Ainux kernel...";
+    let loading_txt = "Loading Mithl OS...";
     video::put_str_at(
         ((w as i32) / 2 - (loading_txt.len() as i32 * 8) / 2) as usize,
         ((h as i32) / 2 + 60) as usize,

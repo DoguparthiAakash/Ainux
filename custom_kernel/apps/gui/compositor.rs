@@ -97,6 +97,47 @@ fn draw_gradient_v(buf: &mut [u32], bw: usize, bh: usize,
     }
 }
 
+/// Draw an alpha-blended BMP image scaled to (draw_w x draw_h)
+fn draw_bmp_alpha(buf: &mut [u32], bw: usize, bh: usize,
+                  bmp: &crate::gui::bmp::BmpImage, bx: i32, by: i32,
+                  draw_w: usize, draw_h: usize,
+                  clip: Option<&crate::gui::clip::Rect>) {
+    if draw_w == 0 || draw_h == 0 || bmp.width == 0 || bmp.height == 0 { return; }
+    let scale_x_mul = (bmp.width * 1024) / draw_w;
+    let scale_y_mul = (bmp.height * 1024) / draw_h;
+
+    for dy in 0..draw_h {
+        let sy = by + dy as i32;
+        if sy < 0 || sy >= bh as i32 { continue; }
+        let src_y = (dy * scale_y_mul) / 1024;
+        for dx in 0..draw_w {
+            let sx = bx + dx as i32;
+            if sx < 0 || sx >= bw as i32 { continue; }
+            let src_x = (dx * scale_x_mul) / 1024;
+            let color = bmp.data[src_y * bmp.width + src_x];
+            let a = (color >> 24) & 0xFF;
+            if a > 10 {
+                if let Some(c) = clip {
+                    if sx < c.x || sx >= c.x + c.w || sy < c.y || sy >= c.y + c.h {
+                        continue;
+                    }
+                }
+                let idx = (sy * bw as i32 + sx) as usize;
+                if a >= 250 {
+                    buf[idx] = color & 0x00FFFFFF;
+                } else {
+                    let bg = buf[idx];
+                    let inv_a = 255 - a;
+                    let r = (((color >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                    let g = (((color >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                    let b = ((color & 0xFF) * a + (bg & 0xFF) * inv_a) / 255;
+                    buf[idx] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+}
+
 /// Draw a window button icon from a BmpImage (20x20 scaled)
 fn draw_bmp_button(buf: &mut [u32], bw: usize, bh: usize,
                    bmp: &crate::gui::bmp::BmpImage, bx: i32, by: i32,
@@ -228,6 +269,7 @@ pub struct Compositor {
     pub btn_close: crate::gui::bmp::BmpImage,
     pub btn_min: crate::gui::bmp::BmpImage,
     pub btn_max: crate::gui::bmp::BmpImage,
+    pub logo: crate::gui::bmp::BmpImage,
     pub active_edge: Option<u8>,
     pub last_redraw_ticks: u64,
     pub last_frame_rects: alloc::vec::Vec<crate::gui::clip::Rect>,
@@ -308,6 +350,7 @@ impl Compositor {
             btn_close: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/close.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 20, height: 20, data: alloc::vec![0; 400] }),
             btn_min: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/minimize.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 20, height: 20, data: alloc::vec![0; 400] }),
             btn_max: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/fullscreen.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 20, height: 20, data: alloc::vec![0; 400] }),
+            logo: crate::gui::bmp::BmpImage::parse(include_bytes!("../../icons/mithl_logo.bmp")).unwrap_or_else(|| crate::gui::bmp::BmpImage { width: 96, height: 64, data: alloc::vec![0; 96 * 64] }),
             active_edge: None,
             last_redraw_ticks: 0,
             last_frame_rects: alloc::vec::Vec::new(),
@@ -571,24 +614,34 @@ impl Compositor {
                     let copy_width = (bx2 - bx1) as usize;
                     for sy in by1..by2 {
                         let dy = sy - w.y;
-                        let src_y = (dy * w.buffer_height) / w.height;
                         let dst_idx_start = (sy * self.width as i32 + bx1) as usize;
                         let dx_start = bx1 - w.x;
-                        if w.width == w.buffer_width && w.height == w.buffer_height {
-                            let src_idx = (src_y * w.buffer_width + dx_start) as usize;
-                            if src_idx + copy_width <= w.buffer_len && dst_idx_start + copy_width <= self.backbuffer.len() {
+                        if dy < w.buffer_height {
+                            let valid_copy_w = if dx_start < w.buffer_width {
+                                (w.buffer_width - dx_start).min(copy_width as i32).max(0) as usize
+                            } else {
+                                0
+                            };
+                            let src_idx = (dy * w.buffer_width + dx_start) as usize;
+                            if valid_copy_w > 0 && src_idx + valid_copy_w <= w.buffer_len && dst_idx_start + valid_copy_w <= self.backbuffer.len() {
                                 unsafe {
-                                    let src_slice = core::slice::from_raw_parts(src_ptr.add(src_idx), copy_width);
-                                    self.backbuffer[dst_idx_start..dst_idx_start + copy_width].copy_from_slice(src_slice);
+                                    let src_slice = core::slice::from_raw_parts(src_ptr.add(src_idx), valid_copy_w);
+                                    self.backbuffer[dst_idx_start..dst_idx_start + valid_copy_w].copy_from_slice(src_slice);
+                                }
+                            }
+                            if valid_copy_w < copy_width {
+                                for col in valid_copy_w..copy_width {
+                                    let idx = dst_idx_start + col;
+                                    if idx < self.backbuffer.len() {
+                                        self.backbuffer[idx] = C_SURFACE;
+                                    }
                                 }
                             }
                         } else {
-                            for (i, dx) in (dx_start..dx_start + copy_width as i32).enumerate() {
-                                let src_x = (dx * w.buffer_width) / w.width;
-                                let src_idx = (src_y * w.buffer_width + src_x) as usize;
-                                let dst_idx = dst_idx_start + i;
-                                if src_idx < w.buffer_len && dst_idx < self.backbuffer.len() {
-                                    unsafe { self.backbuffer[dst_idx] = *src_ptr.add(src_idx); }
+                            for col in 0..copy_width {
+                                let idx = dst_idx_start + col;
+                                if idx < self.backbuffer.len() {
+                                    self.backbuffer[idx] = C_SURFACE;
                                 }
                             }
                         }
@@ -648,12 +701,28 @@ impl Compositor {
             curr_x, curr_y, start_w, start_h, sc0, sc1, clip_opt);
         draw_rect_border(&mut self.backbuffer, self.width, self.height,
             curr_x, curr_y, start_w, start_h, C_ACCENT, clip_opt);
-        // Start button label
-        let slabel = "Ainux";
-        let sx = curr_x + start_w / 2 - (slabel.len() as i32 * 4);
-        let sy = curr_y + start_h / 2 - 4;
-        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-            sx, sy, slabel, C_TEXT, clip_opt);
+        // Start button label & Mithl OS logo
+        if start_w >= 80 {
+            let logo_w = 24i32;
+            let logo_h = 16i32;
+            let slabel = "Mithl OS";
+            let text_w = slabel.len() as i32 * 8;
+            let total_w = logo_w + 6 + text_w;
+            let content_x = curr_x + (start_w - total_w) / 2;
+            let logo_y = curr_y + (start_h - logo_h) / 2;
+            let text_y = curr_y + (start_h - 16) / 2;
+            draw_bmp_alpha(&mut self.backbuffer, self.width, self.height,
+                &self.logo, content_x, logo_y, logo_w as usize, logo_h as usize, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
+                content_x + logo_w + 6, text_y, slabel, C_TEXT, clip_opt);
+        } else {
+            let logo_w = 26i32;
+            let logo_h = 18i32;
+            let logo_x = curr_x + (start_w - logo_w) / 2;
+            let logo_y = curr_y + (start_h - logo_h) / 2;
+            draw_bmp_alpha(&mut self.backbuffer, self.width, self.height,
+                &self.logo, logo_x, logo_y, logo_w as usize, logo_h as usize, clip_opt);
+        }
         curr_x += step_x;
         curr_y += step_y;
 
@@ -752,10 +821,12 @@ impl Compositor {
             // Header bar
             draw_gradient_v(&mut self.backbuffer, self.width, self.height,
                 sm_x, sm_y, sm_w, 36, 0x1E1030, C_SURFACE2, clip_opt);
+            draw_bmp_alpha(&mut self.backbuffer, self.width, self.height,
+                &self.logo, sm_x + 12, sm_y + 9, 27, 18, clip_opt);
             draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                sm_x + 12, sm_y + 10, "Ainux", C_ACCENT, clip_opt);
+                sm_x + 46, sm_y + 10, "Mithl", C_ACCENT, clip_opt);
             draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                sm_x + 12 + 5*8, sm_y + 10, " OS", C_TEXT, clip_opt);
+                sm_x + 46 + 5*8, sm_y + 10, " OS", C_TEXT, clip_opt);
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
                 sm_x, sm_y + 36, sm_w, 1, C_BORDER, clip_opt);
 
@@ -812,24 +883,70 @@ impl Compositor {
             }
         }
 
-        // ── 5. Context Menu — Dark glass ─────────────────────────────────────────
+        // ── 5. Context Menu — Windows 11 Dark Acrylic ─────────────────────────────
         if self.context_menu_open {
-            let cm_w = 140i32;
-            let cm_h = 52i32;
+            let cm_w = 180i32;
+            let is_icon = self.context_menu_target.is_some();
+            let cm_h = if is_icon { 104i32 } else { 210i32 };
+
+            // Drop shadow
             fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
-                self.context_menu_x, self.context_menu_y, cm_w, cm_h, C_SURFACE2, 230, clip_opt);
+                self.context_menu_x + 3, self.context_menu_y + 3, cm_w, cm_h, 0x000000, 120, clip_opt);
+
+            // Acrylic dark container
+            fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
+                self.context_menu_x, self.context_menu_y, cm_w, cm_h, C_SURFACE2, 245, clip_opt);
             draw_rect_border(&mut self.backbuffer, self.width, self.height,
-                self.context_menu_x, self.context_menu_y, cm_w, cm_h, C_BORDER, clip_opt);
-            if self.context_menu_target.is_some() {
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                    self.context_menu_x + 12, self.context_menu_y + 8,  "Open",       C_TEXT, clip_opt);
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                    self.context_menu_x + 12, self.context_menu_y + 30, "Properties", C_TEXT_MUTED, clip_opt);
+                self.context_menu_x, self.context_menu_y, cm_w, cm_h, 0x3E4059, clip_opt);
+
+            let mut curr_y = self.context_menu_y + 6;
+            let items: &[(&str, bool)] = if is_icon {
+                &[
+                    ("Open", false),
+                    ("Open in Terminal", false),
+                    ("", true),
+                    ("Remove from Desktop", false),
+                    ("", true),
+                    ("Properties", false),
+                ]
             } else {
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                    self.context_menu_x + 12, self.context_menu_y + 8,  "New Folder", C_TEXT, clip_opt);
-                draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                    self.context_menu_x + 12, self.context_menu_y + 30, "Refresh",    C_TEXT_MUTED, clip_opt);
+                &[
+                    ("View: Auto-Arrange", false),
+                    ("Refresh Desktop", false),
+                    ("", true),
+                    ("New Text Document", false),
+                    ("New Folder", false),
+                    ("", true),
+                    ("Open in Terminal", false),
+                    ("Task Manager", false),
+                    ("System Monitor", false),
+                    ("", true),
+                    ("Next Wallpaper", false),
+                    ("Display Settings", false),
+                ]
+            };
+
+            for &(label, is_sep) in items {
+                if is_sep {
+                    fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
+                        self.context_menu_x + 8, curr_y + 2, cm_w - 16, 1, 0x34374E, clip_opt);
+                    curr_y += 6;
+                } else {
+                    let is_hover = self.mouse_x >= self.context_menu_x + 4 &&
+                                   self.mouse_x <= self.context_menu_x + cm_w - 4 &&
+                                   self.mouse_y >= curr_y &&
+                                   self.mouse_y < curr_y + 20;
+                    if is_hover {
+                        fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
+                            self.context_menu_x + 4, curr_y, cm_w - 8, 20, 0x3B4252, clip_opt);
+                        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
+                            self.context_menu_x + 12, curr_y + 2, label, 0xFFFFFF, clip_opt);
+                    } else {
+                        draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
+                            self.context_menu_x + 12, curr_y + 2, label, C_TEXT, clip_opt);
+                    }
+                    curr_y += 20;
+                }
             }
         }
 
@@ -856,6 +973,9 @@ impl Compositor {
                 self.mouse_x = mev.x as i32;
                 self.mouse_y = mev.y as i32;
                 mouse_moved = true;
+                if self.context_menu_open {
+                    needs_redraw = true;
+                }
             }
             
             // Handle hovering over start menu categories
@@ -880,9 +1000,151 @@ impl Compositor {
             let is_down = mev.buttons & 1 != 0;
             let is_right_down = mev.buttons & 2 != 0;
             
-            // Close context menu if left clicked
+            // Handle context menu selection on click
             if self.context_menu_open && is_down && !self.mouse_left_down {
+                let cm_w = 180i32;
+                let is_icon = self.context_menu_target.is_some();
+                let cm_h = if is_icon { 104i32 } else { 210i32 };
+                let cm_x = self.context_menu_x;
+                let cm_y = self.context_menu_y;
+
+                let mut clicked_action: Option<&str> = None;
+                if self.mouse_x >= cm_x && self.mouse_x <= cm_x + cm_w &&
+                   self.mouse_y >= cm_y && self.mouse_y <= cm_y + cm_h {
+                    let items: &[(&str, bool)] = if is_icon {
+                        &[
+                            ("Open", false),
+                            ("Open in Terminal", false),
+                            ("", true),
+                            ("Remove from Desktop", false),
+                            ("", true),
+                            ("Properties", false),
+                        ]
+                    } else {
+                        &[
+                            ("View: Auto-Arrange", false),
+                            ("Refresh Desktop", false),
+                            ("", true),
+                            ("New Text Document", false),
+                            ("New Folder", false),
+                            ("", true),
+                            ("Open in Terminal", false),
+                            ("Task Manager", false),
+                            ("System Monitor", false),
+                            ("", true),
+                            ("Next Wallpaper", false),
+                            ("Display Settings", false),
+                        ]
+                    };
+
+                    let mut curr_y = cm_y + 6;
+                    for &(label, is_sep) in items {
+                        if is_sep {
+                            curr_y += 6;
+                        } else {
+                            if self.mouse_y >= curr_y && self.mouse_y < curr_y + 20 {
+                                clicked_action = Some(label);
+                                break;
+                            }
+                            curr_y += 20;
+                        }
+                    }
+                }
+
                 self.context_menu_open = false;
+                self.full_redraw = true;
+
+                if let Some(act) = clicked_action {
+                    match act {
+                        "View: Auto-Arrange" => {
+                            let mut row = 0i32;
+                            let mut col = 0i32;
+                            for icon in &mut self.desktop_icons {
+                                icon.x = 24 + col * 76;
+                                icon.y = 24 + row * 80;
+                                row += 1;
+                                if 24 + (row + 1) * 80 > (self.height as i32 - 60) {
+                                    row = 0;
+                                    col += 1;
+                                }
+                            }
+                        }
+                        "Refresh Desktop" => {
+                            self.full_redraw = true;
+                        }
+                        "New Text Document" => {
+                            crate::apps::gui_apps::launch_notepad(self);
+                        }
+                        "New Folder" => {
+                            crate::apps::gui_apps::launch_file_manager(self);
+                        }
+                        "Open in Terminal" => {
+                            crate::apps::gui_apps::launch_terminal(self);
+                        }
+                        "Task Manager" => {
+                            crate::apps::gui_apps::launch_task_manager(self);
+                        }
+                        "System Monitor" => {
+                            crate::apps::gui_apps::launch_sysmon(self);
+                        }
+                        "Next Wallpaper" => {
+                            let wallpapers = [0x111625, 0x181825, 0x0E2038, 0x1E1E2E, 0x2A153A, 0x0D2B1E];
+                            let mut wp = crate::gui::settings_app::WALLPAPER_COLOR.lock();
+                            let curr = *wp;
+                            let mut next_wp = wallpapers[0];
+                            for i in 0..wallpapers.len() {
+                                if wallpapers[i] == curr {
+                                    next_wp = wallpapers[(i + 1) % wallpapers.len()];
+                                    break;
+                                }
+                            }
+                            *wp = next_wp;
+                        }
+                        "Display Settings" => {
+                            crate::apps::gui_apps::launch_settings(self);
+                        }
+                        "Open" => {
+                            if let Some(idx) = self.context_menu_target {
+                                if idx < self.desktop_icons.len() {
+                                    let app_name = self.desktop_icons[idx].name.clone();
+                                    match app_name.as_str() {
+                                        "Terminal" => crate::apps::gui_apps::launch_terminal(self),
+                                        "Settings" => crate::apps::gui_apps::launch_settings(self),
+                                        "File Mgr" => crate::apps::gui_apps::launch_file_manager(self),
+                                        "Task Mgr" => crate::apps::gui_apps::launch_task_manager(self),
+                                        "Sys Mon" => crate::apps::gui_apps::launch_sysmon(self),
+                                        "Paint" => crate::apps::gui_apps::launch_paint(self),
+                                        "Clock" => crate::apps::gui_apps::launch_clock(self),
+                                        "Calendar" => crate::apps::gui_apps::launch_calendar(self),
+                                        "Tetris" => crate::apps::gui_apps::launch_tetris(self),
+                                        "Pong" => crate::apps::gui_apps::launch_pong(self),
+                                        "Mines" => crate::apps::gui_apps::launch_minesweeper(self),
+                                        "Browser" => crate::apps::gui_apps::launch_browser(self),
+                                        "Notepad" => crate::apps::gui_apps::launch_notepad(self),
+                                        "Calculator" => crate::apps::gui_apps::launch_calculator(self),
+                                        "Snake" => crate::apps::gui_apps::launch_snake(self),
+                                        "2048" => crate::apps::gui_apps::launch_2048(self),
+                                        "Sudoku" => crate::apps::gui_apps::launch_sudoku(self),
+                                        "Chess" => crate::apps::gui_apps::launch_chess(self),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        "Remove from Desktop" => {
+                            if let Some(idx) = self.context_menu_target {
+                                if idx < self.desktop_icons.len() {
+                                    self.desktop_icons.remove(idx);
+                                }
+                            }
+                        }
+                        "Properties" => {
+                            crate::apps::gui_apps::launch_settings(self);
+                        }
+                        _ => {}
+                    }
+                }
+
                 self.mouse_left_down = is_down;
                 self.mouse_right_down = is_right_down;
                 continue;
@@ -1134,6 +1396,10 @@ impl Compositor {
                                 w.width = self.width as i32;
                                 w.height = self.height as i32 - 30 - 24;
                             }
+                            let event_w = w.width;
+                            let event_h = w.height;
+                            let event_id = w.id;
+                            crate::gui::wm::WINDOW_EVENTS.lock().push((event_id, crate::gui::wm::GuiEvent::Resize { w: event_w, h: event_h }));
                             let win = self.windows.remove(i);
                             self.windows.push(win);
                         } else if act == 2 {
@@ -1153,10 +1419,21 @@ impl Compositor {
                         }
                         
                         if btn == 2 {
+                            let cm_w = 180i32;
+                            let cm_h = if clicked_idx.is_some() { 104i32 } else { 210i32 };
+                            let mut cx = self.mouse_x;
+                            let mut cy = self.mouse_y;
+                            if cx + cm_w > self.width as i32 {
+                                cx = (self.width as i32 - cm_w - 4).max(0);
+                            }
+                            if cy + cm_h > self.height as i32 {
+                                cy = (self.height as i32 - cm_h - 4).max(0);
+                            }
                             self.context_menu_open = true;
-                            self.context_menu_x = self.mouse_x;
-                            self.context_menu_y = self.mouse_y;
+                            self.context_menu_x = cx;
+                            self.context_menu_y = cy;
                             self.context_menu_target = clicked_idx;
+                            self.full_redraw = true;
                         } else if let Some(idx) = clicked_idx {
                             let current_ticks = crate::process::scheduler::get_ticks();
                             if self.last_clicked_icon == Some(idx) && (current_ticks - self.last_click_ticks) < 100 {
@@ -1197,6 +1474,12 @@ impl Compositor {
                 }
             } else if !is_down && self.mouse_left_down {
                 // Mouse released
+                if let Some(idx) = self.resized_window {
+                    if idx < self.windows.len() {
+                        let win = &self.windows[idx];
+                        crate::gui::wm::WINDOW_EVENTS.lock().push((win.id, crate::gui::wm::GuiEvent::Resize { w: win.width, h: win.height }));
+                    }
+                }
                 self.dragged_window = None;
                 self.resized_window = None;
                 self.dragged_icon = None;
@@ -1326,6 +1609,18 @@ impl Compositor {
                             }
                         }
                     }
+                    crate::gui::wm::GuiMessage::ResizeBuffer { id, w, h, buffer_ptr } => {
+                        for win in &mut self.windows {
+                            if win.id == id {
+                                win.buffer_ptr = buffer_ptr;
+                                win.buffer_width = w;
+                                win.buffer_height = h;
+                                win.buffer_len = (w * h) as usize;
+                                needs_redraw = true;
+                                break;
+                            }
+                        }
+                    }
                     crate::gui::wm::GuiMessage::CloseWindow { id } => {
                         self.windows.retain(|win| win.id != id);
                         needs_redraw = true;
@@ -1377,7 +1672,8 @@ impl Compositor {
             }
             
             if self.context_menu_open {
-                current_rects.push(crate::gui::clip::Rect { x: self.context_menu_x, y: self.context_menu_y, w: 120, h: 44 });
+                let cm_h = if self.context_menu_target.is_some() { 104 } else { 210 };
+                current_rects.push(crate::gui::clip::Rect { x: self.context_menu_x - 4, y: self.context_menu_y - 4, w: 188, h: cm_h + 8 });
             }
             
             current_rects.push(crate::gui::clip::Rect { x: 0, y: 0, w: self.width as i32, h: 60 });

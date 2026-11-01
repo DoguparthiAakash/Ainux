@@ -207,6 +207,7 @@ pub fn browser_main() {
                         needs_redraw = true;
                     }
                 }
+                _ => {}
             }
         }
         

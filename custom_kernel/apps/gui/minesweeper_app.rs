@@ -160,6 +160,7 @@ pub fn minesweeper_main() {
                         needs_redraw = true;
                     }
                 }
+                _ => {}
             }
         }
         

@@ -51,6 +51,7 @@ pub fn calculator_main() {
                         needs_redraw = true;
                     }
                 }
+                _ => {}
             }
         }
         

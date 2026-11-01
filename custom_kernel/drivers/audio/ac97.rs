@@ -57,6 +57,12 @@ pub fn init_device(bus: u8, slot: u8, func: u8) {
 
         // Set Master Volume to 0 (Max volume, 0dB attenuation)
         outw(nambar + 0x02, 0x0000);
+
+        // Set Headphone Volume to 0 (Max volume, 0dB attenuation)
+        outw(nambar + 0x04, 0x0000);
+
+        // Set Master Volume Mono to 0 (Max volume, 0dB attenuation)
+        outw(nambar + 0x06, 0x0000);
         
         // Set PCM Volume to 0 (Max volume, 0dB attenuation)
         outw(nambar + 0x18, 0x0000);
@@ -96,6 +102,8 @@ pub fn set_volume(level: u8) {
     
     unsafe {
         outw(ac97.nambar + 0x02, attenuation);
+        outw(ac97.nambar + 0x04, attenuation);
+        outw(ac97.nambar + 0x06, attenuation);
         outw(ac97.nambar + 0x18, attenuation);
     }
 }
@@ -206,7 +214,7 @@ pub fn play_startup_sound() {
     for (i, &(phys, chunk_size)) in chunks.iter().enumerate() {
         bdl[i].addr = phys as u32;
         bdl[i].length = (chunk_size / 2) as u16; // Number of samples (words)
-        bdl[i].flags = if i == chunks.len() - 1 { 0x8000 } else { 0 }; // IOC on last entry
+        bdl[i].flags = if i == chunks.len() - 1 { 0xC000 } else { 0 }; // IOC (0x8000) + BUP (0x4000) on last entry
     }
     
     unsafe {
