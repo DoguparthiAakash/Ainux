@@ -41,17 +41,7 @@ pub fn run() {
 
     let mut comp = Compositor::new(w, h);
     
-    let _ = write!(serial, "Desktop: Compositor created. Launching initial apps...\n");
-
-    // Launch default apps — they run as kernel tasks and post window creation
-    // messages via the WM IPC queue. The compositor will pick them up on its
-    // first process_input() iteration.
-    crate::apps::gui_apps::launch_terminal(&mut comp);
-    crate::apps::gui_apps::launch_file_manager(&mut comp);
-    crate::apps::gui_apps::launch_settings(&mut comp);
-    crate::apps::gui_apps::launch_sysmon(&mut comp);
-    crate::apps::gui_apps::launch_task_manager(&mut comp);
-    crate::apps::gui_apps::launch_clock(&mut comp);
+    // Boot into clean desktop: apps are launched on-demand via desktop icons or taskbar.
 
     // Drain any spurious mouse events accumulated during boot so the first
     // click is not a phantom event from the PS/2 controller reset.
@@ -71,7 +61,9 @@ pub fn run() {
     // asynchronously (via WM IPC) will appear on screen without needing a
     // mouse/keyboard event to trigger the redraw.
     let mut ticks_since_forced_redraw: u32 = 0;
-    const FORCED_REDRAW_INTERVAL: u32 = 20; // Every 20 scheduler ticks (~200ms)
+    // Only force a full redraw every ~600ms. The dirty-rect system handles
+    // incremental updates; this just catches async WM IPC window creations.
+    const FORCED_REDRAW_INTERVAL: u32 = 60;
 
     loop {
         ticks_since_forced_redraw += 1;

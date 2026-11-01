@@ -136,6 +136,7 @@ pub fn init() {
                     let name = format!("PCI {:02x}:{:02x}.0", bus, slot);
                     crate::drivers::video::put_str(&name);
                     crate::drivers::video::put_str(&format!(" [{:04x}:{:04x}]\n", vendor, device_id));
+                    let _ = write!(crate::drivers::serial::SERIAL.lock(), "PCI {:02x}:{:02x}.0 [{:04x}:{:04x}]\n", bus, slot, vendor, device_id);
 
                     let pci_dev = Arc::new(PCIDevice {
                         name,
@@ -153,8 +154,9 @@ pub fn init() {
                     let entry = IORegistryEntry::new(pci_dev.clone());
                     IORegistryEntry::add_child(&root_entry, &entry);
                     
-                    // Audio Device Detection
-                    if pci_dev.vendor_id == 0x8086 && pci_dev.device_id == 0x2415 {
+                    // Audio Device Detection (AC97: Intel 82801AA or PCI class 0x04 subclass 0x01)
+                    if (pci_dev.vendor_id == 0x8086 && pci_dev.device_id == 0x2415)
+                        || (pci_dev.class_id == 0x04 && pci_dev.subclass_id == 0x01) {
                         crate::drivers::audio::ac97::init_device(pci_dev.bus, pci_dev.slot, pci_dev.func);
                     }
 

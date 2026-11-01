@@ -832,7 +832,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "ps" => cmd_ps(),
             "tree" => cmd_tree(&args),
             "cp" => cmd_cp(&args),
-            "ifconfig" => cmd_ifconfig(),
+            "ifconfig" => cmd_ifconfig(&args),
             "mv" => cmd_mv(&args),
             "rm" => cmd_rm(&args),
             "mkdir" => cmd_mkdir(&args),
@@ -2269,7 +2269,67 @@ fn cmd_wc_file(args: &[&str]) {
     // Hidden internal for now
 }
 
+ fn parse_int_simple(s: &str) -> Option<u32> {
+    let mut val = 0;
+    let mut any = false;
+    for c in s.chars() {
+        if c >= '0' && c <= '9' {
+            val = val * 10 + (c as u32 - '0' as u32);
+            any = true;
+        }
+    }
+    if any { Some(val) } else { None }
+}
+
+fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
+    let octets: alloc::vec::Vec<&str> = s.split('.').collect();
+    if octets.len() != 4 {
+        return None;
+    }
+    Some([
+        parse_int_simple(octets[0])? as u8,
+        parse_int_simple(octets[1])? as u8,
+        parse_int_simple(octets[2])? as u8,
+        parse_int_simple(octets[3])? as u8,
+    ])
+}
+
+fn parse_ipv4_cidr(s: &str) -> Option<([u8; 4], u8)> {
+    let mut parts = s.split('/');
+    let ip_str = parts.next()?;
+    let prefix = match parts.next() {
+        Some(p) => parse_int_simple(p)? as u8,
+        None => 24,
+    };
+    let ip = parse_ipv4(ip_str)?;
+    Some((ip, prefix))
+}
+
 fn cmd_ip(args: &[&str]) {
+    if args.len() >= 4 && (args[1] == "addr" || args[1] == "a") && args[2] == "add" {
+        if let Some((ip, prefix)) = parse_ipv4_cidr(args[3]) {
+            let mut gw = None;
+            for i in 4..args.len() {
+                if args[i] == "gw" && i + 1 < args.len() {
+                    gw = parse_ipv4(args[i + 1]);
+                }
+            }
+            if crate::net::set_static_ip(ip, prefix, gw) {
+                sh_put_str(&alloc::format!("eth0: configured static IP {}.{}.{}.{}/{}", ip[0], ip[1], ip[2], ip[3], prefix));
+                if let Some(g) = gw {
+                    sh_put_str(&alloc::format!(" (gw {}.{}.{}.{})", g[0], g[1], g[2], g[3]));
+                }
+                sh_put_str("\n");
+            } else {
+                sh_put_str("ip: failed to configure IP (net stack uninitialized)\n");
+            }
+            return;
+        } else {
+            sh_put_str("Usage: ip addr add <ip>[/prefix] [dev eth0] [gw <gateway>]\n");
+            return;
+        }
+    }
+
     let stack_lock = crate::net::NET_STACK.lock();
     if let Some(stack) = stack_lock.as_ref() {
         sh_put_str("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n");
@@ -2289,18 +2349,6 @@ fn cmd_ip(args: &[&str]) {
     } else {
         sh_put_str("Error: Network stack not initialized.\n");
     }
-}
-
- fn parse_int_simple(s: &str) -> Option<u32> {
-    let mut val = 0;
-    let mut any = false;
-    for c in s.chars() {
-        if c >= '0' && c <= '9' {
-            val = val * 10 + (c as u32 - '0' as u32);
-            any = true;
-        }
-    }
-    if any { Some(val) } else { None }
 }
 
 fn cmd_nc(args: &[&str]) {
@@ -2409,7 +2457,28 @@ fn cmd_stub(name: &str) {
     sh_put_str(name); sh_put_str(": Not implemented yet.\n");
 }
 
-fn cmd_ifconfig() {
+fn cmd_ifconfig(args: &[&str]) {
+    if args.len() >= 3 {
+        // ifconfig eth0 192.168.1.50/24 [gateway]
+        let ip_arg = args[2];
+        if let Some((ip, prefix)) = parse_ipv4_cidr(ip_arg) {
+            let gw = if args.len() >= 4 { parse_ipv4(args[3]) } else { None };
+            if crate::net::set_static_ip(ip, prefix, gw) {
+                sh_put_str(&alloc::format!("eth0: configured static IP {}.{}.{}.{}/{}", ip[0], ip[1], ip[2], ip[3], prefix));
+                if let Some(g) = gw {
+                    sh_put_str(&alloc::format!(" (gw {}.{}.{}.{})", g[0], g[1], g[2], g[3]));
+                }
+                sh_put_str("\n");
+            } else {
+                sh_put_str("ifconfig: failed to configure IP (net stack uninitialized)\n");
+            }
+            return;
+        } else {
+            sh_put_str("Usage: ifconfig [interface <ip>[/prefix] [gateway]]\n");
+            return;
+        }
+    }
+
     let stack_lock = crate::net::NET_STACK.lock();
     if let Some(stack) = stack_lock.as_ref() {
         sh_put_str("eth0 (RTL8139):\n");

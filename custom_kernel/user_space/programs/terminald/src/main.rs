@@ -50,28 +50,32 @@ pub extern "C" fn main() -> isize {
         let in_write = p_in[1] as usize;
         let out_read = p_out[0] as usize;
         
+        // Fork background output worker to drain shell output pipe concurrently
+        let out_pid = syscalls::sys_fork();
+        if out_pid == 0 {
+            // Child: Output worker
+            let mut out_buf = [0u8; 512];
+            loop {
+                let n = syscalls::sys_read(out_read, &mut out_buf);
+                if n > 0 {
+                    syscalls::sys_write(1, &out_buf[..n as usize]);
+                } else {
+                    syscalls::sys_yield();
+                }
+            }
+        }
+        
+        // Parent: Input worker (pumps keyboard to shell stdin)
+        let mut key_buf = [0u8; 1];
         loop {
-            // Read from keyboard (fd 0)
-            let mut key_buf = [0u8; 1];
-            let n1 = syscalls::sys_read(0, &mut key_buf);
-            if n1 > 0 {
+            let n = syscalls::sys_read(0, &mut key_buf);
+            if n > 0 {
                 if key_buf[0] == 3 { // Ctrl+C
                     syscalls::sys_kill(pid as usize, 2); // Send SIGINT to shell
                 } else {
-                    // Forward to shell
                     syscalls::sys_write(in_write, &key_buf);
                 }
-            }
-            
-            // Read from shell (pipe out_read)
-            let mut out_buf = [0u8; 64];
-            let n2 = syscalls::sys_read(out_read, &mut out_buf);
-            if n2 > 0 {
-                // Write to video (fd 1)
-                syscalls::sys_write(1, &out_buf[..n2 as usize]);
-            }
-            
-            if n1 <= 0 && n2 <= 0 {
+            } else {
                 syscalls::sys_yield();
             }
         }

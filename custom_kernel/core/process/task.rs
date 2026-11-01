@@ -58,6 +58,7 @@ pub struct Task {
     pub wait_queue: alloc::vec::Vec<usize>, // PIDs waiting on this task
     pub cpu_time_ticks: u64,
     pub priority: u8, // 0=High, 255=Low
+    pub vruntime: u64, // Virtual runtime for Clear Linux EEVDF/CFS scheduler
 
     // --- Maturation & Metering ---
     pub total_cycles: u64,
@@ -154,6 +155,7 @@ impl Task {
             wait_queue: alloc::vec::Vec::new(),
             cpu_time_ticks: 0,
             priority: 128, // Default
+            vruntime: 0,
             total_cycles: 0,
             last_tsc: 0,
             page_count: 0,

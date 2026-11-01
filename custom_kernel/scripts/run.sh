@@ -24,11 +24,18 @@ else
     echo "KVM Not Found (Using Software Emulation - Slower)"
 fi
 
+AUDIO_DRIVER="none"
+if qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'sdl'; then
+    AUDIO_DRIVER="sdl"
+elif qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'pa'; then
+    AUDIO_DRIVER="pa"
+fi
+
 echo "Starting Ainux in QEMU (SMP=4, 10M RAM)..."
 echo "Ctrl+A, X to exit QEMU."
 qemu-system-x86_64 \
     -s \
-    -M pc \
+    -M pc,pcspk-audiodev=snd0 \
     -smp 4 \
     -m 2G \
     -cdrom ainux.iso \
@@ -40,4 +47,5 @@ qemu-system-x86_64 \
     -net user \
     -device usb-ehci,id=usb \
     -device usb-host,vendorid=0x148f,productid=0x7601 \
-    -device AC97
+    -audiodev $AUDIO_DRIVER,id=snd0 \
+    -device AC97,audiodev=snd0

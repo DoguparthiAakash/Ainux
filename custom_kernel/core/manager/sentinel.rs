@@ -7,10 +7,8 @@ pub extern "C" fn start() {
         audit_semantic_core();
         audit_task_health();
         
-        // Sleep for a while (e.g., 5 seconds)
-        for _ in 0..500 {
-            yield_now();
-        }
+        // Sleep for 5 seconds (500 ticks at 100Hz)
+        crate::process::scheduler::sleep(500);
     }
 }
 

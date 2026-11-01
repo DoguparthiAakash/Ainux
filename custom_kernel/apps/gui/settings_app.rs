@@ -9,7 +9,7 @@ enum Tab {
 }
 
 // Wallpaper color presets — written to a global so the compositor can read it
-pub static WALLPAPER_COLOR: spin::Mutex<u32> = spin::Mutex::new(0x008080);
+pub static WALLPAPER_COLOR: spin::Mutex<u32> = spin::Mutex::new(0x0D1117); // Midnight default
 pub static DOCK_POSITION: spin::Mutex<u8> = spin::Mutex::new(1); // 0=Top, 1=Bottom, 2=Left, 3=Right
 
 pub struct SettingsApp {
@@ -19,12 +19,12 @@ pub struct SettingsApp {
 }
 
 const COLOR_PRESETS: [(u32, &str); 6] = [
-    (0x1E1E2E, "Catppuccin Dark"),
-    (0x008080, "Classic Teal"),
-    (0x003366, "Midnight Blue"),
-    (0x2D3B2D, "Forest Green"),
-    (0x1A1A1A, "Pure Dark"),
-    (0x4B0082, "Indigo"),
+    (0x0D1117, "Midnight"),      // Deep midnight — default
+    (0x0F172A, "Night Ocean"),   // Dark blue
+    (0x1E1030, "Midnight Prpl"), // Midnight purple
+    (0x0A1628, "Deep Cyber"),    // Cyberpunk dark
+    (0x111820, "Deep Space"),    // Near-black with hint of blue
+    (0x1A1A2E, "Dark Navy"),     // Classic dark navy
 ];
 
 impl SettingsApp {

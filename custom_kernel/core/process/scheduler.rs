@@ -85,10 +85,27 @@ pub fn tick() {
         if task.state == TaskState::Running {
             task.cpu_time_ticks += 1;
             
-            // Cycle Accounting
+            // Cycle Accounting & Clear Linux vruntime scaling
             if task.last_tsc != 0 {
                 let delta = current_tsc.wrapping_sub(task.last_tsc);
                 task.total_cycles += delta;
+
+                // Clear Linux EEVDF weight mapping:
+                let weight: u64 = match task.priority {
+                    0..=31 => 4096,
+                    32..=63 => 2048,
+                    64..=127 => 1024,
+                    128..=191 => 512,
+                    _ => 256,
+                };
+                let is_interactive = task.id == get_foreground_pid()
+                    || task.name == "kernel"
+                    || task.name == "desktop_mgr"
+                    || task.name == "sh"
+                    || task.name == "terminald"
+                    || task.name == "terminal_app";
+                let final_weight = if is_interactive { weight * 2 } else { weight };
+                task.vruntime = task.vruntime.saturating_add((delta * 1024) / final_weight);
             }
             task.last_tsc = current_tsc;
         }
@@ -386,20 +403,31 @@ pub fn schedule() {
         let mut tasks = TASKS.lock();
         let current_pid = crate::cpu::smp::get_current_pid();
 
-        let next_pid = if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
-            next
-        } else {
-             if let Some(task) = &tasks[current_pid] {
-                 if task.state == TaskState::Running {
-                     return; // The current task is the only one runnable. Keep running it.
-                 }
-             }
-             // We MUST switch to the idle task (Task 0) since the current task is blocked/dead.
-             0
+        let next_pid = loop {
+            if let Some(next) = pick_next_task_internal(&mut tasks, current_pid) {
+                break next;
+            }
+            if let Some(task) = &tasks[current_pid] {
+                if task.state == TaskState::Running {
+                    return; // The current task is the only one runnable. Keep running it.
+                }
+            }
+            // Clear Linux C-state idle:
+            // No tasks are ready to run right now.
+            // Release lock, enable interrupts, halt CPU in low-power state until next interrupt.
+            drop(tasks);
+            unsafe {
+                core::arch::asm!("sti; hlt; cli");
+            }
+            tasks = TASKS.lock();
         };
         
         crate::cpu::smp::set_current_pid(next_pid);
         if next_pid == current_pid {
+            if let Some(task) = &mut tasks[current_pid] {
+                task.state = TaskState::Running;
+            }
+            clear_ready(current_pid);
             return;
         }
     
@@ -484,14 +512,20 @@ fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize
         }
     }
 
-    // 2. Fallback to global bitmask (Very fast O(1))
+    // 2. Fallback to global bitmask: select ready task with lowest vruntime
     let mut mask = READY_BITMAP.load(core::sync::atomic::Ordering::Relaxed);
+    let mut best_pid = None;
+    let mut min_vruntime = u64::MAX;
+
     while mask != 0 {
         let next_pid = mask.trailing_zeros() as usize;
         if next_pid < MAX_TASKS {
             if let Some(task) = &tasks[next_pid] {
                 if task.state == TaskState::Ready {
-                    return Some(next_pid);
+                    if task.vruntime < min_vruntime {
+                        min_vruntime = task.vruntime;
+                        best_pid = Some(next_pid);
+                    }
                 } else {
                     clear_ready(next_pid); // Stale bit
                 }
@@ -502,7 +536,7 @@ fn pick_next_task_internal(tasks: &mut [Option<Task>; MAX_TASKS], current: usize
         mask &= !(1u64 << next_pid); // clear the bit we just checked
     }
     
-    None
+    best_pid
 }
 
 pub fn pick_next_task() -> Option<usize> {
@@ -1277,29 +1311,7 @@ pub fn sys_execve(path_ptr: u64, _argv_ptr: u64, _envp_ptr: u64, state: *mut Sys
     -2 // ENOENT
 }
 pub fn sys_exit(code: isize) {
-    let pid = get_current_pid();
-    crate::cpu::without_interrupts(|| {
-        let mut tasks = TASKS.lock();
-        if let Some(task) = &mut tasks[pid] {
-            task.state = TaskState::Zombie;
-            task.exit_code = code;
-            
-            // Wake up parent if waiting
-            if let Some(parent_id) = task.parent_id {
-                if let Some(parent) = &mut tasks[parent_id] {
-                    if parent.state == TaskState::Waiting {
-                        parent.state = TaskState::Ready;
-                        set_ready(parent_id);
-                    }
-                    parent.pending_signals |= 1 << 17; // SIGCHLD (17 on LegacyOS)
-                }
-            }
-        }
-        clear_ready(pid);
-    });
-    // Yield the CPU
-    unsafe { core::arch::asm!("int 0x20"); } // Or schedule()
-    loop {}
+    exit_current_task(code);
 }
 
 pub fn process_dup(oldfd: usize) -> isize {

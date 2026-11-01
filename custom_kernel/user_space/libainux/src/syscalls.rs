@@ -117,6 +117,14 @@ pub fn sys_readdir(path: &str, buf: &mut [u8]) -> isize {
     unsafe { syscall(78, path.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0) as isize }
 }
 
+pub fn sys_getcwd(buf: &mut [u8]) -> isize {
+    unsafe { syscall(79, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0) as isize }
+}
+
+pub fn sys_chdir(path: &str) -> isize {
+    unsafe { syscall(80, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
+}
+
 pub fn sys_mkdir(path: &str) -> isize {
     unsafe { syscall(83, path.as_ptr() as u64, 0, 0, 0, 0, 0) as isize }
 }

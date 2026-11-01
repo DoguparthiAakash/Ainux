@@ -126,7 +126,9 @@ cp user_space/target/x86_64-unknown-none/release/hwtest disk3_root/bin/hwtest.el
 cp user_space/target/x86_64-unknown-none/release/grep disk3_root/bin/grep.elf
 cp user_space/target/x86_64-unknown-none/release/netd disk3_root/bin/netd.elf
 cp user_space/target/x86_64-unknown-none/release/terminald disk3_root/bin/terminald
+cp user_space/target/x86_64-unknown-none/release/terminald disk3_root/bin/terminald.elf || true
 cp user_space/target/x86_64-unknown-none/release/sh disk3_root/bin/sh
+cp user_space/target/x86_64-unknown-none/release/sh disk3_root/bin/sh.elf || true
 
 echo "Injecting LLVM compiler (via statically linked Zig as clang)..."
 if [ -f "compilers/zig-legacyos-x86_64-0.11.0/zig" ]; then

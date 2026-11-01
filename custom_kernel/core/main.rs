@@ -187,8 +187,8 @@ pub extern "C" fn _start() -> ! {
     mm::vmm::init();
     let _ = write!(serial, "VMM Initialized.\n");
 
-    let _ = write!(serial, "Initializing Heap (16 MB)...\n");
-    mm::heap::init_custom(16 * 1024 * 1024);
+    let _ = write!(serial, "Initializing Heap (64 MB floor, auto-scales)...\n");
+    mm::heap::init_custom(64 * 1024 * 1024);
     let _ = write!(serial, "Heap Initialized.\n");
 
     let _ = write!(serial, "Initializing Slab Allocator...\n");
@@ -342,6 +342,10 @@ pub extern "C" fn _start() -> ! {
     let devfs = Arc::new(fs::devfs::DevFs);
     fs::vfs::mount("/dev", devfs);
     let _ = write!(serial, "VFS: DevFs mounted at /dev.\n");
+
+    let netfs = Arc::new(fs::netfs::NetFileSystem);
+    fs::vfs::mount("/net", netfs);
+    let _ = write!(serial, "VFS: Inferno NetFs mounted at /net.\n");
 
     // Mount FAT32 Partitions
     let partitions = crate::drivers::mbr::parse_mbr();

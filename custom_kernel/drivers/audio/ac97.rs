@@ -52,13 +52,21 @@ pub fn init_device(bus: u8, slot: u8, func: u8) {
         // Reset Mixer
         outw(nambar + 0x00, 0);
         
-        // Set Master Volume to 0 (Max)
+        // Powerdown Control/Status: un-powerdown all sections (0 = full power)
+        outw(nambar + 0x26, 0x0000);
+
+        // Set Master Volume to 0 (Max volume, 0dB attenuation)
         outw(nambar + 0x02, 0x0000);
         
-        // Set PCM Volume to 0 (Max)
+        // Set PCM Volume to 0 (Max volume, 0dB attenuation)
         outw(nambar + 0x18, 0x0000);
+
+        // Set Front DAC Sample Rate to 48000 Hz
+        outw(nambar + 0x2C, 48000);
         
         video::put_str("AC97: Audio Controller Initialized.\n");
+        use core::fmt::Write;
+        let _ = write!(crate::drivers::serial::SERIAL.lock(), "AC97: Audio Controller Initialized (NAMBAR={:#x}, NABMBAR={:#x})\n", nambar, nabmbar);
     }
     
     let mut ac97 = AC97.lock();
@@ -108,67 +116,97 @@ static STARTUP_SOUND: &[u8] = include_bytes!("../../Audio/startup.raw");
 
 pub fn play_startup_sound() {
     let mut ac97 = AC97.lock();
-    if !ac97.initialized { return; }
+    if !ac97.initialized {
+        // Fallback: Play rich startup chord on PC Speaker if no AC97 sound card
+        drop(ac97);
+        let chime = [
+            (523, 80),   // C5
+            (659, 80),   // E5
+            (784, 100),  // G5
+            (1046, 220), // C6
+        ];
+        crate::drivers::audio::speaker::play_melody(&chime);
+        return;
+    }
 
     let nabmbar = ac97.nabmbar;
     
-    // Stop any ongoing PCM out
+    // Stop any ongoing PCM out and reset channel registers
     unsafe {
         outb(nabmbar + 0x1B, 0x00);
-        outb(nabmbar + 0x1B, 0x02); // Reset
+        outb(nabmbar + 0x1B, 0x02); // Software Reset
         let mut timeout = 1000;
         while timeout > 0 { core::arch::asm!("pause"); timeout -= 1; }
+        outb(nabmbar + 0x1B, 0x00);
+        outw(nabmbar + 0x16, 0x1E); // Clear status bits
     }
     
-    // Build the BDL
+    // Allocate 1 frame for BDL table (32 entries * 8 bytes = 256 bytes)
     let bdl_phys = {
         let mut pmm_lock = crate::mm::pmm::PMM.lock();
         if let Some(ref mut pmm) = *pmm_lock {
-            pmm.alloc_frame().unwrap()
+            if let Some(f) = pmm.alloc_frame() { f } else { return; }
         } else { return; }
     };
     
     let hhdm = crate::mm::pmm::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
     let bdl_virt = bdl_phys + hhdm;
+    unsafe {
+        core::ptr::write_bytes(bdl_virt as *mut u8, 0, 32 * core::mem::size_of::<BdlEntry>());
+    }
     let bdl = unsafe { core::slice::from_raw_parts_mut(bdl_virt as *mut BdlEntry, 32) };
     
+    // Allocate contiguous physical frames for DMA buffer.
+    // STARTUP_SOUND is 998,088 bytes (~244 4KB frames, buddy order 8 = 256 frames = 1048576 bytes).
+    let target_frames = (STARTUP_SOUND.len() + 4095) / 4096;
+    let (dma_phys, dma_bytes) = {
+        let mut pmm_lock = crate::mm::pmm::PMM.lock();
+        if let Some(ref mut pmm) = *pmm_lock {
+            if let Some(phys) = pmm.alloc_contiguous(target_frames) {
+                (phys, target_frames * 4096)
+            } else if let Some(phys) = pmm.alloc_contiguous(128) {
+                (phys, 128 * 4096)
+            } else if let Some(phys) = pmm.alloc_contiguous(64) {
+                (phys, 64 * 4096)
+            } else if let Some(phys) = pmm.alloc_contiguous(32) {
+                (phys, 32 * 4096)
+            } else if let Some(phys) = pmm.alloc_contiguous(16) {
+                (phys, 16 * 4096)
+            } else {
+                return;
+            }
+        } else { return; }
+    };
+
+    let dma_virt = dma_phys + hhdm;
+    let play_len = core::cmp::min(STARTUP_SOUND.len(), dma_bytes);
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            STARTUP_SOUND.as_ptr(),
+            dma_virt as *mut u8,
+            play_len,
+        );
+    }
+
+    // AC97 max buffer length per BDL entry is 65534 samples (131068 bytes).
+    // Divide contiguous DMA buffer into entries <= 65534 samples.
+    // Align chunk size to 4 bytes (16-bit stereo pair: 2 channels * 2 bytes).
+    let max_chunk_bytes = (65534 * 2) & !3;
     let mut chunks: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
     let mut offset = 0;
-    let size = STARTUP_SOUND.len();
-    let vaddr = STARTUP_SOUND.as_ptr() as u64;
-    
-    while offset < size {
-        let current_vaddr = vaddr + offset as u64;
-        let phys_addr = unsafe { crate::mm::vmm::virt_to_phys_walk(current_vaddr).unwrap() };
-        
-        let page_offset = current_vaddr & 0xFFF;
-        let mut chunk_size = 4096 - page_offset as usize;
-        if chunk_size > size - offset {
-            chunk_size = size - offset;
-        }
-        
-        if let Some(last) = chunks.last_mut() {
-            if last.0 + last.1 as u64 == phys_addr && last.1 + chunk_size <= 131070 {
-                // Combine chunks up to BDL size limit (65535 samples = 131070 bytes)
-                last.1 += chunk_size;
-            } else {
-                chunks.push((phys_addr, chunk_size));
-            }
-        } else {
-            chunks.push((phys_addr, chunk_size));
-        }
+    while offset < play_len && chunks.len() < 32 {
+        let remaining = play_len - offset;
+        let mut chunk_size = core::cmp::min(remaining, max_chunk_bytes);
+        chunk_size &= !3;
+        if chunk_size == 0 { break; }
+        chunks.push((dma_phys + offset as u64, chunk_size));
         offset += chunk_size;
-    }
-    
-    if chunks.len() > 32 {
-        video::put_str("AC97: Audio too fragmented for 32 BDL entries!\n");
-        return;
     }
     
     for (i, &(phys, chunk_size)) in chunks.iter().enumerate() {
         bdl[i].addr = phys as u32;
-        bdl[i].length = (chunk_size / 2) as u16; // Length is in samples
-        bdl[i].flags = if i == chunks.len() - 1 { 0x8000 } else { 0 }; // Interrupt On Completion (IOC) on last entry
+        bdl[i].length = (chunk_size / 2) as u16; // Number of samples (words)
+        bdl[i].flags = if i == chunks.len() - 1 { 0x8000 } else { 0 }; // IOC on last entry
     }
     
     unsafe {
@@ -183,6 +221,8 @@ pub fn play_startup_sound() {
     }
     
     video::put_str("AC97: Startup sound playback started.\n");
+    use core::fmt::Write;
+    let _ = write!(crate::drivers::serial::SERIAL.lock(), "AC97: Startup sound playback started ({} bytes, {} BDL entries)\n", play_len, chunks.len());
 }
 
 pub fn get_speaker_count() -> u32 {

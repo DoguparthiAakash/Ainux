@@ -17,10 +17,7 @@ fn desktop_manager_loop() {
     let _ = write!(serial, "DesktopManager: Task running. Waiting for window compositor events.\n");
 
     loop {
-        // Here we would block on an IPC channel or socket waiting for GUI apps
-        // to send their rendering buffers.
-        
-        // Yield CPU
-        unsafe { core::arch::asm!("hlt"); }
+        // Sleep while waiting for compositor events
+        crate::process::scheduler::sleep(500);
     }
 }

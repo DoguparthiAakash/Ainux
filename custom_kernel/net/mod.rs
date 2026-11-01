@@ -6,7 +6,7 @@ use spin::Mutex;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::{self, Device, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpCidr};
+use smoltcp::wire::{EthernetAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 use smoltcp::socket::{dhcpv4, tcp};
 use crate::drivers::net::rtl8139::RTL8139;
 use crate::fs::vfs::{FileHandle, VfsResult, VfsError};
@@ -213,6 +213,50 @@ pub fn poll() {
             }
         }
     });
+}
+
+pub fn set_static_ip(ip: [u8; 4], prefix: u8, gateway: Option<[u8; 4]>) -> bool {
+    crate::cpu::without_interrupts(|| {
+        let mut stack_lock = NET_STACK.lock();
+        if let Some(stack) = stack_lock.as_mut() {
+            let addr = Ipv4Address(ip);
+            let cidr = Ipv4Cidr::new(addr, prefix);
+            stack.iface.update_ip_addrs(|addrs| {
+                addrs.clear();
+                let _ = addrs.push(IpCidr::Ipv4(cidr));
+            });
+            if let Some(gw_bytes) = gateway {
+                let gw_addr = Ipv4Address(gw_bytes);
+                let _ = stack.iface.routes_mut().add_default_ipv4_route(gw_addr);
+            }
+            true
+        } else {
+            false
+        }
+    })
+}
+
+pub fn get_net_status() -> alloc::string::String {
+    crate::cpu::without_interrupts(|| {
+        let stack_lock = NET_STACK.lock();
+        if let Some(stack) = stack_lock.as_ref() {
+            let mut s = alloc::string::String::new();
+            s.push_str("device eth0 mtu 1500 link up\n");
+            for cidr in stack.iface.ip_addrs() {
+                match cidr {
+                    smoltcp::wire::IpCidr::Ipv4(v4) => {
+                        let ip = v4.address().0;
+                        let prefix = v4.prefix_len();
+                        s.push_str(&alloc::format!("    inet {}.{}.{}.{}/{} \n", ip[0], ip[1], ip[2], ip[3], prefix));
+                    }
+                    _ => {}
+                }
+            }
+            s
+        } else {
+            alloc::string::String::from("device eth0 link down (stack uninitialized)\n")
+        }
+    })
 }
 
 #[derive(Debug)]

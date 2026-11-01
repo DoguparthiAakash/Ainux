@@ -343,7 +343,7 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         59 => { // sys_execve(path, argv, envp)
             crate::process::scheduler::sys_execve(a1, a2, a3, args as *const _ as *mut crate::process::scheduler::SyscallState) as u64
         },
-        60 => { // sys_exit(code)
+        60 | 231 => { // sys_exit / sys_exit_group(code)
             crate::process::scheduler::sys_exit(a1 as isize);
             0 // Never reached
         },
@@ -611,17 +611,6 @@ extern "C" fn rust_syscall_dispatch(id: u64, args_ptr: *const SyscallArgs) -> u6
         511 => { // sys_play_beep
              crate::drivers::audio::ac97::play_beep();
              0
-        },
-        60 | 231 => { // sys_exit / sys_exit_group
-            crate::klog_serial!("Process {} exited with status {}\n", crate::process::scheduler::get_current_pid(), a1);
-            crate::process::scheduler::exit_current_task(a1 as isize);
-            0 // Should not return
-        },
-        61 => { // sys_wait4(pid, status, options, rusage)
-            crate::process::scheduler::sys_wait4(a1 as isize, a2, a3 as i32, a4) as u64
-        },
-        59 => { // sys_execve(filename, argv, envp)
-            crate::process::scheduler::sys_execve(a1, a2, a3, args_ptr as *const _ as *mut crate::process::scheduler::SyscallState) as u64
         },
         24 => { // sys_yield()
             crate::process::scheduler::yield_now();

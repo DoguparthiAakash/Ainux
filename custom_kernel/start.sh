@@ -36,6 +36,26 @@ if [ -f "$DISK" ]; then
     DISK_ARG="-drive file=$DISK,format=raw,index=0,media=disk"
 fi
 
+# ── Network configuration ────────────────────────────────────────────────────
+if [ "$NET_MODE" = "tap" ]; then
+    TAP_DEV="${TAP_IF:-tap0}"
+    NET_ARGS="-net nic,model=rtl8139 -net tap,ifname=$TAP_DEV,script=no,downscript=no"
+    echo "🌐  Network: TAP Bridge ($TAP_DEV)"
+else
+    NET_ARGS="-net nic,model=rtl8139 -net user,hostfwd=tcp::8080-:8080,hostfwd=tcp::9000-:9000"
+    echo "🌐  Network: User NAT with LAN Port Forward (8080, 9000)"
+fi
+
+# ── Audio configuration ──────────────────────────────────────────────────────
+AUDIO_DRIVER="none"
+if qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'sdl'; then
+    AUDIO_DRIVER="sdl"
+elif qemu-system-x86_64 -audiodev help 2>&1 | grep -q 'pa'; then
+    AUDIO_DRIVER="pa"
+fi
+AUDIO_ARGS="-audiodev $AUDIO_DRIVER,id=snd0 -device AC97,audiodev=snd0"
+echo "🔊  Audio: AC97 ($AUDIO_DRIVER backend) + PC Speaker"
+
 echo ""
 echo "  ╔══════════════════════════════════════╗"
 echo "  ║         Mithl OS Bootloader          ║"
@@ -47,7 +67,7 @@ echo ""
 
 qemu-system-x86_64 \
     -name "Mithl OS" \
-    -M pc \
+    -M pc,pcspk-audiodev=snd0 \
     -smp 4 \
     -m 2G \
     -cdrom "$ISO" \
@@ -57,8 +77,8 @@ qemu-system-x86_64 \
     -vga std \
     -display sdl \
     -serial file:"$SCRIPT_DIR/serial.log" \
-    -net nic,model=rtl8139 \
-    -net user
+    $AUDIO_ARGS \
+    $NET_ARGS
 
 echo ""
 echo "Mithl OS session ended."

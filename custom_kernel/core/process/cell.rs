@@ -142,7 +142,7 @@ pub static CELL_MANAGER: Mutex<CellManager> = Mutex::new(CellManager {
 
 pub fn init() {
     let mut manager = CELL_MANAGER.lock();
-    let root_cell = Arc::new(ExecutionCell::new(0, "root", None, Arc::new(crate::process::room::FairShareStrategy)));
+    let root_cell = Arc::new(ExecutionCell::new(0, "root", None, Arc::new(crate::process::room::ClearLinuxStrategy)));
     manager.cells.push(root_cell.clone());
 }
 pub fn create_cell(name: &str, parent_id: usize) -> Option<Arc<ExecutionCell>> {
@@ -162,6 +162,7 @@ pub fn remorph_cell(id: usize, strategy_name: &str) -> Result<(), &'static str> 
     let manager = CELL_MANAGER.lock();
     if let Some(cell) = manager.cells.iter().find(|c| c.id == id) {
         let new_strat: Arc<dyn crate::process::room::SchedulerStrategy> = match strategy_name {
+            "clearlinux" | "cfs" | "eevdf" => Arc::new(crate::process::room::ClearLinuxStrategy),
             "rt" => Arc::new(crate::process::room::RealTimeStrategy),
             "fair" => Arc::new(crate::process::room::FairShareStrategy),
             _ => return Err("Invalid strategy"),

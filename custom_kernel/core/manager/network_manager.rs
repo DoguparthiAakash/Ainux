@@ -30,7 +30,7 @@ fn network_manager_loop() {
         }
         drop(iface_lock);
 
-        // Yield CPU to let other tasks run. In a real system, we might wait on an IRQ event.
-        unsafe { core::arch::asm!("hlt"); }
+        // Sleep 1 second between DHCP/status checks
+        crate::process::scheduler::sleep(100);
     }
 }

@@ -42,6 +42,54 @@ pub trait SchedulerStrategy: Send + Sync + core::fmt::Debug {
 }
 
 #[derive(Debug)]
+pub struct ClearLinuxStrategy;
+
+impl SchedulerStrategy for ClearLinuxStrategy {
+    fn pick_next(&self, tasks: &[Option<Task>; crate::process::scheduler::MAX_TASKS], current: usize) -> Option<usize> {
+        let fg_pid = crate::process::scheduler::get_foreground_pid();
+
+        // 1. Interactive fast-path: foreground process or active shell gets immediate scheduling
+        if fg_pid < crate::process::scheduler::MAX_TASKS {
+            if let Some(task) = &tasks[fg_pid] {
+                if task.state == crate::process::task::TaskState::Ready {
+                    return Some(fg_pid);
+                }
+            }
+        }
+
+        // 2. Clear Linux EEVDF / CFS Virtual Runtime Balancing:
+        // Select ready task with lowest weighted virtual runtime and latency-sensitivity bias
+        let mut best_pid = None;
+        let mut min_vruntime = u64::MAX;
+
+        for i in 0..crate::process::scheduler::MAX_TASKS {
+            let idx = (current + 1 + i) % crate::process::scheduler::MAX_TASKS;
+            if let Some(task) = &tasks[idx] {
+                if task.state == crate::process::task::TaskState::Ready {
+                    let is_interactive = task.id == 0 
+                        || task.name == "sh" 
+                        || task.name == "terminald" 
+                        || task.name == "terminal_app" 
+                        || task.name == "desktop_mgr";
+                    let effective_vruntime = if is_interactive {
+                        task.vruntime.saturating_sub(500_000)
+                    } else {
+                        task.vruntime
+                    };
+
+                    if effective_vruntime < min_vruntime {
+                        min_vruntime = effective_vruntime;
+                        best_pid = Some(idx);
+                    }
+                }
+            }
+        }
+
+        best_pid
+    }
+}
+
+#[derive(Debug)]
 pub struct FairShareStrategy;
 impl SchedulerStrategy for FairShareStrategy {
     fn pick_next(&self, tasks: &[Option<Task>; crate::process::scheduler::MAX_TASKS], current: usize) -> Option<usize> {
