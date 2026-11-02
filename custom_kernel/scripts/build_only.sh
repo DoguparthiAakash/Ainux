@@ -159,10 +159,14 @@ mkfs.ext4 -d disk3_root -O ^extents,^64bit,^dir_index -F disk3.img || { echo "mk
 # Export for external VMs
 if command -v qemu-img >/dev/null 2>&1; then
     echo "Exporting VM-compatible disks..."
-    rm -f ainux_disk.vdi ainux_disk.vmdk
-    qemu-img convert -f raw -O vdi disk3.img ainux_disk.vdi || echo "vdi export failed"
-    qemu-img convert -f raw -O vmdk disk3.img ainux_disk.vmdk || echo "vmdk export failed"
-    echo "Exports ready: ainux_disk.vdi (VirtualBox), ainux_disk.vmdk (VMware)"
+    SRC_IMG="disk4.img"
+    [ ! -f "$SRC_IMG" ] && SRC_IMG="disk3.img"
+    rm -f mithl.vdi mithl.vmdk ainux_disk.vdi ainux_disk.vmdk
+    qemu-img convert -f raw -O vdi "$SRC_IMG" mithl.vdi || echo "vdi export failed"
+    qemu-img convert -f raw -O vmdk "$SRC_IMG" mithl.vmdk || echo "vmdk export failed"
+    cp -f mithl.vdi ainux_disk.vdi 2>/dev/null || true
+    cp -f mithl.vmdk ainux_disk.vmdk 2>/dev/null || true
+    echo "Exports ready: mithl.vdi (VirtualBox), mithl.vmdk (VMware)"
 else
     echo "Warning: qemu-img not found. Skipping VM disk export."
 fi

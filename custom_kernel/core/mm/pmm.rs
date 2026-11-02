@@ -4,12 +4,15 @@
 // Uses identity-mapped first 1GB from boot.asm for physical memory access.
 // =============================================================================
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 // ---- Multiboot1 Structures ----
 
 const MULTIBOOT_MAGIC: u32 = 0x2BADB002;
+
+/// Boot mode selected via GRUB cmdline (mode=shell vs mode=desktop)
+pub static BOOT_TO_SHELL: AtomicBool = AtomicBool::new(false);
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -124,6 +127,27 @@ impl BitmapPmm {
         let info = unsafe { &*(info_phys as *const MultibootInfo) };
         let flags = info.flags;
         let _ = write!(serial, "PMM: Multiboot flags={:#x}\n", flags);
+
+        // Parse Kernel Command Line (Bit 2)
+        if flags & (1 << 2) != 0 {
+            let cmd_addr = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*info).cmdline)) };
+            if cmd_addr != 0 {
+                let cmd_ptr = cmd_addr as *const u8;
+                let mut len = 0;
+                while len < 256 && unsafe { *cmd_ptr.add(len) } != 0 {
+                    len += 1;
+                }
+                if let Ok(cmd_str) = core::str::from_utf8(unsafe { core::slice::from_raw_parts(cmd_ptr, len) }) {
+                    let _ = write!(serial, "PMM: Kernel cmdline: '{}'\n", cmd_str);
+                    if cmd_str.contains("mode=shell") || cmd_str.contains("shell") {
+                        BOOT_TO_SHELL.store(true, Ordering::SeqCst);
+                        let _ = write!(serial, "PMM: Boot mode set to Terminal Shell.\n");
+                    } else {
+                        let _ = write!(serial, "PMM: Boot mode set to Desktop GUI.\n");
+                    }
+                }
+            }
+        }
         
         // Parse Graphics Info (Bit 12)
         if flags & (1 << 12) != 0 {

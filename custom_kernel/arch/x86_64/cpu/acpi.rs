@@ -439,37 +439,67 @@ unsafe fn parse_madt(madt: *const Madt, serial: &mut crate::drivers::serial::Ser
     }
 }
 
-/// ACPI shutdown (ported from legacy C acpi_power_off)
+/// Hardware / Hypervisor power off
 pub fn power_off() {
-    let state = ACPI.lock();
-    if !state.shutdown_ready {
-        let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
-        let _ = write!(serial, "ACPI: Shutdown not available\n");
-        return;
-    }
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    let _ = write!(serial, "ACPI/POWER: Initiating hardware shutdown...\n");
 
+    let state = ACPI.lock();
     let pm1a = state.pm1a_control_block;
     let pm1b = state.pm1b_control_block;
     let slp_a = state.slp_typa;
     let slp_b = state.slp_typb;
+    let smi = state.smi_cmd;
+    let acpi_en = state.acpi_enable_val;
+    let ready = state.shutdown_ready;
     drop(state); // Release lock before I/O
 
     unsafe {
-        // ---- Fallback 1: QEMU / Bochs / VirtualBox specific IO port ----
-        // This is a common "exit" port for emulators to quit immediately.
-        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16);
-        
-        // ---- Main: ACPI S5 Transition ----
-        // Write SLP_TYP | SLP_EN (bit 13)
-        let val_a = slp_a | 0x2000;
-        core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") val_a);
+        core::arch::asm!("cli");
 
-        if pm1b != 0 {
-            let val_b = slp_b | 0x2000;
-            core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") val_b);
+        // 1. If ACPI S5 parsed successfully, issue ACPI sleep state transition
+        if ready && pm1a != 0 {
+            let _ = write!(serial, "ACPI/POWER: Triggering ACPI S5 state on PM1a ({:#x})...\n", pm1a);
+            if smi != 0 && acpi_en != 0 {
+                core::arch::asm!("out dx, al", in("dx") smi as u16, in("al") acpi_en);
+            }
+            let val_a = (slp_a | 0x2000) as u16;
+            core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") val_a);
+
+            if pm1b != 0 {
+                let val_b = (slp_b | 0x2000) as u16;
+                core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") val_b);
+            }
         }
 
-        // ---- Final Fallback: Halt loop ----
+        // 2. QEMU ACPI shutdown port (i440fx & q35)
+        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x2000u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x604u16, in("ax") 0x3400u16);
+
+        // 3. VirtualBox ACPI shutdown port
+        core::arch::asm!("out dx, ax", in("dx") 0x4004u16, in("ax") 0x3400u16);
+        core::arch::asm!("out dx, ax", in("dx") 0x4004u16, in("ax") 0x2000u16);
+
+        // 4. Bochs / Older QEMU / VMware shutdown port
+        core::arch::asm!("out dx, ax", in("dx") 0xB004u16, in("ax") 0x2000u16);
+
+        // 5. APM power-off port
+        core::arch::asm!("out dx, ax", in("dx") 0x8900u16, in("ax") 0x2000u16);
+
+        // 6. QEMU isa-debug-exit
+        core::arch::asm!("out dx, al", in("dx") 0x501u16, in("al") 0x00u8);
+        core::arch::asm!("out dx, al", in("dx") 0x501u16, in("al") 0x31u8);
+
+        // 7. General PM1a fallback in case DSDT was not parsed but PM1a is known
+        if pm1a != 0 {
+            let val_5 = ((5u16 << 10) | 0x2000);
+            let val_7 = ((7u16 << 10) | 0x2000);
+            core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") val_5);
+            core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") val_7);
+        }
+
+        let _ = write!(serial, "ACPI/POWER: Machine halted.\n");
+        // Final fallback: halt loop
         loop {
             core::arch::asm!("cli");
             core::arch::asm!("hlt");

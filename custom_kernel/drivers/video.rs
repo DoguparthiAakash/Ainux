@@ -265,7 +265,7 @@ pub fn init() {
         }
         
         *CONSOLE_WIDTH.lock()  = ((width / 8) as usize).saturating_sub(2);
-        *CONSOLE_HEIGHT.lock() = (height / 12) as usize;
+        *CONSOLE_HEIGHT.lock() = (height / 16) as usize;
         fast_clear(0);
     } else {
         // VGA Text mode fallback
@@ -439,14 +439,14 @@ fn scroll_screen(lines: usize) {
         return;
     }
     
-    let fb_height = *FRAMEBUFFER_HEIGHT.lock();
     let pitch = *FRAMEBUFFER_PITCH.lock(); // This is in bytes!
     let bpp = *FRAMEBUFFER_BPP.lock() as usize;
     
-    let char_height = 12; 
-    let shift_rows = core::cmp::min(lines * char_height, fb_height);
+    let char_height = 16; 
+    let console_pixel_height = height * char_height;
+    let shift_rows = core::cmp::min(lines * char_height, console_pixel_height);
     let shift_bytes = pitch * shift_rows;
-    let total_bytes = pitch * fb_height;
+    let total_bytes = pitch * console_pixel_height;
 
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr != 0 {
@@ -479,7 +479,7 @@ fn scroll_screen(lines: usize) {
             }
         }
     }
-    // flush_screen() not needed because we draw directly to framebuffer
+    draw_scrollbar();
 }
 
 pub fn prepare_y_for_height(height: usize) -> usize {
@@ -517,7 +517,7 @@ pub fn put_char_colored(c: char, fg: u32, bg: u32) {
         // Update Grid
         if c != '\n' && c != '\r' && c != '\x08' {
             let mut grid = SCREEN_GRID.lock();
-            if grid.is_empty() {
+            if grid.len() != width * height {
                 *grid = alloc::vec![ConsoleChar { c: ' ', fg: 0, bg: THEME.lock().bg }; width * height];
             }
             let idx = (*y * width) + *x;
@@ -564,7 +564,7 @@ pub fn put_char_colored(c: char, fg: u32, bg: u32) {
                     return;
                 }
             }
-            flush_region(old_x * 8, old_y * 12, 8, 12);
+            flush_region(old_x * 8, old_y * 16, 8, 16);
         }
     });
 }
@@ -593,7 +593,7 @@ pub fn put_char_at(x: usize, y: usize, c: char, fg: u32, bg: u32) {
     let fb_addr = *FRAMEBUFFER_ADDR.lock();
     if fb_addr != 0 {
         unsafe { c_draw_char(x as i32, y as i32, c as u32, fg, bg); }
-        flush_region(x * 8, y * 12, 8, 12);
+        flush_region(x * 8, y * 16, 8, 16);
     } else {
         let vga_buffer = VGA_HHDM_ADDR as *mut u16;
         let offset = (y.min(24) * 80) + x.min(79);
@@ -1156,52 +1156,34 @@ pub fn refresh_screen() {
         
         let history = HISTORY.lock();
         let total_hist = history.len();
+        let grid = SCREEN_GRID.lock();
         
         for y in 0..height {
-            let line_to_draw = if offset > 0 {
-                // History viewing
-                let hist_idx = (total_hist as isize - offset as isize) + y as isize;
-                if hist_idx >= 0 && (hist_idx as usize) < total_hist {
-                    Some(&history[hist_idx as usize])
-                } else {
-                    None
+            if offset > 0 && y < offset {
+                // History lines at top of screen
+                let hist_idx = total_hist.saturating_sub(offset) + y;
+                if hist_idx < total_hist {
+                    let line = &history[hist_idx];
+                    for x in 0..width {
+                        if x < line.len() {
+                            let cell = line[x];
+                            if cell.c != ' ' || cell.bg != bg_color {
+                                unsafe { c_draw_char(x as i32, y as i32, cell.c as u32, cell.fg, cell.bg); }
+                            }
+                        }
+                    }
                 }
             } else {
-                // Normal view (grid)
-                None
-            };
-
-            if let Some(line) = line_to_draw {
-                for x in 0..width {
-                    let cell = line[x];
-                    if cell.c != ' ' {
-                        unsafe { c_draw_char(x as i32, y as i32, cell.c as u32, cell.fg, cell.bg); }
-                    }
-                }
-            } else if offset == 0 || (total_hist as isize - offset as isize + y as isize) >= total_hist as isize {
-                // Draw from current screen grid
-                let grid = SCREEN_GRID.lock();
-                let grid_y = if offset > 0 {
-                    (y as isize - (total_hist as isize - offset as isize + height as isize - total_hist as isize)) as usize
-                } else {
-                    y
-                };
-                
-                // Simplified: if offset is 0, just use y
-                let actual_grid_y = if offset == 0 { y } else {
-                    let rel_y = (total_hist as isize - offset as isize) + y as isize;
-                    if rel_y >= total_hist as isize {
-                        (rel_y - total_hist as isize) as usize
-                    } else {
-                        9999 // skip
-                    }
-                };
-
-                if actual_grid_y < height {
+                // Live screen grid lines
+                let grid_y = if offset > 0 { y - offset } else { y };
+                if grid_y < height {
                     for x in 0..width {
-                        let cell = grid[actual_grid_y * width + x];
-                        if cell.c != ' ' {
-                            unsafe { c_draw_char(x as i32, y as i32, cell.c as u32, cell.fg, cell.bg); }
+                        let idx = grid_y * width + x;
+                        if idx < grid.len() {
+                            let cell = grid[idx];
+                            if cell.c != ' ' || cell.bg != bg_color {
+                                unsafe { c_draw_char(x as i32, y as i32, cell.c as u32, cell.fg, cell.bg); }
+                            }
                         }
                     }
                 }

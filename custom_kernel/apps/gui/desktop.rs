@@ -83,7 +83,8 @@ pub fn run() {
         crate::process::scheduler::sleep(1);
     }
     
-    let _ = write!(serial, "Desktop: Exiting. Clearing screen.\n");
+    let _ = write!(serial, "Desktop: Exiting. Triggering hardware poweroff.\n");
     // Clear screen on exit
     video::fill_rect(0, 0, w as i64, h as i64, 0x000000);
+    crate::drivers::power::shutdown();
 }

@@ -145,6 +145,22 @@ static mut RTL8139_RX_OFFSET: usize = 0;
 pub static mut RTL8139_FRAMEWORK: Option<u8> = Some(1); // Marker
 
 impl RTL8139 {
+    pub fn get_mac() -> Option<[u8; 6]> {
+        unsafe {
+            let io_base = RTL8139_IO_BASE;
+            if io_base == 0 { return None; }
+            let mut mac = [0u8; 6];
+            for i in 0..6 {
+                mac[i] = Self::inb(io_base + i as u16);
+            }
+            if mac != [0; 6] && mac != [0xFF; 6] {
+                Some(mac)
+            } else {
+                None
+            }
+        }
+    }
+
     pub fn send_packet(data: &[u8]) {
         unsafe {
             let io_base = RTL8139_IO_BASE;

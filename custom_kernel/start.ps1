@@ -2,8 +2,12 @@
 #  Mithl OS — Windows PowerShell Launcher
 # =============================================================================
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Iso = Join-Path $ScriptDir "ainux.iso"
-$Disk = Join-Path $ScriptDir "disk4.img"
+$Iso = Join-Path $ScriptDir "mithl.iso"
+if (-not (Test-Path $Iso)) { $Iso = Join-Path $ScriptDir "ainux.iso" }
+
+$Disk = Join-Path $ScriptDir "mithl"
+if (-not (Test-Path $Disk)) { $Disk = Join-Path $ScriptDir "mithl.img" }
+if (-not (Test-Path $Disk)) { $Disk = Join-Path $ScriptDir "disk4.img" }
 $SerialLog = Join-Path $ScriptDir "serial.log"
 $Qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
 

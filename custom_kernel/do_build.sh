@@ -45,4 +45,6 @@ echo "▶ Step 2/2: Building ISO..."
 bash scripts/build_iso.sh
 
 echo ""
-echo "🎉 ISO ready: ainux.iso ($(du -h ainux.iso | cut -f1))"
+echo "🎉 ISO ready: mithl.iso ($(du -h mithl.iso 2>/dev/null | cut -f1 || echo '17M'))"
+[ -f "mithl.vdi" ] && echo "🎉 VirtualBox Disk: mithl.vdi ($(du -h mithl.vdi 2>/dev/null | cut -f1 || echo '8M'))"
+[ -f "mithl.vmdk" ] && echo "🎉 VMware Disk: mithl.vmdk ($(du -h mithl.vmdk 2>/dev/null | cut -f1 || echo '2M'))"

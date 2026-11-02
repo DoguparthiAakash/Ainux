@@ -212,6 +212,15 @@ pub fn detect_and_init() -> bool {
     false
 }
 
+pub fn get_mac() -> Option<[u8; 6]> {
+    let e1000 = E1000_DEVICE.lock();
+    if e1000.initialized && e1000.mac_address != [0; 6] {
+        Some(e1000.mac_address)
+    } else {
+        None
+    }
+}
+
 pub fn send_packet(data: &[u8]) {
     let mut e1000 = E1000_DEVICE.lock();
     if !e1000.initialized { return; }

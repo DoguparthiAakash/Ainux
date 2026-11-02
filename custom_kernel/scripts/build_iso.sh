@@ -3,7 +3,7 @@ set -e
 
 KERNEL_BIN="target/x86_64-unknown-none/release/ainux_kernel"
 ISO_ROOT="iso_root"
-ISO_OUT="ainux.iso"
+ISO_OUT="mithl.iso"
 
 # ── Verify kernel binary exists ──────────────────────────────────────────────
 if [ ! -f "$KERNEL_BIN" ]; then
@@ -58,8 +58,23 @@ fi
 echo "Running grub-mkrescue to create GRUB ISO..."
 # We pass --uefi-secure-boot if supported by grub-mkrescue, or just rely on the injected BOOTX64.EFI
 grub-mkrescue -o "$ISO_OUT" "$ISO_ROOT" 2>&1
+cp -f "$ISO_OUT" "ainux.iso" 2>/dev/null || true
+
+# Export VM disks (.vdi & .vmdk)
+if command -v qemu-img >/dev/null 2>&1; then
+    SRC_IMG="disk4.img"
+    [ ! -f "$SRC_IMG" ] && SRC_IMG="disk3.img"
+    if [ -f "$SRC_IMG" ]; then
+        qemu-img convert -f raw -O vdi "$SRC_IMG" mithl.vdi 2>/dev/null || true
+        qemu-img convert -f raw -O vmdk "$SRC_IMG" mithl.vmdk 2>/dev/null || true
+        cp -f mithl.vdi ainux_disk.vdi 2>/dev/null || true
+        cp -f mithl.vmdk ainux_disk.vmdk 2>/dev/null || true
+    fi
+fi
 
 echo ""
 echo "══════════════════════════════════════"
 echo "  UEFI/BIOS ISO ready: $ISO_OUT"
+[ -f "mithl.vdi" ] && echo "  VirtualBox VDI ready: mithl.vdi"
+[ -f "mithl.vmdk" ] && echo "  VMware VMDK ready: mithl.vmdk"
 echo "══════════════════════════════════════"

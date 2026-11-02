@@ -65,8 +65,8 @@ pub fn get_buttons() -> u8 {
 
 pub fn get_grid_position() -> (usize, usize) {
     let (x, y) = get_position();
-    // TUI is 8x12 usually
-    ((x / 8) as usize, (y / 12) as usize)
+    // TUI font is 8x16
+    ((x / 8) as usize, (y / 16) as usize)
 }
 
 fn update_position(dx: isize, dy: isize, buttons: u8) {
@@ -78,7 +78,7 @@ fn update_position(dx: isize, dy: isize, buttons: u8) {
         let w = if let Some(fw) = video::FRAMEBUFFER_WIDTH.try_lock() { *fw as isize } else { 1024 };
         let h = if let Some(fh) = video::FRAMEBUFFER_HEIGHT.try_lock() { *fh as isize } else { 768 };
         let w = w.max(80 * 8);
-        let h = h.max(25 * 12);
+        let h = h.max(25 * 16);
 
         if MOUSE_X < 0 { MOUSE_X = 0; }
         if MOUSE_Y < 0 { MOUSE_Y = 0; }

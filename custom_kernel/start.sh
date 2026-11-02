@@ -6,8 +6,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ISO="$SCRIPT_DIR/ainux.iso"
-DISK="$SCRIPT_DIR/disk4.img"
+
+ISO="$SCRIPT_DIR/mithl.iso"
+[ ! -f "$ISO" ] && ISO="$SCRIPT_DIR/ainux.iso"
+
+DISK="$SCRIPT_DIR/mithl"
+[ ! -f "$DISK" ] && DISK="$SCRIPT_DIR/mithl.img"
+[ ! -f "$DISK" ] && DISK="$SCRIPT_DIR/disk4.img"
 
 # ── Sanity checks ────────────────────────────────────────────────────────────
 if ! command -v qemu-system-x86_64 &>/dev/null; then

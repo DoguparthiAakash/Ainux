@@ -1,233 +1,285 @@
-
+use alloc::string::{String, ToString};
 use crate::drivers::video;
 
-/// Read a byte from a CMOS register via ports 0x70/0x71
-unsafe fn cmos_read(reg: u8) -> u8 {
-    let val: u8;
-    core::arch::asm!(
-        "out 0x70, al",
-        in("al") reg,
-        options(nostack, preserves_flags)
-    );
-    core::arch::asm!(
-        "in al, 0x71",
-        out("al") val,
-        options(nostack, preserves_flags)
-    );
-    val
-}
-
-fn bcd_to_bin(v: u8) -> u8 {
-    (v >> 4) * 10 + (v & 0x0F)
-}
-
-fn read_rtc_time() -> (u8, u8, u8) {
-    unsafe {
-        // Wait until RTC update is not in progress
-        let mut tries = 0u32;
-        loop {
-            let status = cmos_read(0x0A);
-            if status & 0x80 == 0 { break; }
-            tries += 1;
-            if tries > 100_000 { break; }
-        }
-        let s = bcd_to_bin(cmos_read(0x00));
-        let m = bcd_to_bin(cmos_read(0x02));
-        let h = bcd_to_bin(cmos_read(0x04));
-        (h, m, s)
-    }
-}
-
-fn read_rtc_date() -> (u16, u8, u8) {
-    unsafe {
-        let d = bcd_to_bin(cmos_read(0x07));
-        let mo = bcd_to_bin(cmos_read(0x08));
-        let yr = bcd_to_bin(cmos_read(0x09));
-        (2000 + yr as u16, mo, d)
-    }
-}
-
 pub struct ClockApp {
-    hours:   u8,
-    minutes: u8,
-    seconds: u8,
-    year:    u16,
-    month:   u8,
-    day:     u8,
-    ticks:   u32,   // incremented each update(); ~60 Hz
+    pub hours:   u8,
+    pub minutes: u8,
+    pub seconds: u8,
+    pub year:    usize,
+    pub month:   u8,
+    pub day:     u8,
+    pub ticks:   u32,
 }
 
 impl ClockApp {
     pub fn new() -> Self {
-        let (h, m, s) = read_rtc_time();
-        let (y, mo, d) = read_rtc_date();
-        Self { hours: h, minutes: m, seconds: s, year: y, month: mo, day: d, ticks: 0 }
+        let t = crate::drivers::rtc::read_time();
+        Self {
+            hours: t.hours,
+            minutes: t.minutes,
+            seconds: t.seconds,
+            year: t.year,
+            month: t.month,
+            day: t.day,
+            ticks: 0,
+        }
     }
 
-    fn fill(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, w: i32, h: i32, c: u32) {
-        for dy in 0..h {
-            let sy = y + dy; if sy < 0 || sy >= bh as i32 { continue; }
-            for dx in 0..w {
-                let sx = x + dx; if sx < 0 || sx >= bw as i32 { continue; }
-                buf[(sy * bw as i32 + sx) as usize] = c;
+    #[inline(always)]
+    fn put_pixel(buf: &mut [u32], bw: i32, bh: i32, x: i32, y: i32, color: u32) {
+        if x >= 0 && x < bw && y >= 0 && y < bh {
+            buf[(y * bw + x) as usize] = color;
+        }
+    }
+
+    fn draw_line(buf: &mut [u32], bw: i32, bh: i32, mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: u32) {
+        let dx = (x1 - x0).abs();
+        let dy = (y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = (if dx > dy { dx } else { -dy }) / 2;
+        loop {
+            Self::put_pixel(buf, bw, bh, x0, y0, color);
+            if x0 == x1 && y0 == y1 { break; }
+            let e2 = err;
+            if e2 > -dx { err -= dy; x0 += sx; }
+            if e2 < dy { err += dx; y0 += sy; }
+        }
+    }
+
+    fn draw_thick_line(buf: &mut [u32], bw: i32, bh: i32, x0: i32, y0: i32, x1: i32, y1: i32, thickness: i32, color: u32) {
+        let half = thickness / 2;
+        for off in -half..=half {
+            Self::draw_line(buf, bw, bh, x0 + off, y0, x1 + off, y1, color);
+            Self::draw_line(buf, bw, bh, x0, y0 + off, x1, y1 + off, color);
+        }
+    }
+
+    fn draw_circle(buf: &mut [u32], bw: i32, bh: i32, cx: i32, cy: i32, r: i32, color: u32) {
+        let mut x = 0;
+        let mut y = r;
+        let mut d = 3 - 2 * r;
+        while x <= y {
+            Self::put_pixel(buf, bw, bh, cx + x, cy + y, color);
+            Self::put_pixel(buf, bw, bh, cx - x, cy + y, color);
+            Self::put_pixel(buf, bw, bh, cx + x, cy - y, color);
+            Self::put_pixel(buf, bw, bh, cx - x, cy - y, color);
+            Self::put_pixel(buf, bw, bh, cx + y, cy + x, color);
+            Self::put_pixel(buf, bw, bh, cx - y, cy + x, color);
+            Self::put_pixel(buf, bw, bh, cx + y, cy - x, color);
+            Self::put_pixel(buf, bw, bh, cx - y, cy - x, color);
+            if d < 0 {
+                d += 4 * x + 6;
+            } else {
+                d += 4 * (x - y) + 10;
+                y -= 1;
+            }
+            x += 1;
+        }
+    }
+
+    fn fill_circle(buf: &mut [u32], bw: i32, bh: i32, cx: i32, cy: i32, r: i32, color: u32) {
+        let r_sq = r * r;
+        for dy in -r..=r {
+            let y = cy + dy;
+            if y < 0 || y >= bh { continue; }
+            let span = r_sq - dy * dy;
+            if span >= 0 {
+                let dx_max = integer_sqrt(span as u32) as i32;
+                let start_x = core::cmp::max(0, cx - dx_max);
+                let end_x = core::cmp::min(bw - 1, cx + dx_max);
+                for x in start_x..=end_x {
+                    buf[(y * bw + x) as usize] = color;
+                }
             }
         }
     }
 
-    /// Draw a large BCD-style 7-segment digit at (x,y), scale pixels per segment cell
-    fn draw_digit(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, digit: u8, color: u32) {
-        // 7-segment encoding: segments [top, top-left, top-right, mid, bot-left, bot-right, bot]
-        const SEGS: [[bool; 7]; 10] = [
-            [true,  true,  true,  false, true,  true,  true ],  // 0
-            [false, false, true,  false, false, true,  false],  // 1
-            [true,  false, true,  true,  true,  false, true ],  // 2
-            [true,  false, true,  true,  false, true,  true ],  // 3
-            [false, true,  true,  true,  false, true,  false],  // 4
-            [true,  true,  false, true,  false, true,  true ],  // 5
-            [true,  true,  false, true,  true,  true,  true ],  // 6
-            [true,  false, true,  false, false, true,  false],  // 7
-            [true,  true,  true,  true,  true,  true,  true ],  // 8
-            [true,  true,  true,  true,  false, true,  true ],  // 9
-        ];
-        let d = (digit % 10) as usize;
-        let s = &SEGS[d];
-        let sw = 16i32; // segment width
-        let sh = 4i32;  // segment thickness
-        let sl = 24i32; // segment length
-
-        // top
-        if s[0] { Self::fill(buf, bw, bh, x + sh, y,           sl, sh, color); }
-        // top-left
-        if s[1] { Self::fill(buf, bw, bh, x,       y + sh,      sh, sl, color); }
-        // top-right
-        if s[2] { Self::fill(buf, bw, bh, x+sh+sl, y + sh,      sh, sl, color); }
-        // middle
-        if s[3] { Self::fill(buf, bw, bh, x + sh, y + sh + sl, sl, sh, color); }
-        // bot-left
-        if s[4] { Self::fill(buf, bw, bh, x,       y+sh*2+sl,   sh, sl, color); }
-        // bot-right
-        if s[5] { Self::fill(buf, bw, bh, x+sh+sl, y+sh*2+sl,   sh, sl, color); }
-        // bottom
-        if s[6] { Self::fill(buf, bw, bh, x + sh, y+sh*2+sl*2, sl, sh, color); }
+    fn fill_rect(buf: &mut [u32], bw: i32, bh: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {
+        for dy in 0..h {
+            let sy = y + dy;
+            if sy < 0 || sy >= bh { continue; }
+            for dx in 0..w {
+                let sx = x + dx;
+                if sx < 0 || sx >= bw { continue; }
+                buf[(sy * bw + sx) as usize] = color;
+            }
+        }
     }
 }
 
+fn integer_sqrt(n: u32) -> u32 {
+    let mut x0 = n / 2;
+    if x0 != 0 {
+        let mut x1 = (x0 + n / x0) / 2;
+        while x1 < x0 {
+            x0 = x1;
+            x1 = (x0 + n / x0) / 2;
+        }
+        x0
+    } else {
+        n
+    }
+}
+
+// 60-point sine/cosine table normalized to 1024 (starts at 12 o'clock: 0, -1024)
+const SIN_COS: [(i32, i32); 60] = [
+    (0, -1024), (107, -1018), (213, -1002), (316, -974), (416, -935), 
+    (512, -887), (602, -831), (685, -766), (760, -693), (828, -613),
+    (887, -526), (935, -434), (974, -337), (1002, -237), (1018, -134),
+    (1024, 0), (1018, 134), (1002, 237), (974, 337), (935, 434),
+    (887, 526), (828, 613), (760, 693), (685, 766), (602, 831),
+    (512, 887), (416, 935), (316, 974), (213, 1002), (107, 1018),
+    (0, 1024), (-107, 1018), (-213, 1002), (-316, 974), (-416, 935),
+    (-512, 887), (-602, 831), (-685, 766), (-760, 693), (-828, 613),
+    (-887, 526), (-935, 434), (-974, 337), (-1002, 237), (-1018, 134),
+    (-1024, 0), (-1018, -134), (-1002, -237), (-974, -337), (-935, -434),
+    (-887, -526), (-828, -613), (-760, -693), (-685, -766), (-602, -831),
+    (-512, -887), (-416, -935), (-316, -974), (-213, -1002), (-107, -1018)
+];
+
 pub fn clock_main() {
     let id = crate::gui::wm::generate_window_id();
-    let width = 360;
-    let height = 140;
+    let width: usize = 320;
+    let height: usize = 380;
+    let bw = width as i32;
+    let bh = height as i32;
     
     crate::gui::wm::send_message(crate::gui::wm::GuiMessage::CreateWindow {
         id,
-        title: alloc::string::String::from("Clock"),
-        x: 400,
-        y: 100,
-        w: width as i32,
-        h: height as i32,
+        title: String::from("Mithl Clock"),
+        x: 320,
+        y: 120,
+        w: bw,
+        h: bh,
     });
     
-    let mut buffer = alloc::vec![0xFF1A1A2E; width * height];
+    let mut buffer = alloc::vec![0xFF0F111A; width * height];
     let mut app = ClockApp::new();
+    let mut last_second: u8 = 255;
     
     loop {
-        let mut needs_redraw = false;
-        
         for event in crate::gui::wm::pop_events(id) {
             match event {
-                crate::gui::wm::GuiEvent::WindowClosed => { return; },
-                crate::gui::wm::GuiEvent::KeyPress { key: c } => {
-                    if c == 'r' || c == 'R' {
-                        let (h, m, s) = read_rtc_time();
-                        let (y, mo, d) = read_rtc_date();
-                        app.hours = h; app.minutes = m; app.seconds = s;
-                        app.year = y; app.month = mo; app.day = d;
-                        needs_redraw = true;
-                    }
-                }
+                crate::gui::wm::GuiEvent::WindowClosed => { return; }
                 _ => {}
             }
         }
         
-        app.ticks += 1;
-        // Refresh from RTC every ~60 ticks
-        if app.ticks % 60 == 0 {
-            let (h, m, s) = read_rtc_time();
-            app.hours   = h;
-            app.minutes = m;
-            app.seconds = s;
-            let (y, mo, d) = read_rtc_date();
-            app.year  = y;
-            app.month = mo;
-            app.day   = d;
-            needs_redraw = true;
-        }
+        let t = crate::drivers::rtc::read_time();
+        app.hours = t.hours;
+        app.minutes = t.minutes;
+        app.seconds = t.seconds;
+        app.year = t.year;
+        app.month = t.month;
+        app.day = t.day;
         
-        if needs_redraw || app.ticks == 1 {
-            // Dark background
-            ClockApp::fill(&mut buffer, width, height, 0, 0, width as i32, height as i32, 0xFF1A1A2E);
-
-            // Title
-            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, 8, "Clock", 0xFF888888);
-
-            // Separator line
-            ClockApp::fill(&mut buffer, width, height, 0, 24, width as i32, 1, 0xFF333355);
-
-            // --- Digital clock ---
-            let digit_w = 46i32;
-            let colon_w = 14i32;
-            let total_w = digit_w * 6 + colon_w * 2;
-            let start_x = (width as i32 - total_w) / 2;
-            let dy = 38i32;
-
-            // HH : MM : SS
-            let segments = [
-                (app.hours   / 10, 0),
-                (app.hours   % 10, 1),
-                (app.minutes / 10, 3),
-                (app.minutes % 10, 4),
-                (app.seconds / 10, 6),
-                (app.seconds % 10, 7),
-            ];
-
-            let clock_color = 0xFF00FFCC;
-
-            for (digit, slot) in segments {
-                let px = start_x + slot * digit_w + (slot / 2) * colon_w;
-                ClockApp::draw_digit(&mut buffer, width, height, px, dy, digit, clock_color);
+        if app.seconds != last_second {
+            last_second = app.seconds;
+            
+            // Clear background with obsidian gradient
+            ClockApp::fill_rect(&mut buffer, bw, bh, 0, 0, bw, bh, 0xFF0D0F18);
+            
+            // Header bar
+            ClockApp::fill_rect(&mut buffer, bw, bh, 0, 0, bw, 26, 0xFF141826);
+            ClockApp::fill_rect(&mut buffer, bw, bh, 0, 26, bw, 1, 0xFF1F263B);
+            video::draw_text_to_buffer(&mut buffer, bw as i64, bh as i64, 12, 6, "Mithl System Time", 0xFF00E5FF);
+            
+            // Center of analog clock
+            let cx = bw / 2;
+            let cy = 145;
+            let radius = 100;
+            
+            // Outer bezel ring (glowing cyan / blue)
+            ClockApp::fill_circle(&mut buffer, bw, bh, cx, cy, radius + 5, 0xFF1B2338);
+            ClockApp::draw_circle(&mut buffer, bw, bh, cx, cy, radius + 5, 0xFF00E5FF);
+            ClockApp::draw_circle(&mut buffer, bw, bh, cx, cy, radius + 4, 0xFF0088CC);
+            
+            // Inner clock dial face
+            ClockApp::fill_circle(&mut buffer, bw, bh, cx, cy, radius, 0xFF10131F);
+            ClockApp::draw_circle(&mut buffer, bw, bh, cx, cy, radius, 0xFF2A3650);
+            
+            // Draw 60 ticks
+            for i in 0..60 {
+                let (sx, sy) = SIN_COS[i];
+                if i % 5 == 0 {
+                    // Major hour tick
+                    let x0 = cx + (sx * (radius - 14)) / 1024;
+                    let y0 = cy + (sy * (radius - 14)) / 1024;
+                    let x1 = cx + (sx * (radius - 3)) / 1024;
+                    let y1 = cy + (sy * (radius - 3)) / 1024;
+                    ClockApp::draw_thick_line(&mut buffer, bw, bh, x0, y0, x1, y1, 2, 0xFF00F0FF);
+                } else {
+                    // Minor minute tick
+                    let x0 = cx + (sx * (radius - 7)) / 1024;
+                    let y0 = cy + (sy * (radius - 7)) / 1024;
+                    let x1 = cx + (sx * (radius - 3)) / 1024;
+                    let y1 = cy + (sy * (radius - 3)) / 1024;
+                    ClockApp::draw_line(&mut buffer, bw, bh, x0, y0, x1, y1, 0xFF3E4D6E);
+                }
             }
-
-            // Colons (blink on odd seconds)
-            let colon_color = if app.seconds % 2 == 0 { clock_color } else { 0xFF004444 };
-            let c1x = start_x + 2 * digit_w;
-            let c2x = start_x + 4 * digit_w + colon_w;
-            ClockApp::fill(&mut buffer, width, height, c1x + 4, dy + 16, 5, 5, colon_color);
-            ClockApp::fill(&mut buffer, width, height, c1x + 4, dy + 32, 5, 5, colon_color);
-            ClockApp::fill(&mut buffer, width, height, c2x + 4, dy + 16, 5, 5, colon_color);
-            ClockApp::fill(&mut buffer, width, height, c2x + 4, dy + 32, 5, 5, colon_color);
-
-            // --- Date line ---
-            let months = ["", "January","February","March","April","May","June",
-                          "July","August","September","October","November","December"];
-            let month_name = if app.month >= 1 && app.month <= 12 {
-                months[app.month as usize]
-            } else { "Unknown" };
-
-            let mut date_str = alloc::string::String::new();
-            date_str.push_str(month_name);
-            date_str.push(' ');
-            date_str.push((b'0' + app.day / 10) as char);
-            date_str.push((b'0' + app.day % 10) as char);
-            date_str.push_str(", ");
-            date_str.push((b'0' + (app.year / 1000) as u8) as char);
-            date_str.push((b'0' + ((app.year % 1000) / 100) as u8) as char);
-            date_str.push((b'0' + ((app.year % 100)  / 10)  as u8) as char);
-            date_str.push((b'0' + (app.year % 10)    as u8) as char);
-
-            let date_x = (width as i32 - date_str.len() as i32 * 8) / 2;
-            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, date_x as i64, (dy + 72) as i64, &date_str, 0xFFAAAAAA);
-
-            // Dim hint
-            video::draw_text_to_buffer(&mut buffer, width as i64, height as i64, 10, height as i64 - 18, "Press R to refresh manually", 0xFF444466);
+            
+            // Hour hand (thick white/silver)
+            let h_idx = ((app.hours as usize % 12) * 5 + (app.minutes as usize / 12)) % 60;
+            let (hx, hy) = SIN_COS[h_idx];
+            let h_len = radius * 52 / 100;
+            let hx_end = cx + (hx * h_len) / 1024;
+            let hy_end = cy + (hy * h_len) / 1024;
+            ClockApp::draw_thick_line(&mut buffer, bw, bh, cx, cy, hx_end, hy_end, 4, 0xFFFFFFFF);
+            
+            // Minute hand (thick cyan)
+            let m_idx = app.minutes as usize % 60;
+            let (mx, my) = SIN_COS[m_idx];
+            let m_len = radius * 76 / 100;
+            let mx_end = cx + (mx * m_len) / 1024;
+            let my_end = cy + (my * m_len) / 1024;
+            ClockApp::draw_thick_line(&mut buffer, bw, bh, cx, cy, mx_end, my_end, 3, 0xFF00E5FF);
+            
+            // Second hand (crimson needle with counter-tail)
+            let s_idx = app.seconds as usize % 60;
+            let (sx, sy) = SIN_COS[s_idx];
+            let s_len = radius * 88 / 100;
+            let tail_len = 16;
+            let sx_start = cx - (sx * tail_len) / 1024;
+            let sy_start = cy - (sy * tail_len) / 1024;
+            let sx_end = cx + (sx * s_len) / 1024;
+            let sy_end = cy + (sy * s_len) / 1024;
+            ClockApp::draw_thick_line(&mut buffer, bw, bh, sx_start, sy_start, sx_end, sy_end, 2, 0xFFFF3366);
+            
+            // Center pivot cap
+            ClockApp::fill_circle(&mut buffer, bw, bh, cx, cy, 6, 0xFFFFFFFF);
+            ClockApp::fill_circle(&mut buffer, bw, bh, cx, cy, 3, 0xFFFF3366);
+            
+            // Digital Box Panel
+            let panel_x = 20;
+            let panel_y = 262;
+            let panel_w = bw - 40;
+            let panel_h = 92;
+            ClockApp::fill_rect(&mut buffer, bw, bh, panel_x, panel_y, panel_w, panel_h, 0xFF141828);
+            ClockApp::draw_line(&mut buffer, bw, bh, panel_x, panel_y, panel_x + panel_w, panel_y, 0xFF2A3654);
+            ClockApp::draw_line(&mut buffer, bw, bh, panel_x, panel_y + panel_h, panel_x + panel_w, panel_y + panel_h, 0xFF2A3654);
+            ClockApp::draw_line(&mut buffer, bw, bh, panel_x, panel_y, panel_x, panel_y + panel_h, 0xFF2A3654);
+            ClockApp::draw_line(&mut buffer, bw, bh, panel_x + panel_w, panel_y, panel_x + panel_w, panel_y + panel_h, 0xFF2A3654);
+            
+            // Digital Time Text (e.g. "10:48:20 PM")
+            let am_pm = if app.hours >= 12 { "PM" } else { "AM" };
+            let hour_12 = if app.hours == 0 { 12 } else if app.hours > 12 { app.hours - 12 } else { app.hours };
+            let time_str = alloc::format!("{:02}:{:02}:{:02} {}", hour_12, app.minutes, app.seconds, am_pm);
+            let time_x = (bw - (time_str.len() as i32 * 8)) / 2;
+            video::draw_text_to_buffer(&mut buffer, bw as i64, bh as i64, time_x as i64, (panel_y + 16) as i64, &time_str, 0xFF00FFCC);
+            
+            // Date String
+            let months = ["", "January", "February", "March", "April", "May", "June",
+                          "July", "August", "September", "October", "November", "December"];
+            let month_name = if app.month >= 1 && app.month <= 12 { months[app.month as usize] } else { "Unknown" };
+            let date_str = alloc::format!("{} {:02}, {:04}", month_name, app.day, app.year);
+            let date_x = (bw - (date_str.len() as i32 * 8)) / 2;
+            video::draw_text_to_buffer(&mut buffer, bw as i64, bh as i64, date_x as i64, (panel_y + 40) as i64, &date_str, 0xFFB0C0D8);
+            
+            // Hardware Status
+            let sub_str = "RTC Synced · 60 FPS Compositor";
+            let sub_x = (bw - (sub_str.len() as i32 * 8)) / 2;
+            video::draw_text_to_buffer(&mut buffer, bw as i64, bh as i64, sub_x as i64, (panel_y + 64) as i64, sub_str, 0xFF4A6080);
             
             crate::gui::wm::send_message(crate::gui::wm::GuiMessage::UpdateBuffer {
                 id,
@@ -235,6 +287,6 @@ pub fn clock_main() {
             });
         }
         
-        crate::process::scheduler::sleep(1);
+        crate::process::scheduler::sleep(2);
     }
 }

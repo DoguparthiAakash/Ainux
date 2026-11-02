@@ -5,13 +5,16 @@
 set -e
 cd "$(dirname "$0")/.."
 
-if [ ! -f disk3.img ]; then
-    echo "disk3.img not found. Run build_only.sh first."
-    exit 1
-fi
+ISO="mithl.iso"
+[ ! -f "$ISO" ] && ISO="ainux.iso"
 
-if [ ! -f ainux.iso ]; then
-    echo "ainux.iso not found. Run build_only.sh first."
+DISK="mithl"
+[ ! -f "$DISK" ] && DISK="mithl.img"
+[ ! -f "$DISK" ] && DISK="disk4.img"
+[ ! -f "$DISK" ] && DISK="disk3.img"
+
+if [ ! -f "$ISO" ]; then
+    echo "ISO not found: $ISO. Run do_build.sh first."
     exit 1
 fi
 
@@ -41,13 +44,13 @@ if [ -f "$WIN_QEMU" ]; then
         -M pc,pcspk-audiodev=snd0 \
         -smp 4 \
         -m 2G \
-        -cdrom "$(wslpath -w ainux.iso)" \
+        -cdrom "$(wslpath -w "$ISO")" \
         -boot d \
         $WIN_ACCEL \
         -vga std \
         -audiodev sdl,id=snd0 \
         -device AC97,audiodev=snd0 \
-        -drive file="$(wslpath -w disk3.img)",format=raw,index=0,media=disk \
+        -drive file="$(wslpath -w "$DISK")",format=raw,index=0,media=disk \
         -net nic,model=rtl8139 -net user
 fi
 
@@ -84,10 +87,10 @@ qemu-system-x86_64 \
     -M pc,pcspk-audiodev=snd0 \
     -smp 4 \
     -m 2G \
-    -cdrom ainux.iso \
+    -cdrom "$ISO" \
     -boot d \
     -serial stdio \
-    -drive file=disk3.img,format=raw,index=0,media=disk \
+    -drive file="$DISK",format=raw,index=0,media=disk \
     $ACCEL \
     -net nic,model=rtl8139 \
     -net user \

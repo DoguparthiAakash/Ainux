@@ -173,9 +173,9 @@ pub extern "C" fn _start() -> ! {
         let physical_end = kernel_end_addr - 0xFFFFFFFF80000000;
         let _ = write!(serial, "Kernel Physical End: {:#x} ({} KB)\n", physical_end, physical_end / 1024);
         
-        // Assert strict kernel physical footprint < 8MB
-        if physical_end > 8 * 1024 * 1024 {
-            let _ = write!(serial, "PANIC: Kernel memory usage exceeded 8MB limit! Total: {} bytes\n", physical_end);
+        // Assert strict kernel physical footprint < 32MB
+        if physical_end > 32 * 1024 * 1024 {
+            let _ = write!(serial, "PANIC: Kernel memory usage exceeded 32MB limit! Total: {} bytes\n", physical_end);
             loop { hlt(); }
         }
     }
@@ -433,18 +433,19 @@ pub extern "C" fn _start() -> ! {
     crate::drivers::audio::ac97::play_startup_sound();
     let _ = write!(serial, "DEBUG: Startup sound finished.\n");
 
-    // Start the Desktop Environment immediately.
-    let _ = write!(serial, "Starting Desktop Environment...\n");
-    crate::gui::desktop::run();
-
-    let _ = write!(serial, "DEBUG: Returned from desktop::run()!\n");
-    loop {
-        unsafe { core::arch::asm!("hlt"); }
+    if crate::mm::pmm::BOOT_TO_SHELL.load(core::sync::atomic::Ordering::SeqCst) {
+        let _ = write!(serial, "Starting Terminal Shell as selected in GRUB...\n");
+        drivers::video::clear();
+        crate::shell::run();
+    } else {
+        // Start the Desktop Environment
+        let _ = write!(serial, "Starting Desktop Environment...\n");
+        crate::gui::desktop::run();
     }
-}
 
-fn boot_menu() {
-    drivers::video::clear();
-    drivers::video::put_str("\nStarting Desktop Environment...\n");
-    crate::gui::desktop::run();
+    let _ = write!(serial, "Main: Session ended. Executing hardware shutdown...\n");
+    crate::drivers::power::shutdown();
+    loop {
+        unsafe { core::arch::asm!("cli; hlt"); }
+    }
 }

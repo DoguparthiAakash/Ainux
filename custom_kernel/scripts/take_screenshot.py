@@ -15,13 +15,13 @@ cmd = [
     "-M", "pc,pcspk-audiodev=snd0",
     "-smp", "4",
     "-m", "2G",
-    "-cdrom", "ainux.iso",
+    "-cdrom", "mithl.iso",
     "-boot", "d",
     "-vga", "std",
     "-vnc", ":99",
     "-audiodev", "none,id=snd0",
     "-device", "AC97,audiodev=snd0",
-    "-drive", "file=disk4.img,format=raw,index=0,media=disk",
+    "-drive", "file=mithl,format=raw,index=0,media=disk",
     "-serial", f"file:{serial_log_path}",
     "-qmp", f"tcp:localhost:{qmp_port},server,nowait"
 ]
