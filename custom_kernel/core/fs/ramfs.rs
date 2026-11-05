@@ -489,3 +489,4 @@ pub fn generate_test_elf() -> Vec<u8> {
 
     build_elf_binary(&instrs, msg)
 }
+

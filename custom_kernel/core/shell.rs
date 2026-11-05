@@ -984,7 +984,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "ipv4" | "ip4" => cmd_ipv4(),
             "ipv6" | "ip6" => cmd_ipv6(),
             "gateway" | "gw" => cmd_gateway(),
-            "dns" => cmd_dns(),
+            "dns" => cmd_dns(&args),
             "netperm" | "netcap" | "net-perm" => cmd_netperm(&args),
             "fm" | "files" => crate::tui_fm::launch_fm(),
             "date" => cmd_date(),
@@ -1102,6 +1102,7 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "crontab" => cmd_crontab(&args),
             "csplit" => cmd_csplit(&args),
             "curl" => cmd_curl(&args),
+            "httpd" => cmd_httpd(&args),
             "cut" => cmd_cut(&args),
             "dc" => cmd_dc(&args),
             "diff" => cmd_diff(&args),
@@ -1342,10 +1343,77 @@ fn cmd_help() {
 
 fn cmd_wget(args: &[&str]) {
     if args.len() < 2 {
-        sh_put_str("Usage: wget <url>\n");
+        sh_put_str("Usage: wget <url> [-O <outfile>]\n");
         return;
     }
-    sh_put_str("wget: Network file transfer disabled by policy.\n");
+    let url = args[1];
+    let mut outfile: Option<&str> = None;
+    if args.len() >= 4 && args[2] == "-O" {
+        outfile = Some(args[3]);
+    }
+
+    sh_put_str(&alloc::format!("--2026-11-06--  {}\n", url));
+    let (host, port, path) = crate::net::http::parse_url(url);
+    sh_put_str(&alloc::format!("Connecting to {}:{}... ", host, port));
+
+    match crate::net::http::http_get(url) {
+        Ok((headers, body)) => {
+            sh_put_str("connected.\n");
+            sh_put_str("HTTP request sent, awaiting response... ");
+            if let Some(first_line) = headers.lines().next() {
+                sh_put_str(&alloc::format!("{}\n", first_line));
+            } else {
+                sh_put_str("200 OK\n");
+            }
+            sh_put_str(&alloc::format!("Length: {} ({} KB) [text/plain]\n", body.len(), (body.len() + 1023) / 1024));
+
+            let save_name = if let Some(out) = outfile {
+                alloc::string::String::from(out)
+            } else {
+                let parts: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+                if let Some(last) = parts.last() {
+                    alloc::string::String::from(*last)
+                } else {
+                    alloc::string::String::from("index.html")
+                }
+            };
+
+            sh_put_str(&alloc::format!("Saving to: '{}'\n", save_name));
+
+            let target_path = if save_name.starts_with('/') {
+                save_name.clone()
+            } else {
+                alloc::format!("{}/{}", get_cwd().trim_end_matches('/'), save_name)
+            };
+
+            match find_parent_and_name(&target_path) {
+                Ok((parent, child_name)) => {
+                    let _ = parent.unlink(&child_name);
+                    match parent.create(&child_name, crate::fs::vfs::FileType::File) {
+                        Ok(new_inode) => {
+                            if let Ok(handle) = new_inode.open(2) {
+                                let _ = handle.write(&body, 0);
+                                sh_put_str(&alloc::format!("'{}' saved [{} bytes]\n", save_name, body.len()));
+                            } else {
+                                sh_put_str("wget: Failed to open file for writing.\n");
+                            }
+                        },
+                        Err(_) => {
+                            sh_put_str("wget: Failed to create output file.\n");
+                        }
+                    }
+                },
+                Err(_) => {
+                    sh_put_str("wget: Target directory not found. Outputting to console:\n");
+                    sh_put_str(&alloc::string::String::from_utf8_lossy(&body));
+                    sh_put_str("\n");
+                }
+            }
+        },
+        Err(e) => {
+            sh_put_str(&alloc::format!("failed: {}\n", e));
+        }
+    }
 }
 
 static mut GPUTEST_ARG_BUF: [u8; 32] = [0; 32];
@@ -2691,7 +2759,17 @@ fn cmd_gateway() {
     sh_put_str("fd00::/64                      ::                                       U     256    eth0\n");
 }
 
-fn cmd_dns() {
+fn cmd_dns(args: &[&str]) {
+    if args.len() >= 2 {
+        let host = args[1];
+        sh_put_str(&alloc::format!("DNS resolution query for '{}':\n", host));
+        if let Some(ip) = crate::net::dns::resolve(host) {
+            sh_put_str(&alloc::format!("  Resolved Address: {}\n  Query Status    : Success (NOERROR)\n", ip));
+        } else {
+            sh_put_str(&alloc::format!("  Resolved Address: None\n  Query Status    : NXDOMAIN (Host not found)\n"));
+        }
+        return;
+    }
     let dns_list = crate::net::get_dns_list();
     sh_put_str_colored("[DNS Resolver Configuration]\n", 0x0000FF00, 0);
     for (i, d) in dns_list.iter().enumerate() {
@@ -2739,7 +2817,7 @@ fn cmd_netperm(args: &[&str]) {
             },
             "dns" => {
                 sh_put_str_colored("[PERMISSION: READ_DNS] -> GRANTED (Public read)\n", 0x0000FF00, 0);
-                cmd_dns();
+                cmd_dns(&[]);
                 return;
             },
             "check" => {
@@ -2839,7 +2917,7 @@ fn cmd_netinfo(args: &[&str]) {
             "ipv4" | "ip4" | "--ipv4" | "-4" => { cmd_ipv4(); return; },
             "ipv6" | "ip6" | "--ipv6" | "-6" => { cmd_ipv6(); return; },
             "gw" | "gateway" | "route" | "--route" | "-r" => { cmd_gateway(); return; },
-            "dns" | "--dns" | "-d" => { cmd_dns(); return; },
+            "dns" | "--dns" | "-d" => { cmd_dns(&[]); return; },
             "perm" | "permission" | "permissions" | "--perm" | "-p" => { cmd_netperm(&args[1..]); return; },
             "help" | "-h" | "--help" => {
                 sh_put_str("Usage: netinfo [all|mac|ipv4|ipv6|gw|dns|perm]\n");
@@ -2947,7 +3025,7 @@ fn cmd_ip(args: &[&str]) {
             "-4" | "4" | "ipv4" | "ip4" => { cmd_ipv4(); return; },
             "-6" | "6" | "ipv6" | "ip6" => { cmd_ipv6(); return; },
             "gw" | "gateway" | "route" | "r" => { cmd_gateway(); return; },
-            "dns" | "nameserver" => { cmd_dns(); return; },
+            "dns" | "nameserver" => { cmd_dns(&[]); return; },
             "perm" | "permission" | "permissions" => { cmd_netperm(&args[1..]); return; },
             "all" | "full" | "-a" => { cmd_netinfo(&args[1..]); return; },
             _ => {},
@@ -6215,7 +6293,74 @@ fn cmd_csplit(args: &[&str]) {
 
 
 fn cmd_curl(args: &[&str]) {
-    sh_put_str("curl: Network subsystem not initialized or offline.\n");
+    if args.len() < 2 {
+        sh_put_str("Usage: curl [-i] [-s] [-v] <url>\n");
+        return;
+    }
+    let mut show_headers = false;
+    let mut verbose = false;
+    let mut url: Option<&str> = None;
+
+    for arg in &args[1..] {
+        if *arg == "-i" {
+            show_headers = true;
+        } else if *arg == "-v" {
+            verbose = true;
+            show_headers = true;
+        } else if *arg == "-s" {
+            // silent mode
+        } else if !arg.starts_with('-') {
+            url = Some(arg);
+        }
+    }
+
+    let url_str = match url {
+        Some(u) => u,
+        None => {
+            sh_put_str("curl: no URL specified!\ncurl: try 'curl --help' for more information\n");
+            return;
+        }
+    };
+
+    if verbose {
+        let (host, port, path) = crate::net::http::parse_url(url_str);
+        sh_put_str(&alloc::format!("* Trying {} on port {}...\n", host, port));
+        sh_put_str(&alloc::format!("> GET {} HTTP/1.1\n> Host: {}\n> User-Agent: MithlOS-Curl/1.0\n> Accept: */*\n>\n", path, host));
+    }
+
+    match crate::net::http::http_get(url_str) {
+        Ok((headers, body)) => {
+            if show_headers {
+                sh_put_str(&headers);
+                sh_put_str("\r\n\r\n");
+            }
+            sh_put_str(&alloc::string::String::from_utf8_lossy(&body));
+            sh_put_str("\n");
+        },
+        Err(e) => {
+            sh_put_str(&alloc::format!("curl: (6) Could not resolve host or connect: {}\n", e));
+        }
+    }
+}
+
+fn cmd_httpd(args: &[&str]) {
+    let port = if args.len() >= 2 {
+        args[1].parse::<u16>().unwrap_or(8080)
+    } else {
+        8080
+    };
+
+    sh_put_str(&alloc::format!("Starting Mithl OS Micro-HTTPD on port {}...\n", port));
+    sh_put_str("Awaiting HTTP requests via smoltcp Ethernet stack...\n");
+
+    match crate::net::http::run_http_server_once(port) {
+        Ok(()) => {
+            sh_put_str(&alloc::format!("httpd: Request served successfully on port {}.\n", port));
+        },
+        Err(e) => {
+            sh_put_str(&alloc::format!("httpd: Server error: {}\n", e));
+        }
+    }
 }
 
 
@@ -6356,7 +6501,16 @@ fn cmd_hdparm(args: &[&str]) {
 
 
 fn cmd_host(args: &[&str]) {
-    sh_put_str("host: Network subsystem not initialized or offline.\n");
+    if args.len() < 2 {
+        sh_put_str("Usage: host <hostname>\n");
+        return;
+    }
+    let host = args[1];
+    if let Some(ip) = crate::net::dns::resolve(host) {
+        sh_put_str(&alloc::format!("{} has address {}\n", host, ip));
+    } else {
+        sh_put_str(&alloc::format!("Host {} not found: 3(NXDOMAIN)\n", host));
+    }
 }
 
 
@@ -6473,12 +6627,10 @@ fn cmd_nslookup(args: &[&str]) {
     sh_put_str(&alloc::format!("Address:        {}.{}.{}.{}#53\n\n", primary[0], primary[1], primary[2], primary[3]));
     sh_put_str("Non-authoritative answer:\n");
     sh_put_str(&alloc::format!("Name:   {}\n", host));
-    if host == "localhost" {
-        sh_put_str("Address: 127.0.0.1\nAddress: ::1\n");
-    } else if host == "gateway" || host == "router" {
-        sh_put_str("Address: 10.0.2.2\nAddress: fe80::2\n");
+    if let Some(ip) = crate::net::dns::resolve(host) {
+        sh_put_str(&alloc::format!("Address: {}\n", ip));
     } else {
-        sh_put_str("Address: 93.184.216.34\n");
+        sh_put_str(&alloc::format!("** server can't find {}: NXDOMAIN\n", host));
     }
 }
 

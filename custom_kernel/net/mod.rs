@@ -13,6 +13,7 @@ use crate::fs::vfs::{FileHandle, VfsResult, VfsError};
 use smoltcp::socket::AnySocket;
 
 pub mod dns;
+pub mod http;
 pub mod wifi_80211;
 pub mod baseos;
 pub mod inet;
