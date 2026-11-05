@@ -57,6 +57,11 @@ impl Device for AinuxDevice {
                 result = Some((AinuxRxToken { buffer: data.to_vec() }, AinuxTxToken));
             });
         }
+        if result.is_none() {
+            crate::drivers::virtio::virtio_net::receive_packet(|data: &[u8]| {
+                result = Some((AinuxRxToken { buffer: data.to_vec() }, AinuxTxToken));
+            });
+        }
         result
     }
 
@@ -97,6 +102,7 @@ impl phy::TxToken for AinuxTxToken {
         let result = f(&mut buffer);
         RTL8139::send_packet(&buffer);
         crate::drivers::net::e1000::send_packet(&buffer);
+        crate::drivers::virtio::virtio_net::send_packet(&buffer);
         result
     }
 }
@@ -127,6 +133,8 @@ pub fn get_hardware_mac() -> [u8; 6] {
     if let Some(mac) = RTL8139::get_mac() {
         mac
     } else if let Some(mac) = crate::drivers::net::e1000::get_mac() {
+        mac
+    } else if let Some(mac) = crate::drivers::virtio::virtio_net::get_mac() {
         mac
     } else {
         [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]

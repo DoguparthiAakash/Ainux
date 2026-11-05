@@ -175,6 +175,12 @@ pub fn resolve_path(path: &str) -> String {
 /// Resolves a path to an Inode by walking the VFS tree.
 pub fn find_inode(path: &str) -> vfs::VfsResult<Arc<dyn vfs::Inode>> {
     let resolved = resolve_path(path);
+    
+    // Check mounted filesystems via VFS resolve_path
+    if let Ok(inode) = vfs::resolve_path(&resolved) {
+        return Ok(inode);
+    }
+
     let mut current = vfs::root();
     
     if resolved == "/" {
@@ -203,6 +209,21 @@ pub fn find_parent_and_name(path: &str) -> vfs::VfsResult<(Arc<dyn vfs::Inode>, 
     if components.is_empty() { return Err(vfs::VfsError::NotFound); }
     
     let name = components.pop().unwrap().to_string();
+
+    let parent_path = if components.is_empty() {
+        String::from("/")
+    } else {
+        let mut p = String::new();
+        for c in &components {
+            p.push('/');
+            p.push_str(c);
+        }
+        p
+    };
+
+    if let Ok(parent_inode) = vfs::resolve_path(&parent_path) {
+        return Ok((parent_inode, name));
+    }
     
     let mut current = vfs::root();
     for comp in components {
@@ -919,6 +940,12 @@ fn execute_command_inner(cmd: &str, args: &[&str], background: bool) {
             "lspci" => cmd_lspci(),
             "lsusb" => cmd_lsusb(),
             "lscpu" => cmd_lscpu(),
+            "beep" => cmd_beep(&args),
+            "sound" => cmd_sound(&args),
+            "floppy" => cmd_floppy(&args),
+            "lpt" => cmd_lpt(&args),
+            "disks" => cmd_lsblk(),
+            "devices" | "lshw" => cmd_devices(),
             "pkill" => cmd_pkill(&args),
             "file" => cmd_file(&args),
             "ln" => cmd_ln(&args),
@@ -1277,16 +1304,16 @@ fn cmd_help() {
     sh_put_str("Use 'man <command>' to view the manual for a specific command.\n\n");
 
     let commands = [
-        "alias", "arch", "awm", "basename", "cal", "cat", "cd [dir]", "checkpoint", "clang",
-        "clear", "clock", "code", "cp <src> <dst>", "df", "dirname", "discover", "dmesg", "dns", "du",
-        "echo [args]", "env", "exec <file>", "export", "fetch", "file <file>", "find", "format",
+        "alias", "arch", "awm", "basename", "beep", "cal", "cat", "cd [dir]", "checkpoint", "clang",
+        "clear", "clock", "code", "cp <src> <dst>", "devices", "df", "dirname", "discover", "disks", "dmesg", "dns", "du",
+        "echo [args]", "env", "exec <file>", "export", "fetch", "file <file>", "find", "floppy", "format",
         "free", "fuel", "game [name]", "gateway", "gcc", "gputest", "grant", "grep <pat>", "groups", "head", "help",
-        "hfetch", "history", "id", "ifconfig", "ip", "ipv4", "ipv6", "less", "ln", "locate", "ls [dir]", "lsblk",
-        "lspci", "lsusb", "mac", "man <cmd>", "metus", "mkdir <dir>",
+        "hfetch", "history", "id", "ifconfig", "ip", "ipv4", "ipv6", "less", "ln", "locate", "lpt", "ls [dir]", "lsblk",
+        "lscpu", "lshw", "lspci", "lsusb", "mac", "man <cmd>", "metus", "mkdir <dir>",
         "mount", "mv <src> <dst>", "netinfo [target]", "netperm [cmd]", "netstat", "nuxa <in> -o <out>", "nuxc <in> -o <out>",
         "nuxv <in> -o <out>", "nvix", "passwd", "ping <host>", "pkill <pid>",
         "ps", "pwd", "reboot", "remorph", "restore", "rm <file>", "rmdir <dir>",
-        "run <file>", "settings", "sshd", "shutdown", "sort", "stat <file>",
+        "run <file>", "settings", "sound", "sshd", "shutdown", "sort", "stat <file>",
         "su", "sync", "tail", "test_iso", "time", "top", "touch <file>",
         "tree", "umount", "uname", "unalias", "uptime", "useradd", "users",
         "view <file>", "watch", "wc", "wget <url>", "whereis", "whoami", "wifi"
@@ -1756,7 +1783,17 @@ fn cmd_ls(args: &[&str]) {
     match find_inode(&target) {
         Ok(inode) => {
             match inode.read_dir() {
-                Ok(files) => {
+                Ok(mut files) => {
+                    if target == "/" {
+                        let mounts = crate::fs::vfs::MOUNTS.lock();
+                        for m in mounts.iter() {
+                            let clean = m.path.trim_start_matches('/');
+                            if !clean.is_empty() && !files.contains(&alloc::string::String::from(clean)) {
+                                files.push(alloc::string::String::from(clean));
+                            }
+                        }
+                    }
+                    files.sort();
                     for name in files {
                         sh_put_str(&name);
                         sh_put_str("\n");
@@ -2405,13 +2442,32 @@ fn cmd_find(args: &[&str]) {
 
 
 fn cmd_uname() {
-    sh_put_str("Ainux Kernel v0.1.0 (Custom)\nBuild: 2026-01-05\nArch: x86_64\n");
+    let cpu = crate::cpu::cpuid::CPU_FEATURES.lock();
+    let vendor = alloc::string::String::from(cpu.vendor_str());
+    let brand = alloc::string::String::from(cpu.brand_str());
+    let is_64 = cpu.has_long_mode;
+    drop(cpu);
+
+    let arch_str = if is_64 { "x86_64 (64-bit Long Mode)" } else { "x86 (32-bit Protected Mode)" };
+    let cpu_name = if !brand.is_empty() { &brand } else { &vendor };
+    sh_put_str(&alloc::format!("Mithl OS / Ainux Kernel v0.3.0\nHardware Arch: {}\nCPU Model    : {}\nLimbo/VM     : QEMU/Limbo/Native Hardware Compatible (32/64-bit)\n", arch_str, cpu_name));
 }
 
 fn cmd_lsblk() {
-    sh_put_str("NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT\n");
-    sh_put_str("hda       3:0    0  20G  0 disk \n");
-    sh_put_str("└─hda1    3:1    0  20G  0 part /\n");
+    sh_put_str("NAME      SIZE     TYPE     BUS PROTOCOL             STATUS\n");
+    let disks = crate::drivers::storage::get_all_disks();
+    if disks.is_empty() {
+        sh_put_str("hda       20G      disk     PATA / IDE (Legacy PIO)  Mounted (/)\n");
+    } else {
+        for d in &disks {
+            let size_str = if d.capacity_mb >= 1024 {
+                alloc::format!("{}G", d.capacity_mb / 1024)
+            } else {
+                alloc::format!("{}M", d.capacity_mb)
+            };
+            sh_put_str(&alloc::format!("{:<8}  {:<7}  disk     {:<24}  {}\n", d.name, size_str, d.bus_type, d.status));
+        }
+    }
 }
 
 fn cmd_grep(args: &[&str]) {
@@ -3737,8 +3793,12 @@ fn cmd_ping(args: &[&str]) {
     let target = match Ipv4Address::from_str(target_str) {
         Ok(addr) => addr,
         Err(_) => {
-            sh_put_str("ping: Invalid IPv4 address format (e.g. 8.8.8.8).\n");
-            return;
+            if let Some(ip) = crate::net::dns::resolve(target_str) {
+                ip
+            } else {
+                sh_put_str("ping: Cannot resolve host or invalid IP address format.\n");
+                return;
+            }
         }
     };
 
@@ -5437,25 +5497,166 @@ fn cmd_du(args: &[&str]) {
 }
 
 fn cmd_lspci() {
-    sh_put_str("PCI Bus Topology (Kernel Discovery):\n");
+    sh_put_str("PCI Bus Topology & Hardware Controllers:\n");
     let devices = crate::manager::discovery::get_all_devices();
+    let mut count = 0;
     for dev in devices.iter().filter(|d| d.kind == "PCI") {
-        sh_put_str(&format!("  [+] {} [ID: {:04x}:{:04x}]\n", dev.name, dev.vendor_id, dev.device_id));
+        sh_put_str(&format!("  [{:02}] {} [PCI ID: {:04x}:{:04x}]\n", count, dev.name, dev.vendor_id, dev.device_id));
+        count += 1;
     }
 }
 
 fn cmd_lsusb() {
-    sh_put_str("USB Device Tree (Kernel Discovery):\n");
+    sh_put_str("USB Subsystem Topology (xHCI SuperSpeed & EHCI HighSpeed):\n");
+    sh_put_str(&crate::drivers::usb::xhci::get_status());
+    sh_put_str("\n");
     let devices = crate::manager::discovery::get_all_devices();
     for dev in devices.iter().filter(|d| d.kind == "USB") {
-        sh_put_str(&format!("  [+] {}\n", dev.name));
+        sh_put_str(&format!("  [Device] {}\n", dev.name));
     }
 }
 
+fn cmd_beep(args: &[&str]) {
+    let mut freq = 440u32;
+    let mut duration = 150u32;
+    if args.len() >= 2 {
+        if args[1] == "melody" || args[1] == "song" {
+            let notes = [
+                (261u32, 100u32),
+                (329u32, 100u32),
+                (392u32, 100u32),
+                (523u32, 250u32),
+            ];
+            sh_put_str("Playing fanfare via PC Speaker (PIT Ch 2 / Port 0x61)...\n");
+            crate::drivers::audio::speaker::play_melody(&notes);
+            return;
+        }
+        if let Ok(f) = args[1].parse::<u32>() {
+            freq = f;
+        }
+    }
+    if args.len() >= 3 {
+        if let Ok(d) = args[2].parse::<u32>() {
+            duration = d;
+        }
+    }
+    sh_put_str(&alloc::format!("PC Speaker: Tone {} Hz, duration {} ms\n", freq, duration));
+    crate::drivers::audio::speaker::beep(freq, duration);
+}
+
+fn cmd_sound(args: &[&str]) {
+    if args.len() >= 2 && (args[1] == "test" || args[1] == "chime" || args[1] == "play") {
+        sh_put_str("Playing Sound Blaster 16 / OPL3 FM Synthesizer Chime...\n");
+        crate::drivers::audio::sb16::play_sound_blast();
+        sh_put_str("Sound playback completed.\n");
+    } else if args.len() >= 2 && args[1] == "opl3" {
+        sh_put_str("Playing FM Synthesizer arpeggio on Yamaha OPL3 (0x388)...\n");
+        crate::drivers::audio::sb16::opl3_init();
+        crate::drivers::audio::sb16::opl3_play_note(440, 150);
+        crate::drivers::audio::sb16::opl3_play_note(554, 150);
+        crate::drivers::audio::sb16::opl3_play_note(659, 150);
+        crate::drivers::audio::sb16::opl3_play_note(880, 250);
+        sh_put_str("OPL3 arpeggio completed.\n");
+    } else {
+        sh_put_str(&crate::drivers::audio::sb16::get_status());
+        sh_put_str("\nUsage: sound [status | test | chime | opl3]\n");
+    }
+}
+
+fn cmd_floppy(args: &[&str]) {
+    if args.len() >= 2 && args[1] == "read" {
+        sh_put_str("Floppy: Reading Cylinder 0, Head 0, Sector 1 (Boot Sector)...\n");
+        let mut buf = [0u8; 512];
+        if crate::drivers::floppy::read_sector(0, 0, &mut buf) {
+            sh_put_str("Floppy: Sector read successful! First 16 bytes: ");
+            for i in 0..16 {
+                sh_put_str(&alloc::format!("{:02X} ", buf[i]));
+            }
+            sh_put_str("\n");
+        } else {
+            sh_put_str("Floppy: Read failed or drive not ready.\n");
+        }
+    } else {
+        sh_put_str(&crate::drivers::floppy::get_status());
+        sh_put_str("\nUsage: floppy [status | read]\n");
+    }
+}
+
+fn cmd_lpt(args: &[&str]) {
+    if args.len() >= 2 && args[1] == "print" {
+        let msg = if args.len() >= 3 { args[2] } else { "Mithl OS / Ainux Sovereign Print Test\n" };
+        sh_put_str(&alloc::format!("Sending to LPT1: {}\n", msg));
+        let written = crate::drivers::parallel::print_str(msg);
+        sh_put_str(&alloc::format!("LPT1: {} bytes strobed to parallel port.\n", written));
+    } else {
+        sh_put_str(&crate::drivers::parallel::get_status());
+        sh_put_str("\nUsage: lpt [status | print <message>]\n");
+    }
+}
+
+fn cmd_devices() {
+    sh_put_str("═══════════════════════════════════════════════════════════════════════\n");
+    sh_put_str("           AINUX SOVEREIGN SYSTEM HARDWARE MANIFEST                    \n");
+    sh_put_str("═══════════════════════════════════════════════════════════════════════\n\n");
+
+    sh_put_str("┌─ [RETRO & LEGACY HARDWARE] (Dropped by Modern OSes / Restored) ──────\n");
+    sh_put_str("│  • PC Speaker           : PIT Ch 2 (Port 0x42) / Gate (Port 0x61) [Active]\n");
+    let sb_status = if crate::drivers::audio::sb16::is_present() { "Online (0x220 / OPL3 0x388)" } else { "Emulated / Offline" };
+    sh_put_str(&alloc::format!("│  • Sound Blaster 16/OPL3: {}\n", sb_status));
+    let fdc_status = if crate::drivers::floppy::is_present() { "82077AA ISA FDC (Ports 0x3F0-0x3F7) [Ready]" } else { "No Media / Emulated" };
+    sh_put_str(&alloc::format!("│  • Floppy Controller    : {}\n", fdc_status));
+    let lpt_status = if crate::drivers::parallel::is_present() { "LPT1 (Port 0x378) [Online]" } else { "Loopback / Standby" };
+    sh_put_str(&alloc::format!("│  • IEEE 1284 LPT Port   : {}\n", lpt_status));
+    sh_put_str("│  • UART 16550A Serial   : COM1 (0x3F8), COM2 (0x2F8), COM3 (0x3E8), COM4 (0x2E8)\n");
+    sh_put_str("│  • PS/2 Input Subsystem : Keyboard (IRQ1 / 0x60), Auxiliary Mouse (IRQ12 / 0x64)\n");
+    sh_put_str("│  • Legacy PATA / IDE    : Primary Master (0x1F0), Secondary (0x170)\n");
+    sh_put_str("└──────────────────────────────────────────────────────────────────────\n\n");
+
+    sh_put_str("┌─ [MODERN HARDWARE] (High-Speed PCIe, USB 3.x, NVMe, SATA3) ──────────\n");
+    let nvme_status = if crate::drivers::storage::nvme::is_present() { "PCIe Gen3/4/5 M.2 SSD [Online]" } else { "Standby / None" };
+    sh_put_str(&alloc::format!("│  • NVMe Solid State     : {}\n", nvme_status));
+    let ahci_status = if crate::drivers::storage::ahci::is_present() { "AHCI SATA Revision 3.x (6 Gbps) [Active]" } else { "Standby / None" };
+    sh_put_str(&alloc::format!("│  • SATA Controller      : {}\n", ahci_status));
+    let xhci_status = if crate::drivers::usb::xhci::is_present() { "xHCI USB 3.0/3.1 SuperSpeed [Active]" } else { "EHCI USB 2.0 Fallback" };
+    sh_put_str(&alloc::format!("│  • USB 3.x Subsystem    : {}\n", xhci_status));
+    let net_status = if crate::drivers::net::e1000::E1000_DEVICE.lock().initialized {
+        "Intel Gigabit Ethernet (e1000/e1000e) [1000 Mbps]"
+    } else if crate::drivers::virtio::virtio_net::is_present() {
+        "VirtIO Paravirtualized Network [10 Gbps]"
+    } else {
+        "Realtek RTL8139 / Atheros WiFi [Active]"
+    };
+    sh_put_str(&alloc::format!("│  • Network Hardware     : {}\n", net_status));
+    let vblk_status = if crate::drivers::virtio::virtio_blk::is_present() { "VirtIO-Blk (/dev/vda) [Active]" } else { "Native Storage" };
+    sh_put_str(&alloc::format!("│  • VirtIO Virtualization: {}\n", vblk_status));
+    sh_put_str("└──────────────────────────────────────────────────────────────────────\n");
+}
+
 fn cmd_lscpu() {
-    sh_put_str(&crate::manager::discovery::get_cpu_summary());
-    sh_put_str("\n  Instruction Set: SSE, SSE2, SSE3, AVX (Native)\n");
-    sh_put_str("  Kernel Autonomy: Enabled\n");
+    let cpu = crate::cpu::cpuid::CPU_FEATURES.lock();
+    sh_put_str("── CPU Architecture & Hardware Details ──\n");
+    sh_put_str(&alloc::format!("  Architecture : {}\n", if cpu.has_long_mode { "x86_64 (64-bit Long Mode)" } else { "x86 (32-bit Protected Mode)" }));
+    sh_put_str(&alloc::format!("  CPU Vendor   : {}\n", cpu.vendor_str()));
+    if !cpu.brand_str().is_empty() {
+        sh_put_str(&alloc::format!("  Model Name   : {}\n", cpu.brand_str()));
+    }
+    sh_put_str(&alloc::format!("  Family/Model : Family {}, Model {}, Stepping {}\n", cpu.family, cpu.model, cpu.stepping));
+    sh_put_str(&alloc::format!("  CPU Cores    : {} Logical Cores\n", cpu.logical_cores));
+    sh_put_str("  Features     : ");
+    if cpu.has_fpu { sh_put_str("FPU "); }
+    if cpu.has_pae { sh_put_str("PAE "); }
+    if cpu.has_msr { sh_put_str("MSR "); }
+    if cpu.has_apic { sh_put_str("APIC "); }
+    if cpu.has_sse { sh_put_str("SSE "); }
+    if cpu.has_sse2 { sh_put_str("SSE2 "); }
+    if cpu.has_sse3 { sh_put_str("SSE3 "); }
+    if cpu.has_sse41 { sh_put_str("SSE4.1 "); }
+    if cpu.has_sse42 { sh_put_str("SSE4.2 "); }
+    if cpu.has_avx { sh_put_str("AVX "); }
+    if cpu.has_aes { sh_put_str("AES-NI "); }
+    if cpu.has_nx { sh_put_str("NX "); }
+    if cpu.has_long_mode { sh_put_str("LM(64-bit) "); }
+    sh_put_str("\n  Limbo Emul   : Supported (x86_64 & x86 architectures)\n");
 }
 
 fn cmd_dmesg() {

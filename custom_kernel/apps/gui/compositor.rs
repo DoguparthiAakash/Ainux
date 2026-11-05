@@ -180,21 +180,54 @@ fn draw_rect_border(buf: &mut [u32], bw: usize, bh: usize,
     fill_rect_buffer(buf, bw, bh, x + w-1, y,       1, h, color, clip); // right
 }
 
-// Utility to draw strings to a generic buffer
-fn draw_string_to_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, x: i32, y: i32, s: &str, fg: u32, clip: Option<&crate::gui::clip::Rect>) {
-    let mut curr_x = x;
-    for c in s.chars() {
-        if curr_x >= 0 && (curr_x + 8) <= buf_w as i32 && y >= 0 && (y + 16) <= buf_h as i32 {
-            if let Some(cl) = clip {
-                if curr_x >= cl.x + cl.w || curr_x + 8 <= cl.x || y >= cl.y + cl.h || y + 16 <= cl.y {
-                    curr_x += 8;
-                    continue;
+// Filled circle for macOS traffic lights & dock indicator dots
+fn draw_circle_filled(buf: &mut [u32], bw: usize, bh: usize, cx: i32, cy: i32, r: i32, color: u32, clip: Option<&crate::gui::clip::Rect>) {
+    let r2 = r * r;
+    for dy in -r..=r {
+        let py = cy + dy;
+        if py < 0 || py >= bh as i32 { continue; }
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r2 {
+                let px = cx + dx;
+                if px < 0 || px >= bw as i32 { continue; }
+                if let Some(c) = clip {
+                    if px < c.x || px >= c.x + c.w || py < c.y || py >= c.y + c.h {
+                        continue;
+                    }
                 }
+                buf[(py * bw as i32 + px) as usize] = color;
             }
-            video::draw_char_to_buffer(buf, buf_w, buf_h, curr_x as usize, y as usize, c, fg);
         }
-        curr_x += 8;
     }
+}
+
+// Circle border outline
+fn draw_circle_border(buf: &mut [u32], bw: usize, bh: usize, cx: i32, cy: i32, r: i32, color: u32, clip: Option<&crate::gui::clip::Rect>) {
+    let r2 = r * r;
+    let inner_r2 = (r - 1) * (r - 1);
+    for dy in -r..=r {
+        let py = cy + dy;
+        if py < 0 || py >= bh as i32 { continue; }
+        for dx in -r..=r {
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r2 && d2 >= inner_r2 {
+                let px = cx + dx;
+                if px < 0 || px >= bw as i32 { continue; }
+                if let Some(c) = clip {
+                    if px < c.x || px >= c.x + c.w || py < c.y || py >= c.y + c.h {
+                        continue;
+                    }
+                }
+                buf[(py * bw as i32 + px) as usize] = color;
+            }
+        }
+    }
+}
+
+// Utility to draw strings using the multi-font engine
+fn draw_string_to_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, x: i32, y: i32, s: &str, fg: u32, clip: Option<&crate::gui::clip::Rect>) {
+    let font = crate::gui::fonts::get_current_font();
+    crate::gui::fonts::draw_string_to_buffer(buf, buf_w, buf_h, x, y, s, fg, font, clip);
 }
 
 fn fill_rect_buffer(buf: &mut [u32], buf_w: usize, buf_h: usize, rx: i32, ry: i32, rw: i32, rh: i32, color: u32, clip: Option<&crate::gui::clip::Rect>) {
@@ -273,6 +306,8 @@ pub struct Compositor {
     pub active_edge: Option<u8>,
     pub last_redraw_ticks: u64,
     pub last_frame_rects: alloc::vec::Vec<crate::gui::clip::Rect>,
+    pub start_menu_anim: u8,
+    pub anim_ticks: u32,
 }
 
 #[derive(Clone)]
@@ -354,11 +389,16 @@ impl Compositor {
             active_edge: None,
             last_redraw_ticks: 0,
             last_frame_rects: alloc::vec::Vec::new(),
+            start_menu_anim: 0,
+            anim_ticks: 0,
         }
     }
 
-    pub fn add_window(&mut self, w: Window) {
+    pub fn add_window(&mut self, mut w: Window) {
+        w.anim_progress = 60;
+        w.is_animating = true;
         self.windows.push(w);
+        self.full_redraw = true;
     }
 
     pub fn invalidate(&mut self, rect: crate::gui::clip::Rect) {
@@ -404,9 +444,9 @@ impl Compositor {
         }
 
         // 2. Temporarily draw cursor into backbuffer
-        let cursor_x = self.mouse_x;
-        let cursor_y = self.mouse_y;
-        let mut cursor_backup = alloc::vec![0u32; 32 * 32];
+        let cursor_x = self.mouse_x.clamp(0, self.width as i32 - 1);
+        let cursor_y = self.mouse_y.clamp(0, self.height as i32 - 1);
+        let mut cursor_backup = [0u32; 32 * 32];
         for row in 0..32 {
             let py = cursor_y + row;
             if py < 0 || py >= self.height as i32 { continue; }
@@ -533,57 +573,114 @@ impl Compositor {
             // Icon label with subtle dark shadow for readability on dark wallpapers
             let text_x = icon.x + (draw_w as i32 / 2) - (icon.name.len() as i32 * 4);
             let ty = icon.y + draw_h as i32 + 4;
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, text_x + 1, ty + 1, &icon.name, 0x000000, clip_opt); // shadow
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height, text_x, ty, &icon.name, C_TEXT, clip_opt);
+            let current_font = crate::gui::fonts::get_current_font();
+            crate::gui::fonts::draw_string_with_shadow(&mut self.backbuffer, self.width, self.height, text_x, ty, &icon.name, C_TEXT, 0x000000, current_font, clip_opt);
         }
 
-        // ── 2. Windows — Modern Dark Glass ────────────────────────────────────────
+        // ── 2. Windows — Modern macOS Frosted Glass & Diffuse Shadows ─────────────
         for w in &mut self.windows {
             if w.state == WindowState::Minimized { continue; }
 
             let title_h = 24i32;
 
-            // 2a. Window shadow (offset dark fill, drawn first behind everything)
+            // 2a. Multi-stage diffuse soft drop shadow (macOS aesthetic)
             fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
-                w.x + 4, w.y - title_h + 4, w.width + 4, w.height + title_h + 4,
-                0x000000, 120, clip_opt);
+                w.x + 8, w.y - title_h + 8, w.width + 6, w.height + title_h + 6,
+                0x000000, 35, clip_opt);
+            fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
+                w.x + 5, w.y - title_h + 5, w.width + 4, w.height + title_h + 4,
+                0x000000, 65, clip_opt);
+            fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
+                w.x + 2, w.y - title_h + 2, w.width + 2, w.height + title_h + 2,
+                0x000000, 110, clip_opt);
 
-            // 2b. Outer accent glow border (1px, semi-transparent purple)
+            // 2b. Outer subtle border
             draw_rect_border(&mut self.backbuffer, self.width, self.height,
                 w.x - 1, w.y - title_h - 1, w.width + 2, w.height + title_h + 2,
-                C_ACCENT, clip_opt);
+                0x334155, clip_opt);
 
             // 2c. Window frame — dark surface
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
                 w.x, w.y - title_h, w.width, w.height + title_h,
                 C_SURFACE, clip_opt);
 
-            // 2d. Title bar — slightly darker gradient (glass top layer)
+            // 2d. Title bar — frosted glass gradient
             draw_gradient_v(&mut self.backbuffer, self.width, self.height,
                 w.x, w.y - title_h, w.width, title_h,
-                0x1E293B, C_SURFACE, clip_opt);
+                0x283046, 0x1E2235, clip_opt);
+
+            // Glass highlight line across titlebar top
+            fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
+                w.x, w.y - title_h, w.width, 1, 0x475569, clip_opt);
 
             // 2e. Title bar bottom separator line
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
                 w.x, w.y - 1, w.width, 1, C_BORDER, clip_opt);
 
-            // 2f. Window title string with drop shadow effect (left-aligned)
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                w.x + 9, w.y - title_h + 7, &w.title, 0x000000, clip_opt);
-            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                w.x + 8, w.y - title_h + 6, &w.title, C_TEXT, clip_opt);
+            // 2f. macOS Traffic Light Controls (Top-Left)
+            let cy = w.y - 12;
+            let hover_traffic = self.mouse_x >= w.x + 6 && self.mouse_x <= w.x + 58 &&
+                                self.mouse_y >= w.y - title_h && self.mouse_y <= w.y;
 
-            // 2g. Original window control buttons (Close, Maximize, Minimize from BMP icons)
-            let close_bx = w.x + w.width - 22;
-            let close_by = w.y - 22;
-            let max_bx = w.x + w.width - 44;
-            let max_by = w.y - 22;
-            let min_bx = w.x + w.width - 66;
-            let min_by = w.y - 22;
+            // Close button (Red)
+            let red_x = w.x + 14;
+            draw_circle_filled(&mut self.backbuffer, self.width, self.height, red_x, cy, 5, 0xFF5F56, clip_opt);
+            draw_circle_border(&mut self.backbuffer, self.width, self.height, red_x, cy, 5, 0xE0443E, clip_opt);
 
-            draw_bmp_button(&mut self.backbuffer, self.width, self.height, &self.btn_close, close_bx, close_by, clip_opt);
-            draw_bmp_button(&mut self.backbuffer, self.width, self.height, &self.btn_max, max_bx, max_by, clip_opt);
-            draw_bmp_button(&mut self.backbuffer, self.width, self.height, &self.btn_min, min_bx, min_by, clip_opt);
+            // Minimize button (Yellow)
+            let yel_x = w.x + 31;
+            draw_circle_filled(&mut self.backbuffer, self.width, self.height, yel_x, cy, 5, 0xFFBD2E, clip_opt);
+            draw_circle_border(&mut self.backbuffer, self.width, self.height, yel_x, cy, 5, 0xDEA123, clip_opt);
+
+            // Maximize button (Green)
+            let grn_x = w.x + 48;
+            draw_circle_filled(&mut self.backbuffer, self.width, self.height, grn_x, cy, 5, 0x27C93F, clip_opt);
+            draw_circle_border(&mut self.backbuffer, self.width, self.height, grn_x, cy, 5, 0x1AAB29, clip_opt);
+
+            if hover_traffic {
+                // 'x' glyph on red
+                for i in -2..=2 {
+                    let rx = red_x + i;
+                    let ry1 = cy + i;
+                    let ry2 = cy - i;
+                    if rx >= 0 && rx < self.width as i32 {
+                        if ry1 >= 0 && ry1 < self.height as i32 {
+                            self.backbuffer[(ry1 * self.width as i32 + rx) as usize] = 0x4D0000;
+                        }
+                        if ry2 >= 0 && ry2 < self.height as i32 {
+                            self.backbuffer[(ry2 * self.width as i32 + rx) as usize] = 0x4D0000;
+                        }
+                    }
+                }
+                // '-' glyph on yellow
+                for dx in -2..=2 {
+                    let yx = yel_x + dx;
+                    if yx >= 0 && yx < self.width as i32 && cy >= 0 && cy < self.height as i32 {
+                        self.backbuffer[(cy * self.width as i32 + yx) as usize] = 0x5A4000;
+                    }
+                }
+                // '+' glyph on green
+                for dx in -2..=2 {
+                    let gx = grn_x + dx;
+                    if gx >= 0 && gx < self.width as i32 && cy >= 0 && cy < self.height as i32 {
+                        self.backbuffer[(cy * self.width as i32 + gx) as usize] = 0x00450A;
+                    }
+                }
+                for dy in -2..=2 {
+                    let gy = cy + dy;
+                    if grn_x >= 0 && grn_x < self.width as i32 && gy >= 0 && gy < self.height as i32 {
+                        self.backbuffer[(gy * self.width as i32 + grn_x) as usize] = 0x00450A;
+                    }
+                }
+            }
+
+            // 2g. Window title string (centered macOS style with typography shadow)
+            let title_pixel_len = w.title.len() as i32 * 8;
+            let title_x = (w.x + (w.width - title_pixel_len) / 2).max(w.x + 64);
+            let title_y = w.y - title_h + 5;
+            let current_font = crate::gui::fonts::get_current_font();
+            crate::gui::fonts::draw_string_with_shadow(&mut self.backbuffer, self.width, self.height,
+                title_x, title_y, &w.title, C_TEXT, 0x000000, current_font, clip_opt);
 
             // 2h. Resize handle (bottom-right, subtle grid dots)
             let res_x = w.x + w.width - 12;
@@ -731,16 +828,39 @@ impl Compositor {
             let iw = if dock_pos <= 1 { item_w } else { v_item };
             let ih = if dock_pos <= 1 { item_h } else { v_item };
             let is_active = i == self.windows.len() - 1 && win.state != WindowState::Minimized;
+
+            // macOS hover elevation & bounce animation
+            let is_hover = self.mouse_x >= curr_x && self.mouse_x < curr_x + iw &&
+                           self.mouse_y >= curr_y && self.mouse_y < curr_y + ih;
+            let bounce = if win.is_animating { if (self.anim_ticks / 3) % 2 == 0 { -4 } else { -1 } } else { 0 };
+            let hover_offset = if is_hover { -2 } else { 0 };
+            let item_y = curr_y + hover_offset + bounce;
+
             let (bg0, bg1) = if is_active {
                 (C_SURFACE2, 0x253040)
+            } else if is_hover {
+                (0x1E293B, 0x0F172A)
             } else {
                 (0x0F141A, C_SURFACE)
             };
             draw_gradient_v(&mut self.backbuffer, self.width, self.height,
-                curr_x, curr_y, iw, ih, bg0, bg1, clip_opt);
+                curr_x, item_y, iw, ih, bg0, bg1, clip_opt);
             draw_rect_border(&mut self.backbuffer, self.width, self.height,
-                curr_x, curr_y, iw, ih,
-                if is_active { C_ACCENT2 } else { C_BORDER }, clip_opt);
+                curr_x, item_y, iw, ih,
+                if is_active { C_ACCENT2 } else if is_hover { 0x64748B } else { C_BORDER }, clip_opt);
+
+            // Active running app indicator dot (macOS style glow dot)
+            if dock_pos <= 1 {
+                let dot_x = curr_x + iw / 2;
+                let dot_y = curr_y + ih + 2;
+                draw_circle_filled(&mut self.backbuffer, self.width, self.height, dot_x, dot_y, 2,
+                    if is_active { 0x38BDF8 } else { 0x64748B }, clip_opt);
+            } else {
+                let dot_x = curr_x + iw + 2;
+                let dot_y = curr_y + ih / 2;
+                draw_circle_filled(&mut self.backbuffer, self.width, self.height, dot_x, dot_y, 2,
+                    if is_active { 0x38BDF8 } else { 0x64748B }, clip_opt);
+            }
 
             // Icon in dock item
             let icon_name = match win.title.as_str() {
@@ -763,7 +883,7 @@ impl Compositor {
                 let sxm = (icon.bmp.width * 1024) / dw;
                 let sym2 = (icon.bmp.height * 1024) / dh;
                 let ix = if dock_pos <= 1 { curr_x + 6 } else { curr_x + (v_item / 2) - 8 };
-                let iy = if dock_pos <= 1 { curr_y + 8 } else { curr_y + (v_item / 2) - 8 };
+                let iy = if dock_pos <= 1 { item_y + 8 } else { item_y + (v_item / 2) - 8 };
                 for dy_bmp in 0..dh {
                     let bsy = iy + dy_bmp as i32;
                     if bsy < 0 || bsy >= self.height as i32 { continue; }
@@ -790,7 +910,7 @@ impl Compositor {
                 let mut td = alloc::string::String::new();
                 for (j, c) in win.title.chars().enumerate() { if j > 10 { break; } td.push(c); }
                 draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                    curr_x + 26, curr_y + ih / 2 - 4, &td,
+                    curr_x + 26, item_y + ih / 2 - 4, &td,
                     if is_active { C_TEXT } else { C_TEXT_MUTED }, clip_opt);
             }
             curr_x += step_x;
@@ -851,13 +971,35 @@ impl Compositor {
                     sm_x + 16, ey + 8, label, fg, clip_opt);
             }
 
-            // Divider + Shutdown
+            // Divider + Action buttons (Restart & Power Off)
             fill_rect_buffer(&mut self.backbuffer, self.width, self.height,
                 sm_x, sm_y + sm_h - 44, sm_w, 1, C_BORDER, clip_opt);
             fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
-                sm_x, sm_y + sm_h - 44, sm_w, 44, 0x1A0000, 180, clip_opt);
+                sm_x, sm_y + sm_h - 44, sm_w, 44, 0x111625, 230, clip_opt);
+
+            let btn_y = sm_y + sm_h - 36;
+            let btn_h = 28i32;
+            let btn_w = (sm_w - 24) / 2; // 98px
+
+            // Restart button (amber)
+            let r_x = sm_x + 8;
+            let r_hover = self.mouse_x >= r_x && self.mouse_x < r_x + btn_w && self.mouse_y >= btn_y && self.mouse_y < btn_y + btn_h;
+            fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
+                r_x, btn_y, btn_w, btn_h, if r_hover { 0x452B05 } else { 0x2A1B07 }, 220, clip_opt);
+            draw_rect_border(&mut self.backbuffer, self.width, self.height,
+                r_x, btn_y, btn_w, btn_h, if r_hover { 0xF59E0B } else { 0xD97706 }, clip_opt);
             draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
-                sm_x + 16, sm_y + sm_h - 28, "Power Off", 0xFF5F57, clip_opt);
+                r_x + 18, btn_y + 6, "Restart", 0xFCD34D, clip_opt);
+
+            // Power Off button (red)
+            let p_x = sm_x + sm_w - 8 - btn_w;
+            let p_hover = self.mouse_x >= p_x && self.mouse_x < p_x + btn_w && self.mouse_y >= btn_y && self.mouse_y < btn_y + btn_h;
+            fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
+                p_x, btn_y, btn_w, btn_h, if p_hover { 0x501015 } else { 0x350A0E }, 220, clip_opt);
+            draw_rect_border(&mut self.backbuffer, self.width, self.height,
+                p_x, btn_y, btn_w, btn_h, if p_hover { 0xEF4444 } else { 0xDC2626 }, clip_opt);
+            draw_string_to_buffer(&mut self.backbuffer, self.width, self.height,
+                p_x + 12, btn_y + 6, "Power Off", 0xFCA5A5, clip_opt);
 
             // Submenus
             if let Some(sub) = self.active_submenu {
@@ -887,7 +1029,7 @@ impl Compositor {
         if self.context_menu_open {
             let cm_w = 180i32;
             let is_icon = self.context_menu_target.is_some();
-            let cm_h = if is_icon { 104i32 } else { 210i32 };
+            let cm_h = if is_icon { 104i32 } else { 276i32 };
 
             // Drop shadow
             fill_rect_alpha(&mut self.backbuffer, self.width, self.height,
@@ -914,6 +1056,10 @@ impl Compositor {
                     ("View: Auto-Arrange", false),
                     ("Refresh Desktop", false),
                     ("", true),
+                    ("Change Font", false),
+                    ("Next Wallpaper", false),
+                    ("Display Settings", false),
+                    ("", true),
                     ("New Text Document", false),
                     ("New Folder", false),
                     ("", true),
@@ -921,8 +1067,8 @@ impl Compositor {
                     ("Task Manager", false),
                     ("System Monitor", false),
                     ("", true),
-                    ("Next Wallpaper", false),
-                    ("Display Settings", false),
+                    ("Restart System", false),
+                    ("Shut Down", false),
                 ]
             };
 
@@ -980,16 +1126,44 @@ impl Compositor {
             
             // Handle hovering over start menu categories
             if self.start_menu_open {
-                let sm_w = 200;
-                let sm_h = 240;
-                let sm_x = 0;
-                let sm_y = self.height as i32 - 30 - sm_h;
+                let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
+                let num_items = self.windows.len() as i32 + 1;
+                let item_w = 120;
+                let item_h = 32;
+                let padding = 5;
+                let v_item = 44;
+                let (dock_w, dock_h, dock_x, dock_y) = if dock_pos <= 1 {
+                    let dw = num_items * (item_w + padding) + padding;
+                    let dh = item_h + padding * 2 + 4;
+                    let dx = ((self.width as i32 - dw) / 2).max(0);
+                    let dy = if dock_pos == 0 { 8 } else { self.height as i32 - dh - 8 };
+                    (dw, dh, dx, dy)
+                } else {
+                    let dw = v_item + padding * 2;
+                    let dh = num_items * (v_item + padding) + padding;
+                    let dx = if dock_pos == 2 { 8 } else { self.width as i32 - dw - 8 };
+                    let dy = ((self.height as i32 - dh) / 2).max(0);
+                    (dw, dh, dx, dy)
+                };
+
+                let sm_w = 220;
+                let sm_h = 280;
+                let sm_x = match dock_pos {
+                    0 | 1 => dock_x,
+                    2 => dock_x + dock_w + 4,
+                    _ => dock_x - sm_w - 4,
+                };
+                let sm_y = match dock_pos {
+                    0 => dock_y + dock_h + 4,
+                    1 => dock_y - sm_h - 4,
+                    _ => dock_y,
+                };
                 if self.mouse_x >= sm_x && self.mouse_x <= sm_x + sm_w && self.mouse_y >= sm_y && self.mouse_y <= sm_y + sm_h {
-                    if self.mouse_y >= sm_y + 10 && self.mouse_y < sm_y + 40 {
+                    if self.mouse_y >= sm_y + 44 && self.mouse_y < sm_y + 76 {
                         self.active_submenu = Some(1);
-                    } else if self.mouse_y >= sm_y + 40 && self.mouse_y < sm_y + 70 {
+                    } else if self.mouse_y >= sm_y + 76 && self.mouse_y < sm_y + 108 {
                         self.active_submenu = Some(2);
-                    } else if self.mouse_y >= sm_y + 70 && self.mouse_y < sm_y + 100 {
+                    } else if self.mouse_y >= sm_y + 108 && self.mouse_y < sm_y + 140 {
                         self.active_submenu = Some(3);
                     } else {
                         self.active_submenu = None;
@@ -1004,7 +1178,7 @@ impl Compositor {
             if self.context_menu_open && is_down && !self.mouse_left_down {
                 let cm_w = 180i32;
                 let is_icon = self.context_menu_target.is_some();
-                let cm_h = if is_icon { 104i32 } else { 210i32 };
+                let cm_h = if is_icon { 104i32 } else { 276i32 };
                 let cm_x = self.context_menu_x;
                 let cm_y = self.context_menu_y;
 
@@ -1025,6 +1199,10 @@ impl Compositor {
                             ("View: Auto-Arrange", false),
                             ("Refresh Desktop", false),
                             ("", true),
+                            ("Change Font", false),
+                            ("Next Wallpaper", false),
+                            ("Display Settings", false),
+                            ("", true),
                             ("New Text Document", false),
                             ("New Folder", false),
                             ("", true),
@@ -1032,8 +1210,8 @@ impl Compositor {
                             ("Task Manager", false),
                             ("System Monitor", false),
                             ("", true),
-                            ("Next Wallpaper", false),
-                            ("Display Settings", false),
+                            ("Restart System", false),
+                            ("Shut Down", false),
                         ]
                     };
 
@@ -1071,6 +1249,16 @@ impl Compositor {
                         }
                         "Refresh Desktop" => {
                             self.full_redraw = true;
+                        }
+                        "Change Font" => {
+                            crate::gui::fonts::cycle_font();
+                            self.full_redraw = true;
+                        }
+                        "Restart System" => {
+                            crate::drivers::power::reboot();
+                        }
+                        "Shut Down" => {
+                            return false;
                         }
                         "New Text Document" => {
                             crate::apps::gui_apps::launch_notepad(self);
@@ -1164,20 +1352,27 @@ impl Compositor {
                 let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
                 let num_items = self.windows.len() as i32 + 1;
                 let item_w = 120;
-                let item_h = 30;
-                let padding = 4;
-                let v_item_size = 40;
-                let dock_w = if dock_pos <= 1 { num_items * (item_w + padding) + padding } else { v_item_size + padding * 2 };
-                let dock_h = if dock_pos <= 1 { item_h + padding * 2 } else { num_items * (v_item_size + padding) + padding };
-                let mut dock_x = if dock_pos <= 1 { (self.width as i32 - dock_w) / 2 } else if dock_pos == 2 { 10 } else { self.width as i32 - dock_w - 10 };
-                let mut dock_y = if dock_pos == 0 { 10 } else if dock_pos == 1 { self.height as i32 - dock_h - 10 } else { (self.height as i32 - dock_h) / 2 };
-                if dock_x < 0 { dock_x = 0; }
-                if dock_y < 0 { dock_y = 0; }
+                let item_h = 32;
+                let padding = 5;
+                let v_item = 44;
+                let (dock_w, dock_h, dock_x, dock_y) = if dock_pos <= 1 {
+                    let dw = num_items * (item_w + padding) + padding;
+                    let dh = item_h + padding * 2 + 4;
+                    let dx = ((self.width as i32 - dw) / 2).max(0);
+                    let dy = if dock_pos == 0 { 8 } else { self.height as i32 - dh - 8 };
+                    (dw, dh, dx, dy)
+                } else {
+                    let dw = v_item + padding * 2;
+                    let dh = num_items * (v_item + padding) + padding;
+                    let dx = if dock_pos == 2 { 8 } else { self.width as i32 - dw - 8 };
+                    let dy = ((self.height as i32 - dh) / 2).max(0);
+                    (dw, dh, dx, dy)
+                };
 
                 // Check Start Menu items if open
                 if self.start_menu_open {
-                    let sm_w = 200;
-                    let sm_h = 240;
+                    let sm_w = 220;
+                    let sm_h = 280;
                     let sm_x = match dock_pos {
                         0 | 1 => dock_x,
                         2 => dock_x + dock_w + 4,
@@ -1191,68 +1386,44 @@ impl Compositor {
                     
                     // First check if clicked inside active submenu
                     if let Some(sub) = self.active_submenu {
-                        let sub_x = sm_x + sm_w;
-                        let sub_w = 150;
-                        let sub_y = match sub {
-                            1 => sm_y + 5,
-                            2 => sm_y + 25,
-                            3 => sm_y + 45,
-                            _ => sm_y,
-                        };
+                        let sub_x = sm_x + sm_w + 2;
+                        let sub_w = 170;
+                        let sub_y = sm_y + 44 + (sub as i32 - 1) * 32;
                         let h = match sub {
-                            1 => 24,
-                            2  => 104,
-                            3  => 144,
-                            _ => 24,
+                            1 => 6 * 28 + 8,
+                            2 => 5 * 28 + 8,
+                            3 => 7 * 28 + 8,
+                            _ => 28,
                         };
                         
                         if self.mouse_x >= sub_x && self.mouse_x <= sub_x + sub_w && self.mouse_y >= sub_y && self.mouse_y <= sub_y + h {
+                            let item_idx = ((self.mouse_y - sub_y - 8) / 28).max(0);
                             if sub == 1 {
-                                // System submenu: Terminal | File Manager | Settings | Task Manager | Sys Monitor
-                                let sub_h = 124;
-                                let _ = sub_h;
-                                if self.mouse_y < sub_y + 24 {
-                                    crate::apps::gui_apps::launch_terminal(self);
-                                } else if self.mouse_y < sub_y + 52 {
-                                    crate::apps::gui_apps::launch_file_manager(self);
-                                } else if self.mouse_y < sub_y + 76 {
-                                    crate::apps::gui_apps::launch_settings(self);
-                                } else if self.mouse_y < sub_y + 100 {
-                                    crate::apps::gui_apps::launch_task_manager(self);
-                                } else {
-                                    crate::apps::gui_apps::launch_sysmon(self);
+                                match item_idx {
+                                    0 => crate::apps::gui_apps::launch_terminal(self),
+                                    1 => crate::apps::gui_apps::launch_file_manager(self),
+                                    2 => crate::apps::gui_apps::launch_settings(self),
+                                    3 => crate::apps::gui_apps::launch_task_manager(self),
+                                    4 => crate::apps::gui_apps::launch_sysmon(self),
+                                    _ => crate::apps::gui_apps::launch_browser(self),
                                 }
                             } else if sub == 2 {
-                                // Accessories -> Notepad, Calculator, Clock, Calendar, Paint
-                                if self.mouse_y < sub_y + 20 {
-                                    crate::apps::gui_apps::launch_notepad(self);
-                                } else if self.mouse_y < sub_y + 44 {
-                                    crate::apps::gui_apps::launch_calculator(self);
-                                } else if self.mouse_y < sub_y + 64 {
-                                    crate::apps::gui_apps::launch_clock(self);
-                                } else if self.mouse_y < sub_y + 84 {
-                                    crate::apps::gui_apps::launch_calendar(self);
-                                } else {
-                                    crate::apps::gui_apps::launch_paint(self);
+                                match item_idx {
+                                    0 => crate::apps::gui_apps::launch_notepad(self),
+                                    1 => crate::apps::gui_apps::launch_calculator(self),
+                                    2 => crate::apps::gui_apps::launch_clock(self),
+                                    3 => crate::apps::gui_apps::launch_calendar(self),
+                                    _ => crate::apps::gui_apps::launch_paint(self),
                                 }
                             } else if sub == 3 {
-                                // Games -> Snake, Minesweeper, Tetris, Pong, 2048, Sudoku, Chess
-                                if self.mouse_y < sub_y + 20 {
-                                    crate::apps::gui_apps::launch_snake(self);
-                                } else if self.mouse_y < sub_y + 44 {
-                                    crate::apps::gui_apps::launch_minesweeper(self);
-                                } else if self.mouse_y < sub_y + 64 {
-                                    crate::apps::gui_apps::launch_tetris(self);
-                                } else if self.mouse_y < sub_y + 84 {
-                                    crate::apps::gui_apps::launch_pong(self);
-                                } else if self.mouse_y < sub_y + 104 {
-                                    crate::apps::gui_apps::launch_2048(self);
-                                } else if self.mouse_y < sub_y + 124 {
-                                    crate::apps::gui_apps::launch_sudoku(self);
-                                } else if self.mouse_y < sub_y + 144 {
-                                    crate::apps::gui_apps::launch_chess(self);
-                                } else {
-                                    crate::apps::gui_apps::launch_calculator(self); // fallback
+                                match item_idx {
+                                    0 => crate::apps::gui_apps::launch_snake(self),
+                                    1 => crate::apps::gui_apps::launch_minesweeper(self),
+                                    2 => crate::apps::gui_apps::launch_tetris(self),
+                                    3 => crate::apps::gui_apps::launch_pong(self),
+                                    4 => crate::apps::gui_apps::launch_2048(self),
+                                    5 => crate::apps::gui_apps::launch_sudoku(self),
+                                    _ => crate::apps::gui_apps::launch_chess(self),
                                 }
                             }
                             self.start_menu_open = false;
@@ -1263,16 +1434,25 @@ impl Compositor {
                     
                     if !handled && self.mouse_x >= sm_x && self.mouse_x <= sm_x + sm_w && self.mouse_y >= sm_y && self.mouse_y <= sm_y + sm_h {
                         // Clicked inside main start menu
-                        if self.mouse_y >= sm_y + sm_h - 40 && self.mouse_y < sm_y + sm_h - 10 {
-                            // Shutdown
-                            return false;
+                        let btn_y = sm_y + sm_h - 36;
+                        let btn_h = 28i32;
+                        let btn_w = (sm_w - 24) / 2;
+                        let r_x = sm_x + 8;
+                        let p_x = sm_x + sm_w - 8 - btn_w;
+
+                        if self.mouse_y >= btn_y && self.mouse_y < btn_y + btn_h {
+                            if self.mouse_x >= r_x && self.mouse_x < r_x + btn_w {
+                                crate::drivers::power::reboot();
+                            } else if self.mouse_x >= p_x && self.mouse_x < p_x + btn_w {
+                                return false; // Power off
+                            }
                         }
                         // Check if we clicked a category
-                        if self.mouse_y >= sm_y + 10 && self.mouse_y < sm_y + 40 {
+                        if self.mouse_y >= sm_y + 44 && self.mouse_y < sm_y + 76 {
                             self.active_submenu = Some(1);
-                        } else if self.mouse_y >= sm_y + 40 && self.mouse_y < sm_y + 70 {
+                        } else if self.mouse_y >= sm_y + 76 && self.mouse_y < sm_y + 108 {
                             self.active_submenu = Some(2);
-                        } else if self.mouse_y >= sm_y + 70 && self.mouse_y < sm_y + 100 {
+                        } else if self.mouse_y >= sm_y + 108 && self.mouse_y < sm_y + 140 {
                             self.active_submenu = Some(3);
                         }
                         handled = true;
@@ -1281,12 +1461,12 @@ impl Compositor {
 
                 // Check Dock clicks
                 if !handled && self.mouse_x >= dock_x && self.mouse_x <= dock_x + dock_w && self.mouse_y >= dock_y && self.mouse_y <= dock_y + dock_h {
-                    let start_w = if dock_pos <= 1 { item_w } else { v_item_size };
-                    let start_h = if dock_pos <= 1 { item_h } else { v_item_size };
+                    let start_w = if dock_pos <= 1 { item_w } else { v_item };
+                    let start_h = if dock_pos <= 1 { item_h } else { v_item };
                     let mut curr_x = dock_x + padding;
                     let mut curr_y = dock_y + padding;
                     let dx = if dock_pos <= 1 { item_w + padding } else { 0 };
-                    let dy = if dock_pos > 1 { v_item_size + padding } else { 0 };
+                    let dy = if dock_pos > 1 { v_item + padding } else { 0 };
 
                     // Start button click
                     if self.mouse_x >= curr_x && self.mouse_x <= curr_x + start_w && self.mouse_y >= curr_y && self.mouse_y <= curr_y + start_h {
@@ -1296,8 +1476,8 @@ impl Compositor {
                         curr_x += dx;
                         curr_y += dy;
                         
-                        let iw = if dock_pos <= 1 { item_w } else { v_item_size };
-                        let ih = if dock_pos <= 1 { item_h } else { v_item_size };
+                        let iw = if dock_pos <= 1 { item_w } else { v_item };
+                        let ih = if dock_pos <= 1 { item_h } else { v_item };
                         
                         let mut clicked_idx = None;
                         for (i, _w) in self.windows.iter().enumerate() {
@@ -1356,8 +1536,8 @@ impl Compositor {
                             break; // Stop checking lower windows
                         } else if w.is_point_inside(self.mouse_x, self.mouse_y) && w.state != WindowState::Minimized {
                             let rel_x = self.mouse_x - w.x;
-                            let rel_y = self.mouse_y - w.y - 24; // offset titlebar
-                            if rel_y >= 0 {
+                            let rel_y = self.mouse_y - w.y; // w.y is top of client area
+                            if rel_y >= 0 && rel_y < w.height && rel_x >= 0 && rel_x < w.width {
                                 crate::gui::wm::WINDOW_EVENTS.lock().push((
                                     w.id,
                                     crate::gui::wm::GuiEvent::MouseClick {
@@ -1596,7 +1776,9 @@ impl Compositor {
             for msg in msgs.drain(..) {
                 match msg {
                     crate::gui::wm::GuiMessage::CreateWindow { id, title, x, y, w, h } => {
-                        let win = crate::gui::window::Window::new(id, &title, x, y, w, h);
+                        let mut win = crate::gui::window::Window::new(id, &title, x, y, w, h);
+                        win.anim_progress = 60;
+                        win.is_animating = true;
                         self.windows.push(win);
                         needs_redraw = true;
                     }
@@ -1629,6 +1811,23 @@ impl Compositor {
             }
         }
 
+        self.anim_ticks = self.anim_ticks.wrapping_add(1);
+        for w in &mut self.windows {
+            if w.is_animating {
+                w.anim_progress = (w.anim_progress + 15).min(100);
+                if w.anim_progress >= 100 {
+                    w.is_animating = false;
+                }
+                needs_redraw = true;
+            }
+        }
+        if self.start_menu_open && self.start_menu_anim < 100 {
+            self.start_menu_anim = (self.start_menu_anim + 25).min(100);
+            needs_redraw = true;
+        } else if !self.start_menu_open {
+            self.start_menu_anim = 0;
+        }
+
         let current_ticks = crate::process::scheduler::get_ticks();
         
         if needs_redraw {
@@ -1643,8 +1842,8 @@ impl Compositor {
                 let dock_pos = *crate::gui::settings_app::DOCK_POSITION.lock();
                 let num_items = self.windows.len() as i32 + 1;
                 let item_w = 120;
-                let padding = 4;
-                let v_item_size = 40;
+                let padding = 5;
+                let v_item_size = 44;
                 let mut dock_w;
                 let mut dock_x;
                 if dock_pos == 0 || dock_pos == 1 {
@@ -1656,23 +1855,23 @@ impl Compositor {
                     dock_x = if dock_pos == 2 { 10 } else { self.width as i32 - dock_w - 10 };
                 }
                 
-                let sm_w = 200;
-                let sm_h = 240;
+                let sm_w = 220;
+                let sm_h = 280;
                 let sm_x = match dock_pos {
                     0 | 1 => dock_x,
                     2 => dock_x + dock_w + 4,
                     _ => dock_x - sm_w - 4,
                 };
                 let sm_y = match dock_pos {
-                    0 => 10 + (30 + padding * 2) + 4,
-                    1 => self.height as i32 - (30 + padding * 2) - 10 - sm_h - 4,
+                    0 => 10 + (32 + padding * 2) + 4,
+                    1 => self.height as i32 - (32 + padding * 2) - 10 - sm_h - 4,
                     _ => (self.height as i32 - (num_items * (v_item_size + padding) + padding)) / 2,
                 };
                 current_rects.push(crate::gui::clip::Rect { x: sm_x, y: sm_y, w: sm_w, h: sm_h });
             }
             
             if self.context_menu_open {
-                let cm_h = if self.context_menu_target.is_some() { 104 } else { 210 };
+                let cm_h = if self.context_menu_target.is_some() { 104 } else { 276 };
                 current_rects.push(crate::gui::clip::Rect { x: self.context_menu_x - 4, y: self.context_menu_y - 4, w: 188, h: cm_h + 8 });
             }
             
@@ -1683,7 +1882,7 @@ impl Compositor {
             
             for w in &self.windows {
                 if w.state != WindowState::Minimized {
-                    current_rects.push(crate::gui::clip::Rect { x: w.x - 4, y: w.y - 28, w: w.width + 8, h: w.height + 32 });
+                    current_rects.push(crate::gui::clip::Rect { x: w.x - 4, y: w.y - 32, w: w.width + 16, h: w.height + 40 });
                 }
             }
             

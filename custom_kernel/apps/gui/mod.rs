@@ -1,4 +1,5 @@
 pub mod clip;
+pub mod fonts;
 pub mod desktop;
 pub mod compositor;
 pub mod window;

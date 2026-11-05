@@ -27,6 +27,8 @@ pub struct Window {
     pub state: WindowState,
     pub drag_offset_x: i32,
     pub drag_offset_y: i32,
+    pub anim_progress: u8, // 0..100 (100 = fully opened)
+    pub is_animating: bool,
 }
 
 impl Window {
@@ -49,6 +51,8 @@ impl Window {
             state: WindowState::Normal,
             drag_offset_x: 0,
             drag_offset_y: 0,
+            anim_progress: 100, // standard windows initialized opened
+            is_animating: false,
         }
     }
     
@@ -68,24 +72,24 @@ impl Window {
     }
     
     pub fn is_point_in_close_btn(&self, mx: i32, my: i32) -> bool {
-        // Close button is top-right, 20x20
-        let bx = self.x + self.width - 22;
-        let by = self.y - 22;
-        mx >= bx && mx <= bx + 20 && my >= by && my <= by + 20
-    }
-
-    pub fn is_point_in_max_btn(&self, mx: i32, my: i32) -> bool {
-        // Maximize button is left of close button, 20x20
-        let bx = self.x + self.width - 44;
-        let by = self.y - 22;
-        mx >= bx && mx <= bx + 20 && my >= by && my <= by + 20
+        // macOS traffic light close (left: x+6..x+22, y-22..y-6) or classic close (right)
+        let in_macos = mx >= self.x + 6 && mx <= self.x + 22 && my >= self.y - 22 && my <= self.y - 6;
+        let in_classic = mx >= self.x + self.width - 24 && mx <= self.x + self.width - 4 && my >= self.y - 24 && my <= self.y;
+        in_macos || in_classic
     }
 
     pub fn is_point_in_min_btn(&self, mx: i32, my: i32) -> bool {
-        // Minimize button is left of maximize button, 20x20
-        let bx = self.x + self.width - 66;
-        let by = self.y - 22;
-        mx >= bx && mx <= bx + 20 && my >= by && my <= by + 20
+        // macOS traffic light minimize (yellow: x+24..x+38) or classic minimize
+        let in_macos = mx >= self.x + 24 && mx <= self.x + 38 && my >= self.y - 22 && my <= self.y - 6;
+        let in_classic = mx >= self.x + self.width - 68 && mx <= self.x + self.width - 48 && my >= self.y - 24 && my <= self.y;
+        in_macos || in_classic
+    }
+
+    pub fn is_point_in_max_btn(&self, mx: i32, my: i32) -> bool {
+        // macOS traffic light maximize (green: x+40..x+56) or classic maximize
+        let in_macos = mx >= self.x + 40 && mx <= self.x + 56 && my >= self.y - 22 && my <= self.y - 6;
+        let in_classic = mx >= self.x + self.width - 46 && mx <= self.x + self.width - 26 && my >= self.y - 24 && my <= self.y;
+        in_macos || in_classic
     }
 
     pub fn is_point_in_resize_btn(&self, mx: i32, my: i32) -> bool {

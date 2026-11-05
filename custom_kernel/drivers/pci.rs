@@ -74,6 +74,30 @@ pub fn config_write8(bus: u8, slot: u8, func: u8, offset: u8, val: u8) {
     pci_config_write(bus, slot, func, aligned, new_val);
 }
 
+pub fn get_pci_class_desc(class: u8, subclass: u8, prog_if: u8) -> &'static str {
+    match (class, subclass) {
+        (0x01, 0x00) => "SCSI Bus Controller",
+        (0x01, 0x01) => "IDE / PATA Controller (Legacy)",
+        (0x01, 0x06) => "SATA Controller (AHCI 3.x)",
+        (0x01, 0x08) => "NVMe PCIe SSD Controller",
+        (0x02, 0x00) => "Ethernet Controller (Gigabit/Fast)",
+        (0x02, 0x80) => "Network Controller (WiFi/Other)",
+        (0x03, 0x00) => "VGA Compatible Display Controller",
+        (0x04, 0x01) => "Audio Controller (AC'97)",
+        (0x04, 0x03) => "Intel High Definition Audio",
+        (0x06, 0x00) => "Host Bridge (CPU/PCI)",
+        (0x06, 0x01) => "ISA Bridge (Legacy Ports)",
+        (0x06, 0x04) => "PCI-to-PCI Bridge",
+        (0x0C, 0x03) => match prog_if {
+            0x00 => "UHCI USB 1.1 Host Controller",
+            0x10 => "OHCI USB 1.1 Host Controller",
+            0x20 => "EHCI USB 2.0 Host Controller",
+            0x30 => "xHCI USB 3.x SuperSpeed Controller",
+            _ => "USB Host Controller",
+        },
+        _ => "PCI Device",
+    }
+}
 
 // PCI Device Representation
 #[derive(Debug)]
@@ -86,6 +110,7 @@ pub struct PCIDevice {
     device_id: u16,
     class_id: u8,
     subclass_id: u8,
+    prog_if: u8,
     bar0: u32,
     irq_line: u8,
 }
@@ -98,19 +123,21 @@ impl IOService for PCIDevice {
             "vendor-id" => Some(IOValue::Integer(self.vendor_id as i64)),
             "device-id" => Some(IOValue::Integer(self.device_id as i64)),
             "class-id" => Some(IOValue::Integer(self.class_id as i64)),
+            "subclass-id" => Some(IOValue::Integer(self.subclass_id as i64)),
+            "prog-if" => Some(IOValue::Integer(self.prog_if as i64)),
             "bar0" => Some(IOValue::Integer(self.bar0 as i64)),
             "irq" => Some(IOValue::Integer(self.irq_line as i64)),
             _ => None,
         }
     }
     
-    fn probe(&self, _provider: &Arc<dyn IOService>) -> i32 { 0 } // PCI Device is a Provider, usually doesn't probe others?
+    fn probe(&self, _provider: &Arc<dyn IOService>) -> i32 { 0 }
     fn start(&self, _provider: &Arc<dyn IOService>) -> IOResult<()> { Ok(()) }
     fn stop(&self) {}
 }
 
 pub fn init() {
-    crate::drivers::video::put_str("PCI: Scanning Bus...\n");
+    crate::drivers::video::put_str("PCI: Scanning Bus Topology...\n");
     let root = registry::REGISTRY.lock().root.clone();
     
     if let Some(root_entry) = root {
@@ -123,20 +150,26 @@ pub fn init() {
                     let class_rev = pci_config_read(bus, slot, 0, 0x08);
                     let class_id = (class_rev >> 24) as u8;
                     let subclass_id = (class_rev >> 16) as u8;
+                    let prog_if = (class_rev >> 8) as u8;
                     
                     let bar0 = pci_config_read(bus, slot, 0, 0x10);
+                    let bar5 = pci_config_read(bus, slot, 0, 0x24);
                     let intr = pci_config_read(bus, slot, 0, 0x3C);
                     let irq_line = (intr & 0xFF) as u8;
                     
                     // Enable Bus Mastering, Memory Space, and I/O Space in Command Register
                     let cmd_status = pci_config_read(bus, slot, 0, 0x04);
-                    pci_config_write(bus, slot, 0, 0x04, cmd_status | 0x07); // Bit 0: IO, Bit 1: Memory, Bit 2: Bus Master
+                    pci_config_write(bus, slot, 0, 0x04, cmd_status | 0x07);
                     
-                    // Create IOService
-                    let name = format!("PCI {:02x}:{:02x}.0", bus, slot);
+                    let desc = get_pci_class_desc(class_id, subclass_id, prog_if);
+                    let name = format!("PCI {:02x}:{:02x}.0 ({})", bus, slot, desc);
                     crate::drivers::video::put_str(&name);
                     crate::drivers::video::put_str(&format!(" [{:04x}:{:04x}]\n", vendor, device_id));
-                    let _ = write!(crate::drivers::serial::SERIAL.lock(), "PCI {:02x}:{:02x}.0 [{:04x}:{:04x}]\n", bus, slot, vendor, device_id);
+                    let _ = write!(
+                        crate::drivers::serial::SERIAL.lock(),
+                        "PCI {:02x}:{:02x}.0 [{:04x}:{:04x}] {} (Class {:02x}:{:02x} IF {:02x})\n",
+                        bus, slot, vendor, device_id, desc, class_id, subclass_id, prog_if
+                    );
 
                     let pci_dev = Arc::new(PCIDevice {
                         name,
@@ -147,6 +180,7 @@ pub fn init() {
                         device_id,
                         class_id,
                         subclass_id,
+                        prog_if,
                         bar0,
                         irq_line,
                     });
@@ -165,7 +199,31 @@ pub fn init() {
                         crate::drivers::drm::nvidia::init_device(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.device_id, pci_dev.bar0);
                     }
 
-                    // Match Drivers (Simulated matching loop)
+                    // SATA Controller (AHCI: Class 0x01, Subclass 0x06)
+                    if pci_dev.class_id == 0x01 && pci_dev.subclass_id == 0x06 {
+                        crate::drivers::storage::ahci::detect_and_init(pci_dev.bus, pci_dev.slot, pci_dev.func, bar5);
+                    }
+
+                    // NVMe Controller (PCIe SSD: Class 0x01, Subclass 0x08)
+                    if pci_dev.class_id == 0x01 && pci_dev.subclass_id == 0x08 {
+                        crate::drivers::storage::nvme::detect_and_init(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.bar0);
+                    }
+
+                    // USB 3.x xHCI Controller (Class 0x0C, Subclass 0x03, Prog-IF 0x30)
+                    if pci_dev.class_id == 0x0C && pci_dev.subclass_id == 0x03 && prog_if == 0x30 {
+                        crate::drivers::usb::xhci::detect_and_init(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.bar0);
+                    }
+
+                    // VirtIO Virtual Devices (Vendor 0x1AF4)
+                    if pci_dev.vendor_id == 0x1AF4 {
+                        if pci_dev.device_id == 0x1000 || pci_dev.device_id == 0x1041 {
+                            crate::drivers::virtio::virtio_net::detect_and_init(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.bar0);
+                        } else if pci_dev.device_id == 0x1001 || pci_dev.device_id == 0x1042 {
+                            crate::drivers::virtio::virtio_blk::detect_and_init(pci_dev.bus, pci_dev.slot, pci_dev.func, pci_dev.bar0);
+                        }
+                    }
+
+                    // Match Network Drivers (RTL8139, Atheros, Ralink)
                     let rtl_driver = Arc::new(crate::drivers::net::rtl8139::RTL8139::new());
                     if rtl_driver.probe(&entry.service) > 0 {
                          let _ = rtl_driver.start(&entry.service);
@@ -181,6 +239,7 @@ pub fn init() {
                          let _ = ralink_driver.start(&entry.service);
                     }
 
+                    // EHCI USB 2.0 Driver
                     let ehci_driver = crate::drivers::usb::ehci::EHCIController::new();
                     if ehci_driver.probe(&entry.service) > 0 {
                          let _ = ehci_driver.start(&entry.service);

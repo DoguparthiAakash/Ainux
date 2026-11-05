@@ -60,6 +60,8 @@ pub unsafe fn notify_eoi(irq: u8) {
         outb(PIC2_COMMAND, 0x20);
     }
     outb(PIC1_COMMAND, 0x20);
+    // Also notify Local APIC if APIC mode is initialized
+    crate::cpu::apic::eoi();
 }
 
 pub unsafe fn unmask_irq(irq: u8) {

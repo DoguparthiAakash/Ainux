@@ -15,3 +15,7 @@ pub fn enter_sleep_state(state: u8) {
 pub fn shutdown() {
     crate::cpu::acpi::power_off();
 }
+
+pub fn reboot() {
+    crate::cpu::acpi::reboot();
+}

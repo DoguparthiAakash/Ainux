@@ -507,6 +507,32 @@ pub fn power_off() {
     }
 }
 
+pub fn reboot() {
+    let mut serial = crate::drivers::serial::SerialPort::new(0x3F8);
+    let _ = write!(serial, "ACPI/POWER: Initiating hardware reboot...\n");
+    unsafe {
+        core::arch::asm!("cli");
+        // 1. PCI / ACPI hardware reset via port 0xCF9
+        core::arch::asm!("out dx, al", in("dx") 0xCF9u16, in("al") 0x02u8);
+        core::arch::asm!("out dx, al", in("dx") 0xCF9u16, in("al") 0x06u8);
+
+        // 2. 8042 Keyboard Controller pulse reset
+        for _ in 0..10000 {
+            let status: u8;
+            core::arch::asm!("in al, 0x64", out("al") status);
+            if (status & 2) == 0 { break; }
+        }
+        core::arch::asm!("out 0x64, al", in("al") 0xFEu8);
+
+        // 3. Triple fault fallback
+        let null_idt: [u16; 3] = [0, 0, 0];
+        core::arch::asm!("lidt [{}]", in(reg) null_idt.as_ptr());
+        core::arch::asm!("int3");
+
+        loop { core::arch::asm!("hlt"); }
+    }
+}
+
 /// Get the current battery percentage (0-100).
 /// Currently a mock implementation as DSDT AML parsing is not yet implemented.
 pub fn get_battery_percentage() -> u8 {

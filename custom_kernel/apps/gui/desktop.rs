@@ -46,6 +46,7 @@ pub fn run() {
     // Drain any spurious mouse events accumulated during boot so the first
     // click is not a phantom event from the PS/2 controller reset.
     while let Some(_) = crate::drivers::mouse::pop_event() {}
+    crate::drivers::mouse::set_position(w as isize / 2, h as isize / 2);
 
     // === FIX: Force an initial full-screen render immediately ===
     // Without this the desktop stays black until the first mouse/keyboard event

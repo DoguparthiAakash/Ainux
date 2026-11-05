@@ -5,9 +5,36 @@ use spin::Mutex;
 use alloc::vec::Vec;
 
 pub const INTEL_VEND: u16 = 0x8086;
-pub const E1000_DEV: u16 = 0x100E;
-pub const E1000_I217: u16 = 0x153A;
-pub const E1000_82577LM: u16 = 0x10EA;
+pub const E1000_DEV: u16 = 0x100E;     // 82540EM
+pub const E1000_82545EM: u16 = 0x100F; // 82545EM
+pub const E1000_82574L: u16 = 0x10D3;  // 82574L PCIe
+pub const E1000_I217: u16 = 0x153A;    // I217-LM
+pub const E1000_I217_V: u16 = 0x153B;  // I217-V
+pub const E1000_I219_V1: u16 = 0x1570; // I219-V
+pub const E1000_I219_V2: u16 = 0x15B8; // I219-V
+pub const E1000_I219_LM: u16 = 0x15E3; // I219-LM
+pub const E1000_82577LM: u16 = 0x10EA; // 82577LM
+pub const E1000_82579LM: u16 = 0x1502; // 82579LM
+pub const E1000_82579V: u16 = 0x1503;  // 82579V
+
+pub fn is_e1000_device(dev_id: u16) -> bool {
+    matches!(
+        dev_id,
+        E1000_DEV
+            | E1000_82545EM
+            | E1000_82574L
+            | E1000_I217
+            | E1000_I217_V
+            | E1000_I219_V1
+            | E1000_I219_V2
+            | E1000_I219_LM
+            | E1000_82577LM
+            | E1000_82579LM
+            | E1000_82579V
+            | 0x1019
+            | 0x107D
+    )
+}
 
 // Base MMIO Register Offsets
 const REG_CTRL: usize = 0x0000;
@@ -199,10 +226,10 @@ pub static E1000_DEVICE: Mutex<E1000Driver> = Mutex::new(E1000Driver::new());
 pub fn detect_and_init() -> bool {
     for bus in 0..=255 {
         for slot in 0..=31 {
-            let vendor = pci::pci_config_read(bus, slot, 0, 0) & 0xFFFF;
-            if vendor == INTEL_VEND as u32 {
-                let device = (pci::pci_config_read(bus, slot, 0, 0) >> 16) & 0xFFFF;
-                if device == E1000_DEV as u32 || device == E1000_I217 as u32 || device == E1000_82577LM as u32 {
+            let vendor = (pci::pci_config_read(bus, slot, 0, 0) & 0xFFFF) as u16;
+            if vendor == INTEL_VEND {
+                let device = ((pci::pci_config_read(bus, slot, 0, 0) >> 16) & 0xFFFF) as u16;
+                if is_e1000_device(device) {
                     let mut e1000 = E1000_DEVICE.lock();
                     return e1000.init(bus, slot, 0);
                 }

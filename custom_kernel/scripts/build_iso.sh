@@ -49,6 +49,15 @@ if command -v openssl >/dev/null 2>&1 && command -v sbsign >/dev/null 2>&1; then
     echo "Generating and signing GRUB EFI payload for Secure Boot..."
     grub-mkimage -O x86_64-efi -o bootx64.efi -p /boot/grub boot linux ext2 fat serial part_msdos part_gpt normal efi_gop iso9660 search multiboot multiboot2
     sbsign --key MOK.priv --cert MOK.cer --output "$ISO_ROOT/EFI/BOOT/BOOTX64.EFI" bootx64.efi
+
+    # Create 32-bit UEFI GRUB payload (BOOTIA32.EFI) if modules exist
+    if [ -d "/usr/lib/grub/i386-efi" ]; then
+        echo "Generating 32-bit UEFI GRUB payload (BOOTIA32.EFI)..."
+        grub-mkimage -O i386-efi -o bootia32.efi -p /boot/grub boot linux ext2 fat serial part_msdos part_gpt normal efi_gop iso9660 search multiboot multiboot2 2>/dev/null || true
+        if [ -f "bootia32.efi" ]; then
+            cp bootia32.efi "$ISO_ROOT/EFI/BOOT/BOOTIA32.EFI" 2>/dev/null || true
+        fi
+    fi
 else
     echo "WARNING: openssl or sbsigntool not found. Secure Boot MOK generation & signing skipped."
     echo "Run 'sudo apt install openssl sbsigntool' to enable Secure Boot support."

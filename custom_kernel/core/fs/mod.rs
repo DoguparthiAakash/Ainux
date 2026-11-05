@@ -10,3 +10,4 @@ pub mod pipe;
 pub mod devfs;
 pub mod sysfs;
 pub mod netfs;
+pub mod ramfs;

@@ -52,7 +52,18 @@ static mut MOUSE_Y: isize = 384;
 static mut MOUSE_BUTTONS: u8 = 0;
 
 pub fn pop_event() -> Option<MouseEvent> {
-    MOUSE_BUFFER.lock().pop()
+    crate::cpu::without_interrupts(|| {
+        MOUSE_BUFFER.lock().pop()
+    })
+}
+
+pub fn set_position(x: isize, y: isize) {
+    crate::cpu::without_interrupts(|| {
+        unsafe {
+            MOUSE_X = x;
+            MOUSE_Y = y;
+        }
+    });
 }
 
 pub fn get_position() -> (isize, isize) {
@@ -95,6 +106,11 @@ fn update_position(dx: isize, dy: isize, buttons: u8) {
 
 pub fn init() {
     unsafe {
+        let w = if let Some(fw) = video::FRAMEBUFFER_WIDTH.try_lock() { *fw as isize } else { 1024 };
+        let h = if let Some(fh) = video::FRAMEBUFFER_HEIGHT.try_lock() { *fh as isize } else { 768 };
+        MOUSE_X = (w / 2).max(0);
+        MOUSE_Y = (h / 2).max(0);
+
         // Enable Auxiliary Device (Mouse)
         wait_write();
         outb(0x64, 0xA8); 
@@ -190,6 +206,13 @@ static mut MOUSE_BYTE: [u8; 3] = [0; 3];
 #[no_mangle]
 extern "C" fn rust_mouse_handler() {
     unsafe {
+        let status = inb(0x64);
+        // Bit 0: Output buffer full. Bit 5: 1 = auxiliary device (mouse)
+        if (status & 0x01) == 0 || (status & 0x20) == 0 {
+            notify_eoi(12);
+            return;
+        }
+
         let byte = inb(0x60);
         
         match MOUSE_CYCLE {

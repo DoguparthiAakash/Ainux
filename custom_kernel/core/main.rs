@@ -243,9 +243,11 @@ pub extern "C" fn _start() -> ! {
     drivers::iokit::registry::init();
     let _ = write!(serial, "IO Kit Registry Initialized.\n");
     
-    // Initialize PCI
+    // Initialize Core Drivers Subsystem (Floppy FDC, Parallel LPT, Sound Blaster 16/OPL3, DRM)
+    drivers::init();
+
+    // Initialize PCI & Bus Topology (NVMe, AHCI SATA, xHCI USB3, VirtIO, e1000)
     drivers::pci::init();
-    drivers::partition::init();
     net::init();
     
     // Initialize Simulated WiFi (Atheros)
@@ -346,6 +348,16 @@ pub extern "C" fn _start() -> ! {
     let netfs = Arc::new(fs::netfs::NetFileSystem);
     fs::vfs::mount("/net", netfs);
     let _ = write!(serial, "VFS: Inferno NetFs mounted at /net.\n");
+
+    // Mount RamFs with built-in Ring 3 ELF64 executables at /bin and /usr/bin
+    let bin_ramfs = Arc::new(fs::ramfs::RamFs::new());
+    fs::vfs::mount("/bin", bin_ramfs.clone());
+    fs::vfs::mount("/usr/bin", bin_ramfs);
+    let _ = write!(serial, "VFS: RamFs with Ring 3 ELF64 binaries mounted at /bin and /usr/bin.\n");
+
+    let tmp_ramfs = Arc::new(fs::ramfs::RamFs::new_empty());
+    fs::vfs::mount("/tmp", tmp_ramfs);
+    let _ = write!(serial, "VFS: Volatile RamFs mounted at /tmp.\n");
 
     // Mount FAT32 Partitions
     let partitions = crate::drivers::mbr::parse_mbr();

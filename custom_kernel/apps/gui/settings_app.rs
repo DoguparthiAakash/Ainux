@@ -81,27 +81,38 @@ impl SettingsApp {
             _ => "Dock: Right",
         };
 
+        let current_font = crate::gui::fonts::get_current_font();
+        let font_label = alloc::format!("Font: {}", current_font.name());
+
         // Buttons for Appearance (x=280)
         let app_btns = [
             ("Resolution: Auto", 85),
-            ("Resolution: 1024x768", 125),
-            ("Resolution: 1920x1080", 165),
-            (scroll_btn_text, 205),
-            (page_wise_text, 245),
-            (&font_text, 285),
-            (dock_btn_text, 325),
+            ("Resolution: 1024x768", 120),
+            (&font_label, 155),
+            (scroll_btn_text, 190),
+            (page_wise_text, 225),
+            (&font_text, 260),
+            (dock_btn_text, 295),
+            ("Restart System", 330),
         ];
 
         for (label, cy) in app_btns.iter() {
-            Self::fill(buf, w, h, 280, *cy, 180, 30, 0xFF313244);
-            Self::fill(buf, w, h, 280, *cy + 28, 180, 2, 0xFF45475A); // button bottom edge
-            Self::text(buf, w, h, 290, *cy + 8, label, 0xFFCDD6F4);
+            let is_restart = *label == "Restart System";
+            let bg = if is_restart { 0xFFB45309 } else { 0xFF313244 };
+            Self::fill(buf, w, h, 280, *cy, 180, 28, bg);
+            Self::fill(buf, w, h, 280, *cy + 26, 180, 2, 0xFF45475A); // button bottom edge
+            crate::gui::fonts::draw_string_to_buffer(buf, w, h, 288, *cy + 6, label, 0xFFCDD6F4, current_font, None);
         }
+
+        // Live Font Typography Preview
+        Self::text(buf, w, h, 10, 270, "Font Typography Preview:", 0xFFBAC2E8);
+        crate::gui::fonts::draw_string_to_buffer(buf, w, h, 14, 290, "The quick brown fox jumps over lazy dog", 0xFFFFFFFF, current_font, None);
+        crate::gui::fonts::draw_string_to_buffer(buf, w, h, 14, 310, "0123456789 - Mithl OS Modern GUI", 0xFF89B4FA, current_font, None);
 
         let vw = *crate::drivers::video::FRAMEBUFFER_WIDTH.lock();
         let vh = *crate::drivers::video::FRAMEBUFFER_HEIGHT.lock();
         let res_str = alloc::format!("Current Framebuffer: {}x{}", vw, vh);
-        Self::text(buf, w, h, 10, h as i32 - 30, &res_str, 0xFF6C7086);
+        Self::text(buf, w, h, 10, h as i32 - 25, &res_str, 0xFF6C7086);
 
         // Live preview swatch
         let cur_color = *WALLPAPER_COLOR.lock();
@@ -149,19 +160,38 @@ impl SettingsApp {
             ("Memory", ""),
         ];
 
+        let cpu = crate::cpu::cpuid::CPU_FEATURES.lock();
+        let cpu_str = alloc::format!("CPU:          {} ({})", cpu.vendor_str(), if cpu.has_long_mode { "64-bit" } else { "32-bit" });
+        drop(cpu);
+
+        let disks_count = crate::drivers::storage::get_all_disks().len();
+        let modern_hw_str = alloc::format!(
+            "Modern HW:    NVMe: {} | SATA3: {} | USB3: {}",
+            if crate::drivers::storage::nvme::is_present() { "YES" } else { "OFF" },
+            if crate::drivers::storage::ahci::is_present() { "YES" } else { "OFF" },
+            if crate::drivers::usb::xhci::is_present() { "YES" } else { "OFF" }
+        );
+        let legacy_hw_str = alloc::format!(
+            "Legacy HW:    Speaker: OK | SB16: {} | FDC: {} | LPT: {}",
+            if crate::drivers::audio::sb16::is_present() { "YES" } else { "OFF" },
+            if crate::drivers::floppy::is_present() { "YES" } else { "OFF" },
+            if crate::drivers::parallel::is_present() { "YES" } else { "OFF" }
+        );
+
         let labels = [
-            alloc::format!("System:       Mithl OS"),
-            alloc::format!("Version:      1.0.0-alpha"),
-            alloc::format!("Architecture: x86_64"),
+            alloc::format!("System:       Mithl OS (Multi-Arch)"),
+            alloc::format!("Architecture: x86_64 / x86 Limbo Ready"),
+            cpu_str,
+            alloc::format!("Storage:      {} Drives Online (NVMe/SATA/IDE/FDC)", disks_count),
+            modern_hw_str,
+            legacy_hw_str,
             uptime_str,
-            alloc::format!("Processes:    {}", proc_count),
             mem_str,
         ];
-        let _ = items;
 
         for (i, label) in labels.iter().enumerate() {
-            Self::fill(buf, w, h, 8, 60 + i as i32 * 28, w as i32 - 16, 24, 0xFF313244);
-            Self::text(buf, w, h, 14, 66 + i as i32 * 28, label, 0xFFCDD6F4);
+            Self::fill(buf, w, h, 8, 48 + i as i32 * 26, w as i32 - 16, 22, 0xFF313244);
+            Self::text(buf, w, h, 14, 52 + i as i32 * 26, label, 0xFFCDD6F4);
         }
 
         // Memory bar
@@ -246,31 +276,34 @@ pub fn settings_main() {
 
                         // Button clicks (Appearance)
                         if x >= 280 && x <= 460 {
-                            if y >= 85 && y <= 115 {
+                            if y >= 85 && y <= 113 {
                                 crate::drivers::video::auto_resolution();
                                 app.needs_redraw = true;
-                            } else if y >= 125 && y <= 155 {
+                            } else if y >= 120 && y <= 148 {
                                 crate::drivers::video::set_resolution(1024, 768, 32);
                                 app.needs_redraw = true;
-                            } else if y >= 165 && y <= 195 {
-                                crate::drivers::video::set_resolution(1920, 1080, 32);
+                            } else if y >= 155 && y <= 183 {
+                                // Cycle Font!
+                                crate::gui::fonts::cycle_font();
                                 app.needs_redraw = true;
-                            } else if y >= 205 && y <= 235 {
+                            } else if y >= 190 && y <= 218 {
                                 let mut t = crate::drivers::video::THEME.lock();
                                 t.scrollbar_enabled = !t.scrollbar_enabled;
                                 app.needs_redraw = true;
-                            } else if y >= 245 && y <= 275 {
+                            } else if y >= 225 && y <= 253 {
                                 let mut t = crate::drivers::video::THEME.lock();
                                 t.scroll_page_wise = !t.scroll_page_wise;
                                 app.needs_redraw = true;
-                            } else if y >= 285 && y <= 315 {
+                            } else if y >= 260 && y <= 288 {
                                 let mut t = crate::drivers::video::THEME.lock();
                                 t.font_size = (t.font_size % 3) + 1;
                                 app.needs_redraw = true;
-                            } else if y >= 325 && y <= 355 {
+                            } else if y >= 295 && y <= 323 {
                                 let mut pos = DOCK_POSITION.lock();
                                 *pos = (*pos + 1) % 4;
                                 app.needs_redraw = true;
+                            } else if y >= 330 && y <= 358 {
+                                crate::drivers::power::reboot();
                             }
                         }
                     }

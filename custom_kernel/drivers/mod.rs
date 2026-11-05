@@ -9,8 +9,14 @@ pub mod serial;
 pub mod audio;
 pub mod manager;
 pub mod power;
+pub mod floppy;
+pub mod parallel;
+pub mod virtio;
+
 pub fn init() {
-    audio::ac97::init();
+    floppy::init();
+    parallel::init();
+    audio::init();
     partition::init();
     drm::init();
 }
